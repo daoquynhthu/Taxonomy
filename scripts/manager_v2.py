@@ -6,8 +6,21 @@ import shutil
 import hmac
 import tempfile
 import logging
+import zlib
+import base64
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+    Fernet = None
+    hashes = None
+    PBKDF2HMAC = None
 
 # Configure structured logging
 logging.basicConfig(
@@ -21,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger("SeedCore")
 
 class SeedCore:
-    def __init__(self, root_dir, mirror_dir=None, secret_key=None):
+    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None):
         self.root_dir = Path(root_dir).resolve()
         self.objects_dir = self.root_dir / "objects"
         self.db_path = self.root_dir / "metadata" / "seed_index.db"
@@ -35,8 +48,38 @@ class SeedCore:
             self.mirror_dir = None
             
         self.secret_key = secret_key or "humanity-eternal-2026"
+        
+        # Encryption Key Setup
+        self.fernet = None
+        if master_key and HAS_CRYPTO and PBKDF2HMAC is not None and hashes is not None and Fernet is not None:
+            salt = b'seed-plan-salt-2026' # In production, use a unique salt per installation
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=100000,
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(master_key.encode()))
+            self.fernet = Fernet(key)
+        elif master_key and not HAS_CRYPTO:
+            logger.error("Master key provided but 'cryptography' library is not installed!")
+            
         self._init_db()
         logger.info(f"SeedCore initialized at {self.root_dir}")
+
+    def _encrypt(self, data):
+        """Encrypt data using Fernet (AES-128 in CBC mode with HMAC)."""
+        if not self.fernet:
+            raise Exception("Encryption error: No master key provided or cryptography library missing.")
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        return self.fernet.encrypt(data)
+
+    def _decrypt(self, encrypted_data):
+        """Decrypt data."""
+        if not self.fernet:
+            raise Exception("Decryption error: No master key provided or cryptography library missing.")
+        return self.fernet.decrypt(encrypted_data)
 
     def _calculate_hash(self, data):
         """Stream-friendly hash calculation."""
@@ -218,7 +261,20 @@ class SeedCore:
 
 
 
-    def _store_object(self, content, metadata=None):
+    def _store_object(self, content, metadata=None, compress=True, encrypt=False):
+        """Store content with optional compression and encryption."""
+        if compress:
+            if isinstance(content, str):
+                content = content.encode('utf-8')
+            content = zlib.compress(content, level=9)
+            if metadata:
+                metadata['compression'] = 'zlib'
+        
+        if encrypt:
+            content = self._encrypt(content)
+            if metadata:
+                metadata['encryption'] = 'fernet-aes128'
+
         h = self._calculate_hash(content)
         # Sharding: objects/ab/cd/ef...
         shard_dir = self.objects_dir / h[0:2] / h[2:4]
@@ -274,22 +330,42 @@ class SeedCore:
         return dict(row) if row else None
 
     def add_entry(self, entry_data, content):
-        """Add or update an entry with version control and optimistic locking."""
-        title = entry_data.get('title', 'Untitled')
+        """Add or update an entry with multi-language support and version control."""
+        # Support for multi-language title and content hash
+        titles = entry_data.get('title', {'en': 'Untitled'})
+        if isinstance(titles, str):
+            titles = {'en': titles}
+            
         taxonomy_path = entry_data.get('taxonomy_path', 'General')
         description = entry_data.get('description', '')
         importance = entry_data.get('importance', 5)
         dependencies = entry_data.get('dependencies', [])
+        compress = entry_data.get('compress', True)
+        encrypt = entry_data.get('encrypt', False)
         
-        content_hash = self._calculate_hash(content)
-        entry_id = entry_data.get('id') or f"S-{content_hash[:12]}"
-        signature = self._sign_content(content_hash)
+        # In a multi-language setup, content might be a dict: {lang: data}
+        # If it's single content, we treat it as default lang (en)
+        contents = content if isinstance(content, dict) else {'en': content}
+        content_hashes = {}
+        signatures = {}
+        
+        for lang, lang_content in contents.items():
+            h = self._calculate_hash(lang_content)
+            content_hashes[lang] = h
+            signatures[lang] = self._sign_content(h)
+            
+        # For simplicity in the index, we store the primary hash (usually 'en' or first found)
+        primary_lang = 'zh' if 'zh' in contents else (list(contents.keys())[0] if contents else 'en')
+        primary_hash = content_hashes.get(primary_lang, '')
+        primary_signature = signatures.get(primary_lang, '')
+        primary_title = titles.get(primary_lang, list(titles.values())[0])
+
+        entry_id = entry_data.get('id') or f"S-{primary_hash[:12]}"
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         try:
-            # 1. Concurrency Check (Optimistic Locking)
             cursor.execute("SELECT version FROM entries WHERE id = ?", (entry_id,))
             row = cursor.fetchone()
             current_version = row[0] if row else 0
@@ -297,44 +373,53 @@ class SeedCore:
             
             meta_payload = {
                 "id": entry_id,
-                "title": title,
+                "titles": titles,
                 "taxonomy_path": taxonomy_path,
                 "description": description,
-                "content_hash": content_hash,
-                "signature": signature,
+                "content_hashes": content_hashes,
+                "signatures": signatures,
                 "importance": importance,
                 "dependencies": dependencies,
                 "created_at": entry_data.get('created_at') or datetime.now().isoformat(),
                 "version": new_version,
-                "metadata_version": 3
+                "metadata_version": 4,
+                "compress": compress,
+                "encrypt": encrypt
             }
 
-            # 2. Physical storage with mirroring
-            self._store_object(content, metadata=meta_payload)
+            # 2. Store physical objects for each language
+            for lang, lang_content in contents.items():
+                lang_meta = meta_payload.copy()
+                lang_meta['lang'] = lang
+                self._store_object(lang_content, metadata=lang_meta, compress=compress, encrypt=encrypt)
             
             # 3. Database index update
             now_str = datetime.now().isoformat()
+            # Store titles and hashes as JSON in DB for flexibility
+            titles_json = json.dumps(titles, ensure_ascii=False)
+            hashes_json = json.dumps(content_hashes, ensure_ascii=False)
+            
             if current_version == 0:
                 cursor.execute('''
                     INSERT INTO entries 
                     (id, title, taxonomy_path, description, content_hash, signature, importance, mime_type, version, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (entry_id, title, taxonomy_path, description, content_hash, signature, importance, 'text/markdown', new_version, meta_payload["created_at"], now_str))
+                ''', (entry_id, titles_json, taxonomy_path, description, hashes_json, primary_signature, importance, 'text/markdown', new_version, meta_payload["created_at"], now_str))
             else:
                 cursor.execute('''
                     UPDATE entries SET 
                     title=?, taxonomy_path=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?
                     WHERE id=? AND version=?
-                ''', (title, taxonomy_path, description, content_hash, signature, importance, new_version, now_str, entry_id, current_version))
+                ''', (titles_json, taxonomy_path, description, hashes_json, primary_signature, importance, new_version, now_str, entry_id, current_version))
                 
                 if cursor.rowcount == 0:
-                    raise Exception(f"Write Conflict: Entry {entry_id} was modified by another process (Optimistic Lock failed).")
+                    raise Exception(f"Write Conflict: Entry {entry_id} was modified by another process.")
 
-            # 4. Record history for versioning
+            # 4. History
             cursor.execute('''
                 INSERT INTO history (entry_id, content_hash, version, timestamp)
                 VALUES (?, ?, ?, ?)
-            ''', (entry_id, content_hash, new_version, now_str))
+            ''', (entry_id, hashes_json, new_version, now_str))
             
             if dependencies:
                 cursor.execute('DELETE FROM dependencies WHERE entry_id = ?', (entry_id,))
@@ -412,6 +497,72 @@ class SeedCore:
             return False
         finally:
             conn.close()
+
+    def validate_dependencies(self, entry_id, visited=None):
+        """Recursively ensure the dependency chain is complete and avoid orphans."""
+        if visited is None:
+            visited = set()
+        
+        if entry_id in visited:
+            return True, []
+        
+        visited.add(entry_id)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Check if entry exists
+        cursor.execute("SELECT id FROM entries WHERE id = ?", (entry_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, [entry_id]
+        
+        # Get dependencies
+        cursor.execute("SELECT depends_on_id FROM dependencies WHERE entry_id = ?", (entry_id,))
+        deps = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        missing_all = []
+        for dep_id in deps:
+            ok, missing = self.validate_dependencies(dep_id, visited)
+            if not ok:
+                missing_all.extend(missing)
+        
+        return len(missing_all) == 0, list(set(missing_all))
+
+    def visualize_dependencies(self, entry_id, level=0, visited=None):
+        """Generate a text-based dependency graph visualization."""
+        if visited is None:
+            visited = set()
+            
+        entry = self.get_entry(entry_id)
+        if not entry:
+            print("  " * level + f"[-] {entry_id} (MISSING)")
+            return
+
+        # Handle multi-language title if it's a JSON string
+        title_data = entry['title']
+        try:
+            title_dict = json.loads(title_data)
+            title = title_dict.get('zh') or title_dict.get('en') or list(title_dict.values())[0]
+        except:
+            title = title_data
+
+        print("  " * level + f"[+] {title} ({entry_id})")
+        
+        if entry_id in visited:
+            print("  " * (level + 1) + " (circular dependency detected)")
+            return
+            
+        visited.add(entry_id)
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT depends_on_id FROM dependencies WHERE entry_id = ?", (entry_id,))
+        deps = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        for dep_id in deps:
+            self.visualize_dependencies(dep_id, level + 1, visited)
 
     def audit_all(self):
         """Comprehensive audit of all entries in the index vs physical storage."""
@@ -737,37 +888,58 @@ class SeedCore:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Seed Core Manager v2")
-    parser.add_argument("cmd", choices=["add", "search", "rebuild", "audit", "sync", "verify_chain", "export", "import", "rollback", "history"])
+    parser.add_argument("cmd", choices=["add", "search", "rebuild", "audit", "sync", "verify_chain", "export", "import", "rollback", "history", "validate", "graph"])
     parser.add_argument("args", nargs="*")
     parser.add_argument("--mirror", help="Path to mirror directory")
     parser.add_argument("--taxonomy", help="Taxonomy prefix for export")
     parser.add_argument("--output", help="Output path for export package")
     parser.add_argument("--package", help="Package path for import")
     parser.add_argument("--version", type=int, help="Target version for rollback")
+    parser.add_argument("--lang", help="Target language for add/search")
     
     parsed = parser.parse_args()
     core = SeedCore("d:/Seed", mirror_dir=parsed.mirror, secret_key="SEED_PLAN_2026_SECURE_KEY")
     
     if parsed.cmd == "add":
         if len(parsed.args) < 4:
-            print("Usage: add <taxonomy> <title> <description> <file_path>")
+            print("Usage: add <taxonomy> <title> <description> <file_path> [--lang zh]")
         else:
+            lang = parsed.lang or 'en'
             with open(parsed.args[3], 'r', encoding='utf-8') as f:
                 content = f.read()
             entry_id = parsed.args[1].lower().replace(' ', '_')
             core.safe_add_entry({
                 "id": entry_id,
-                "title": parsed.args[1],
+                "title": {lang: parsed.args[1]},
                 "taxonomy_path": parsed.args[0],
                 "description": parsed.args[2],
                 "importance": 5,
                 "dependencies": []
-            }, content)
+            }, {lang: content})
     elif parsed.cmd == "search":
         q = parsed.args[0] if parsed.args else ""
         results = core.search(query=q)
         for r in results:
-            print(f"[{r['taxonomy_path']}] {r['title']} (v{r['version']}, Hash: {r['content_hash'][:8]})")
+            try:
+                titles = json.loads(r['title'])
+                title = titles.get(parsed.lang) or titles.get('zh') or titles.get('en') or list(titles.values())[0]
+            except:
+                title = r['title']
+            print(f"[{r['taxonomy_path']}] {title} (v{r['version']}, Hash: {r['content_hash'][:8]})")
+    elif parsed.cmd == "validate":
+        if len(parsed.args) < 1:
+            print("Usage: validate <entry_id>")
+        else:
+            ok, missing = core.validate_dependencies(parsed.args[0])
+            if ok:
+                print(f"Success: All dependencies for {parsed.args[0]} are present.")
+            else:
+                print(f"Error: Missing dependencies for {parsed.args[0]}: {missing}")
+    elif parsed.cmd == "graph":
+        if len(parsed.args) < 1:
+            print("Usage: graph <entry_id>")
+        else:
+            core.visualize_dependencies(parsed.args[0])
     elif parsed.cmd == "rollback":
         if len(parsed.args) < 1 or not parsed.version:
             print("Usage: rollback <entry_id> --version <target_version>")
