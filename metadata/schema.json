@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Seed Item Schema v2",
+  "description": "Enhanced schema for sharded storage and complex dependencies",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "title": { "type": "string" },
+    "taxonomy_path": { 
+      "type": "string",
+      "description": "Dot-separated hierarchical path, e.g., 'Science.Physics.Quantum'"
+    },
+    "description": { "type": "string" },
+    "snapshot_date": { "type": "string", "default": "2026-01-01T00:00:00Z" },
+    "importance": { "type": "integer", "minimum": 1, "maximum": 10 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "IDs of other items required to understand this one"
+    },
+    "content_hash": { 
+      "type": "string",
+      "description": "SHA-256 hash of the content for integrity and CAS"
+    },
+    "mime_type": { "type": "string", "default": "text/markdown" },
+    "metadata_version": { "type": "integer", "default": 2 }
+  },
+  "required": ["id", "title", "taxonomy_path", "content_hash"]
+}

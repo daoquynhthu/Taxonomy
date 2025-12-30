@@ -1,0 +1,27 @@
+# Data directories
+objects/
+metadata/seed_index.db
+metadata/*.journal
+
+# Logs
+*.log
+seed_system.log
+
+# Temporary files
+*.tmp
+*.zip
+temp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
