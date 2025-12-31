@@ -93,6 +93,30 @@ class SeedCore:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
+    @classmethod
+    def from_config(cls, config_path):
+        """Create a SeedCore instance from a JSON config file."""
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        # Handle secret keys from separate files if provided
+        secret_key = config.get('secret_key')
+        if config.get('secret_key_file'):
+            with open(config['secret_key_file'], 'r') as sf:
+                secret_key = sf.read().strip()
+                
+        master_key = config.get('master_key')
+        if config.get('master_key_file'):
+            with open(config['master_key_file'], 'r') as mf:
+                master_key = mf.read().strip()
+                
+        return cls(
+            root_dir=config['root_dir'],
+            mirror_dir=config.get('mirror_dir'),
+            secret_key=secret_key,
+            master_key=master_key
+        )
+
     def _init_db(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
@@ -124,6 +148,7 @@ class SeedCore:
                 content_hash TEXT,
                 version INTEGER,
                 timestamp TEXT,
+                metadata TEXT,
                 FOREIGN KEY(entry_id) REFERENCES entries(id)
             )
         ''')
@@ -223,8 +248,7 @@ class SeedCore:
         root = current_level[0]
         
         # Update cache with the new root
-        cursor.execute("DELETE FROM merkle_cache WHERE level = ?", (level,))
-        cursor.execute("INSERT INTO merkle_cache (level, pos, hash) VALUES (?, 0, ?)", (level, root))
+        cursor.execute("INSERT OR REPLACE INTO merkle_cache (level, pos, hash) VALUES (?, 0, ?)", (level, root))
         
         conn.commit()
         conn.close()
@@ -261,11 +285,73 @@ class SeedCore:
 
 
 
+    def _atomic_write(self, path, data):
+        """Atomic write using a temporary file."""
+        temp_path = path.with_suffix('.tmp')
+        mode = 'wb' if isinstance(data, (bytes, bytearray)) else 'w'
+        kwargs = {'encoding': 'utf-8'} if mode == 'w' else {}
+        with open(temp_path, mode, **kwargs) as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+
+    def get_object_content(self, content_hash):
+        """Retrieve, decrypt, and decompress an object based on its sidecar metadata."""
+        shard_dir = self.objects_dir / content_hash[0:2] / content_hash[2:4]
+        obj_path = shard_dir / content_hash
+        meta_path = shard_dir / f"{content_hash}.meta"
+        
+        if not obj_path.exists():
+            raise FileNotFoundError(f"Object {content_hash} not found in storage.")
+            
+        with open(obj_path, 'rb') as f:
+            content = f.read()
+            
+        # Try to read sidecar metadata for this specific object
+        if meta_path.exists():
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+            
+            if meta.get('encryption'):
+                content = self._decrypt(content)
+                
+            if meta.get('compression') == 'zlib':
+                content = zlib.decompress(content)
+        
+        return content
+
+    def get_content(self, entry_id, lang=None):
+        """Retrieve content for an entry, automatically selecting primary language if not specified."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT content_hash FROM entries WHERE id = ?", (entry_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise Exception(f"Entry {entry_id} not found.")
+            
+        try:
+            content_hashes = json.loads(row['content_hash'])
+            target_lang = lang or ('zh' if 'zh' in content_hashes else list(content_hashes.keys())[0])
+            target_hash = content_hashes.get(target_lang)
+        except:
+            # Legacy support if content_hash is not JSON
+            target_hash = row['content_hash']
+        
+        if not target_hash:
+            raise Exception(f"Language {lang} not available for entry {entry_id}")
+            
+        return self.get_object_content(target_hash)
+
     def _store_object(self, content, metadata=None, compress=True, encrypt=False):
         """Store content with optional compression and encryption."""
+        if isinstance(content, str):
+            content = content.encode('utf-8')
+
         if compress:
-            if isinstance(content, str):
-                content = content.encode('utf-8')
             content = zlib.compress(content, level=9)
             if metadata:
                 metadata['compression'] = 'zlib'
@@ -276,47 +362,29 @@ class SeedCore:
                 metadata['encryption'] = 'fernet-aes128'
 
         h = self._calculate_hash(content)
-        # Sharding: objects/ab/cd/ef...
         shard_dir = self.objects_dir / h[0:2] / h[2:4]
         shard_dir.mkdir(parents=True, exist_ok=True)
+        
         obj_path = shard_dir / h
-        meta_path = shard_dir / f"{h}.meta"
-        
-        # Performance: Only write if not exists (Deduplication)
-        # Atomic write using a temporary file
         if not obj_path.exists():
-            temp_path = obj_path.with_suffix('.tmp')
-            with open(temp_path, 'wb') as f:
-                if isinstance(content, str):
-                    f.write(content.encode('utf-8'))
-                else:
-                    f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, obj_path)
-        
-        # Redundancy: Write a mirror copy (Configurable to different physical media)
-        if self.mirror_dir:
-            mirror_path = self.mirror_dir / h[0:2] / h[2:4] / h
-            mirror_path.parent.mkdir(parents=True, exist_ok=True)
-            if not mirror_path.exists():
-                shutil.copy2(obj_path, mirror_path)
+            self._atomic_write(obj_path, content)
             
-            # Mirror the metadata too
-            meta_mirror = mirror_path.with_suffix('.meta')
-            if metadata and not meta_mirror.exists():
-                temp_meta = meta_mirror.with_suffix('.meta.tmp')
-                with open(temp_meta, 'w', encoding='utf-8') as f:
-                    json.dump(metadata, f, indent=2, ensure_ascii=False)
-                os.replace(temp_meta, meta_mirror)
-
-        # Store Sidecar Metadata
-        if metadata:
-            temp_meta_path = meta_path.with_suffix('.meta.tmp')
-            with open(temp_meta_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
-            os.replace(temp_meta_path, meta_path)
+            # Store sidecar metadata for the object itself (not the entry)
+            if metadata:
+                meta_path = shard_dir / f"{h}.meta"
+                self._atomic_write(meta_path, json.dumps(metadata, indent=2, ensure_ascii=False))
                 
+            # Mirroring
+            if self.mirror_dir:
+                try:
+                    mirror_shard = self.mirror_dir / h[0:2] / h[2:4]
+                    mirror_shard.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(obj_path, mirror_shard / h)
+                    if metadata:
+                        shutil.copy2(shard_dir / f"{h}.meta", mirror_shard / f"{h}.meta")
+                except Exception as e:
+                    logger.error(f"Mirroring failed for {h}: {e}")
+                    
         return h
 
     def get_entry(self, entry_id):
@@ -331,10 +399,14 @@ class SeedCore:
 
     def add_entry(self, entry_data, content):
         """Add or update an entry with multi-language support and version control."""
-        # Support for multi-language title and content hash
-        titles = entry_data.get('title', {'en': 'Untitled'})
-        if isinstance(titles, str):
-            titles = {'en': titles}
+        # 1. Handle multi-language title
+        title_input = entry_data.get('title', 'Untitled')
+        if isinstance(title_input, str):
+            titles = {'en': title_input}
+        elif isinstance(title_input, dict):
+            titles = title_input
+        else:
+            raise ValueError("Title must be str or dict")
             
         taxonomy_path = entry_data.get('taxonomy_path', 'General')
         description = entry_data.get('description', '')
@@ -343,8 +415,7 @@ class SeedCore:
         compress = entry_data.get('compress', True)
         encrypt = entry_data.get('encrypt', False)
         
-        # In a multi-language setup, content might be a dict: {lang: data}
-        # If it's single content, we treat it as default lang (en)
+        # 2. Handle multi-language content
         contents = content if isinstance(content, dict) else {'en': content}
         content_hashes = {}
         signatures = {}
@@ -354,7 +425,7 @@ class SeedCore:
             content_hashes[lang] = h
             signatures[lang] = self._sign_content(h)
             
-        # For simplicity in the index, we store the primary hash (usually 'en' or first found)
+        # 3. Determine primary data for database
         primary_lang = 'zh' if 'zh' in contents else (list(contents.keys())[0] if contents else 'en')
         primary_hash = content_hashes.get(primary_lang, '')
         primary_signature = signatures.get(primary_lang, '')
@@ -455,37 +526,43 @@ class SeedCore:
                 logger.error(f"Version {target_version} not found for entry {entry_id}")
                 return False
             
-            target_hash = hist_row['content_hash']
+            # In Scheme A, history.content_hash is the primary hash at that time
+            primary_hash = hist_row['content_hash']
             
             # 2. Get metadata from sidecar to restore properties
-            shard_dir = self.objects_dir / target_hash[0:2] / target_hash[2:4]
-            meta_path = shard_dir / f"{target_hash}.meta"
+            shard_dir = self.objects_dir / primary_hash[0:2] / primary_hash[2:4]
+            meta_path = shard_dir / f"{primary_hash}.meta"
             
             if not meta_path.exists():
-                logger.error(f"Sidecar metadata missing for hash {target_hash}. Cannot restore properties.")
+                logger.error(f"Sidecar metadata missing for hash {primary_hash}. Cannot restore properties.")
                 return False
                 
             with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
             
             # 3. Perform the rollback update
-            # Rollback itself creates a new version to preserve history chain
             cursor.execute("SELECT version FROM entries WHERE id = ?", (entry_id,))
             current_version = cursor.fetchone()[0]
             new_version = current_version + 1
             now_str = datetime.now().isoformat()
             
+            # Determine primary signature and titles for database index
+            # Scheme A: Store only primary language title and hash in DB
+            primary_lang = meta.get('lang', 'en')
+            primary_sig = meta['signatures'].get(primary_lang)
+            primary_title = meta['titles'].get(primary_lang, list(meta['titles'].values())[0])
+            
             cursor.execute('''
                 UPDATE entries SET 
                 title=?, taxonomy_path=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?
                 WHERE id=?
-            ''', (meta['title'], meta['taxonomy_path'], meta['description'], target_hash, meta['signature'], meta['importance'], new_version, now_str, entry_id))
+            ''', (primary_title, meta['taxonomy_path'], meta['description'], primary_hash, primary_sig, meta['importance'], new_version, now_str, entry_id))
             
-            # 4. Record the rollback event
+            # 4. Record the rollback event in history
             cursor.execute('''
-                INSERT INTO history (entry_id, content_hash, version, timestamp)
-                VALUES (?, ?, ?, ?)
-            ''', (entry_id, target_hash, new_version, now_str))
+                INSERT INTO history (entry_id, content_hash, version, timestamp, metadata)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (entry_id, primary_hash, new_version, now_str, json.dumps(meta)))
             
             conn.commit()
             self.commit_state()
@@ -564,6 +641,57 @@ class SeedCore:
         for dep_id in deps:
             self.visualize_dependencies(dep_id, level + 1, visited)
 
+    def health_check(self):
+        """Perform a comprehensive system health check."""
+        checks = {
+            "database": self._check_db_connection(),
+            "primary_storage": self._check_storage(self.objects_dir),
+            "mirror_storage": self._check_storage(self.mirror_dir) if self.mirror_dir else {"accessible": False, "status": "Not configured"},
+            "state_chain": self.verify_state_chain(),
+            "last_commit": self._get_last_commit_time()
+        }
+        return checks
+
+    def _check_db_connection(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("SELECT 1")
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return False
+
+    def _check_storage(self, path):
+        """Check storage availability and space."""
+        if not path or not path.exists():
+            return {"accessible": False, "status": "Missing or inaccessible"}
+        
+        try:
+            stat = shutil.disk_usage(path)
+            free_percent = (stat.free / stat.total) * 100
+            
+            return {
+                "accessible": True,
+                "free_space_gb": round(stat.free / (1024**3), 2),
+                "free_percent": round(free_percent, 2),
+                "warning": free_percent < 10
+            }
+        except Exception as e:
+            logger.error(f"Storage check failed for {path}: {e}")
+            return {"accessible": False, "status": "Error during check"}
+
+    def _get_last_commit_time(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT timestamp FROM state_chain ORDER BY height DESC LIMIT 1")
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else None
+        except:
+            return None
+
     def audit_all(self):
         """Comprehensive audit of all entries in the index vs physical storage."""
         print("Starting comprehensive civilization audit...")
@@ -632,20 +760,35 @@ class SeedCore:
          cursor = conn.cursor()
          
          for meta_file in self.objects_dir.glob("**/*.meta"):
+             # Skip object-level meta files (those that don't have an 'id' field for an entry)
              with open(meta_file, 'r', encoding='utf-8') as f:
                  m = json.load(f)
+                 if 'id' not in m: continue # It's an object-level meta, not entry-level
+                 
                  ver = m.get('version', 1)
+                 
+                 # Scheme A: Store only primary language title and hash in DB
+                 # In entry-level sidecar, titles is a dict, content_hashes is a dict
+                 titles = m.get('titles', {'en': m.get('title', 'Untitled')})
+                 content_hashes = m.get('content_hashes', {'en': m.get('content_hash', '')})
+                 signatures = m.get('signatures', {'en': m.get('signature', '')})
+                 
+                 primary_lang = 'zh' if 'zh' in content_hashes else (list(content_hashes.keys())[0] if content_hashes else 'en')
+                 primary_hash = content_hashes.get(primary_lang, '')
+                 primary_title = titles.get(primary_lang, list(titles.values())[0] if titles else 'Untitled')
+                 primary_sig = signatures.get(primary_lang, '')
+
                  cursor.execute('''
                      INSERT OR REPLACE INTO entries 
-                     (id, title, taxonomy_path, description, content_hash, signature, importance, mime_type, version, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ''', (m['id'], m['title'], m['taxonomy_path'], m['description'], m['content_hash'], m.get('signature'), m['importance'], 'text/markdown', ver, m['created_at']))
+                     (id, title, taxonomy_path, description, content_hash, signature, importance, version, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ''', (m['id'], primary_title, m['taxonomy_path'], m['description'], primary_hash, primary_sig, m['importance'], ver, m['created_at']))
                  
                  # Populate history with the version from sidecar
                  cursor.execute('''
-                    INSERT OR IGNORE INTO history (entry_id, content_hash, version, timestamp)
-                    VALUES (?, ?, ?, ?)
-                 ''', (m['id'], m['content_hash'], ver, m['created_at']))
+                    INSERT OR IGNORE INTO history (entry_id, content_hash, version, timestamp, metadata)
+                    VALUES (?, ?, ?, ?, ?)
+                 ''', (m['id'], primary_hash, ver, m['created_at'], json.dumps(m)))
 
                  for dep_id in m.get('dependencies', []):
                      cursor.execute('INSERT INTO dependencies (entry_id, depends_on_id) VALUES (?, ?)', (m['id'], dep_id))
@@ -888,34 +1031,54 @@ class SeedCore:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Seed Core Manager v2")
-    parser.add_argument("cmd", choices=["add", "search", "rebuild", "audit", "sync", "verify_chain", "export", "import", "rollback", "history", "validate", "graph"])
+    parser.add_argument("cmd", choices=["add", "search", "rebuild", "audit", "sync", "verify_chain", "export", "import", "rollback", "history", "validate", "graph", "health", "cat"])
     parser.add_argument("args", nargs="*")
+    parser.add_argument("--config", help="Path to config.json")
     parser.add_argument("--mirror", help="Path to mirror directory")
     parser.add_argument("--taxonomy", help="Taxonomy prefix for export")
     parser.add_argument("--output", help="Output path for export package")
     parser.add_argument("--package", help="Package path for import")
     parser.add_argument("--version", type=int, help="Target version for rollback")
-    parser.add_argument("--lang", help="Target language for add/search")
+    parser.add_argument("--lang", help="Target language for add/search/cat")
+    parser.add_argument("--master-key", help="Master key for encryption/decryption")
+    parser.add_argument("--encrypt", action="store_true", help="Encrypt content")
     
     parsed = parser.parse_args()
-    core = SeedCore("d:/Seed", mirror_dir=parsed.mirror, secret_key="SEED_PLAN_2026_SECURE_KEY")
+    
+    if parsed.config:
+        core = SeedCore.from_config(parsed.config)
+    else:
+        core = SeedCore("d:/Seed", mirror_dir=parsed.mirror, secret_key="SEED_PLAN_2026_SECURE_KEY", master_key=parsed.master_key)
     
     if parsed.cmd == "add":
         if len(parsed.args) < 4:
-            print("Usage: add <taxonomy> <title> <description> <file_path> [--lang zh]")
+            print("Usage: add <taxonomy> <title> <description> <file_path> [--lang zh] [--encrypt]")
         else:
             lang = parsed.lang or 'en'
             with open(parsed.args[3], 'r', encoding='utf-8') as f:
                 content = f.read()
             entry_id = parsed.args[1].lower().replace(' ', '_')
-            core.safe_add_entry({
+            core.add_entry({
                 "id": entry_id,
                 "title": {lang: parsed.args[1]},
                 "taxonomy_path": parsed.args[0],
                 "description": parsed.args[2],
                 "importance": 5,
-                "dependencies": []
+                "dependencies": [],
+                "encrypt": parsed.encrypt
             }, {lang: content})
+    elif parsed.cmd == "cat":
+        if len(parsed.args) < 1:
+            print("Usage: cat <entry_id> [--lang zh]")
+        else:
+            try:
+                content = core.get_content(parsed.args[0], lang=parsed.lang)
+                print(content.decode('utf-8'))
+            except Exception as e:
+                print(f"Error: {e}")
+    elif parsed.cmd == "health":
+        results = core.health_check()
+        print(json.dumps(results, indent=2))
     elif parsed.cmd == "search":
         q = parsed.args[0] if parsed.args else ""
         results = core.search(query=q)
@@ -941,10 +1104,10 @@ if __name__ == "__main__":
         else:
             core.visualize_dependencies(parsed.args[0])
     elif parsed.cmd == "rollback":
-        if len(parsed.args) < 1 or not parsed.version:
-            print("Usage: rollback <entry_id> --version <target_version>")
+        if len(parsed.args) < 2:
+            print("Usage: rollback <entry_id> <version>")
         else:
-            core.rollback(parsed.args[0], parsed.version)
+            core.rollback(parsed.args[0], int(parsed.args[1]))
     elif parsed.cmd == "history":
         if len(parsed.args) < 1:
             print("Usage: history <entry_id>")
