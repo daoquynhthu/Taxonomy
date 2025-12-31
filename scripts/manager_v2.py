@@ -33,11 +33,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SeedCore")
 
-class SeedCore:
-    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None):
+class EternalCore:
+    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None, app_name="EternalCore"):
         self.root_dir = Path(root_dir).resolve()
         self.objects_dir = self.root_dir / "objects"
-        self.db_path = self.root_dir / "metadata" / "seed_index.db"
+        self.db_path = self.root_dir / "metadata" / f"{app_name.lower()}_index.db"
+        self.app_name = app_name
         
         # Mirror configuration
         if mirror_dir:
@@ -95,7 +96,7 @@ class SeedCore:
 
     @classmethod
     def from_config(cls, config_path):
-        """Create a SeedCore instance from a JSON config file."""
+        """Create an EternalCore instance from a JSON config file."""
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
             
@@ -114,7 +115,8 @@ class SeedCore:
             root_dir=config['root_dir'],
             mirror_dir=config.get('mirror_dir'),
             secret_key=secret_key,
-            master_key=master_key
+            master_key=master_key,
+            app_name=config.get('app_name', 'EternalCore')
         )
 
     def _init_db(self):
@@ -123,12 +125,12 @@ class SeedCore:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA synchronous=NORMAL')
         
-        # Entries with optimistic locking (version column)
+        # Generic entries table
         conn.execute('''
             CREATE TABLE IF NOT EXISTS entries (
                 id TEXT PRIMARY KEY,
                 title TEXT,
-                taxonomy_path TEXT,
+                category TEXT,
                 description TEXT,
                 content_hash TEXT,
                 signature TEXT,
@@ -136,7 +138,8 @@ class SeedCore:
                 mime_type TEXT,
                 version INTEGER DEFAULT 1,
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                custom_fields TEXT
             )
         ''')
         
@@ -288,12 +291,16 @@ class SeedCore:
     def _atomic_write(self, path, data):
         """Atomic write using a temporary file."""
         temp_path = path.with_suffix('.tmp')
-        mode = 'wb' if isinstance(data, (bytes, bytearray)) else 'w'
-        kwargs = {'encoding': 'utf-8'} if mode == 'w' else {}
-        with open(temp_path, mode, **kwargs) as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+        if isinstance(data, (bytes, bytearray)):
+            with open(temp_path, 'wb') as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+        else:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
         os.replace(temp_path, path)
 
     def get_object_content(self, content_hash):
@@ -408,12 +415,13 @@ class SeedCore:
         else:
             raise ValueError("Title must be str or dict")
             
-        taxonomy_path = entry_data.get('taxonomy_path', 'General')
+        category = entry_data.get('category', 'General')
         description = entry_data.get('description', '')
         importance = entry_data.get('importance', 5)
         dependencies = entry_data.get('dependencies', [])
         compress = entry_data.get('compress', True)
         encrypt = entry_data.get('encrypt', False)
+        custom_fields = entry_data.get('custom_fields', {})
         
         # 2. Handle multi-language content
         contents = content if isinstance(content, dict) else {'en': content}
@@ -421,17 +429,25 @@ class SeedCore:
         signatures = {}
         
         for lang, lang_content in contents.items():
-            h = self._calculate_hash(lang_content)
+            # Store object with metadata
+            obj_meta = {
+                "category": category,
+                "lang": lang,
+                "timestamp": datetime.now().isoformat(),
+                "encryption": encrypt,
+                "compression": "zlib" if compress else None
+            }
+            h = self._store_object(lang_content, metadata=obj_meta, compress=compress, encrypt=encrypt)
             content_hashes[lang] = h
             signatures[lang] = self._sign_content(h)
             
-        # 3. Determine primary data for database
+        # 3. Determine primary data for database (Scheme A)
         primary_lang = 'zh' if 'zh' in contents else (list(contents.keys())[0] if contents else 'en')
         primary_hash = content_hashes.get(primary_lang, '')
         primary_signature = signatures.get(primary_lang, '')
         primary_title = titles.get(primary_lang, list(titles.values())[0])
 
-        entry_id = entry_data.get('id') or f"S-{primary_hash[:12]}"
+        entry_id = entry_data.get('id') or f"E-{primary_hash[:12]}"
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -441,22 +457,29 @@ class SeedCore:
             row = cursor.fetchone()
             current_version = row[0] if row else 0
             new_version = current_version + 1
+            now_str = datetime.now().isoformat()
             
             meta_payload = {
                 "id": entry_id,
                 "titles": titles,
-                "taxonomy_path": taxonomy_path,
+                "category": category,
                 "description": description,
                 "content_hashes": content_hashes,
                 "signatures": signatures,
                 "importance": importance,
                 "dependencies": dependencies,
-                "created_at": entry_data.get('created_at') or datetime.now().isoformat(),
+                "created_at": entry_data.get('created_at') or now_str,
                 "version": new_version,
                 "metadata_version": 4,
                 "compress": compress,
-                "encrypt": encrypt
+                "encrypt": encrypt,
+                "custom_fields": custom_fields
             }
+
+            # Store meta next to primary object
+            shard_dir = self.objects_dir / primary_hash[0:2] / primary_hash[2:4]
+            meta_path = shard_dir / f"{primary_hash}.meta"
+            self._atomic_write(meta_path, json.dumps(meta_payload, indent=2, ensure_ascii=False))
 
             # 2. Store physical objects for each language
             for lang, lang_content in contents.items():
@@ -465,7 +488,6 @@ class SeedCore:
                 self._store_object(lang_content, metadata=lang_meta, compress=compress, encrypt=encrypt)
             
             # 3. Database index update
-            now_str = datetime.now().isoformat()
             # Store titles and hashes as JSON in DB for flexibility
             titles_json = json.dumps(titles, ensure_ascii=False)
             hashes_json = json.dumps(content_hashes, ensure_ascii=False)
@@ -473,15 +495,15 @@ class SeedCore:
             if current_version == 0:
                 cursor.execute('''
                     INSERT INTO entries 
-                    (id, title, taxonomy_path, description, content_hash, signature, importance, mime_type, version, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (entry_id, titles_json, taxonomy_path, description, hashes_json, primary_signature, importance, 'text/markdown', new_version, meta_payload["created_at"], now_str))
+                    (id, title, category, description, content_hash, signature, importance, mime_type, version, created_at, updated_at, custom_fields)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (entry_id, titles_json, category, description, hashes_json, primary_signature, importance, 'text/markdown', new_version, meta_payload["created_at"], now_str, json.dumps(custom_fields)))
             else:
                 cursor.execute('''
                     UPDATE entries SET 
-                    title=?, taxonomy_path=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?
+                    title=?, category=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?, custom_fields=?
                     WHERE id=? AND version=?
-                ''', (titles_json, taxonomy_path, description, hashes_json, primary_signature, importance, new_version, now_str, entry_id, current_version))
+                ''', (titles_json, category, description, hashes_json, primary_signature, importance, new_version, now_str, json.dumps(custom_fields), entry_id, current_version))
                 
                 if cursor.rowcount == 0:
                     raise Exception(f"Write Conflict: Entry {entry_id} was modified by another process.")
@@ -552,11 +574,12 @@ class SeedCore:
             primary_sig = meta['signatures'].get(primary_lang)
             primary_title = meta['titles'].get(primary_lang, list(meta['titles'].values())[0])
             
+            category = meta.get('category', 'General')
             cursor.execute('''
                 UPDATE entries SET 
-                title=?, taxonomy_path=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?
+                title=?, category=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?, custom_fields=?
                 WHERE id=?
-            ''', (primary_title, meta['taxonomy_path'], meta['description'], primary_hash, primary_sig, meta['importance'], new_version, now_str, entry_id))
+            ''', (primary_title, category, meta['description'], primary_hash, primary_sig, meta['importance'], new_version, now_str, json.dumps(meta.get('custom_fields', {})), entry_id))
             
             # 4. Record the rollback event in history
             cursor.execute('''
@@ -768,21 +791,23 @@ class SeedCore:
                  ver = m.get('version', 1)
                  
                  # Scheme A: Store only primary language title and hash in DB
-                 # In entry-level sidecar, titles is a dict, content_hashes is a dict
-                 titles = m.get('titles', {'en': m.get('title', 'Untitled')})
-                 content_hashes = m.get('content_hashes', {'en': m.get('content_hash', '')})
-                 signatures = m.get('signatures', {'en': m.get('signature', '')})
-                 
-                 primary_lang = 'zh' if 'zh' in content_hashes else (list(content_hashes.keys())[0] if content_hashes else 'en')
-                 primary_hash = content_hashes.get(primary_lang, '')
-                 primary_title = titles.get(primary_lang, list(titles.values())[0] if titles else 'Untitled')
-                 primary_sig = signatures.get(primary_lang, '')
+                       # In entry-level sidecar, titles is a dict, content_hashes is a dict
+                       titles = m.get('titles', {'en': m.get('title', 'Untitled')})
+                       content_hashes = m.get('content_hashes', {'en': m.get('content_hash', '')})
+                       signatures = m.get('signatures', {'en': m.get('signature', '')})
+                       category = m.get('category', 'General')
+                       custom_fields = m.get('custom_fields', {})
+                       
+                       primary_lang = 'zh' if 'zh' in content_hashes else (list(content_hashes.keys())[0] if content_hashes else 'en')
+                       primary_hash = content_hashes.get(primary_lang, '')
+                       primary_title = titles.get(primary_lang, list(titles.values())[0] if titles else 'Untitled')
+                       primary_sig = signatures.get(primary_lang, '')
 
-                 cursor.execute('''
-                     INSERT OR REPLACE INTO entries 
-                     (id, title, taxonomy_path, description, content_hash, signature, importance, version, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ''', (m['id'], primary_title, m['taxonomy_path'], m['description'], primary_hash, primary_sig, m['importance'], ver, m['created_at']))
+                       cursor.execute('''
+                           INSERT OR REPLACE INTO entries 
+                           (id, title, category, description, content_hash, signature, importance, version, created_at, custom_fields)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ''', (m['id'], primary_title, category, m['description'], primary_hash, primary_sig, m['importance'], ver, m['created_at'], json.dumps(custom_fields)))
                  
                  # Populate history with the version from sidecar
                  cursor.execute('''
@@ -1046,9 +1071,9 @@ if __name__ == "__main__":
     parsed = parser.parse_args()
     
     if parsed.config:
-        core = SeedCore.from_config(parsed.config)
+        core = EternalCore.from_config(parsed.config)
     else:
-        core = SeedCore("d:/Seed", mirror_dir=parsed.mirror, secret_key="SEED_PLAN_2026_SECURE_KEY", master_key=parsed.master_key)
+        core = EternalCore("d:/Seed", mirror_dir=parsed.mirror, secret_key="SEED_PLAN_2026_SECURE_KEY", master_key=parsed.master_key, app_name="SeedPlan")
     
     if parsed.cmd == "add":
         if len(parsed.args) < 4:
