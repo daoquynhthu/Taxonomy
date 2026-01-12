@@ -1,7 +1,15 @@
 # Data directories
+.eternal/
+test_repo/
 objects/
 metadata/seed_index.db
 metadata/*.journal
+config.json.template
+
+# Python build artifacts
+*.egg-info/
+dist/
+build/
 
 # Logs
 *.log

@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import sqlite3
 import hashlib
@@ -8,8 +9,13 @@ import tempfile
 import logging
 import zlib
 import base64
+import uuid
+import typing
 from datetime import datetime
 from pathlib import Path
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import serialization
 
 try:
     from cryptography.fernet import Fernet
@@ -33,12 +39,86 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SeedCore")
 
+class RemoteAdapter:
+    """Abstract interface for remote repository operations."""
+    def get_federation_id(self): raise NotImplementedError()
+    def get_interests(self): raise NotImplementedError() # Returns list of (key, value)
+    def get_all_hashes(self): raise NotImplementedError()
+    def push_object(self, h, obj_bytes, meta_bytes): raise NotImplementedError()
+    def pull_object(self, h): raise NotImplementedError() # Returns (obj_bytes, meta_bytes)
+    def get_objects_by_hashes(self, hashes): raise NotImplementedError() # Returns list of dicts
+    def update_index(self, objects_data): raise NotImplementedError()
+
+class LocalFileSystemAdapter(RemoteAdapter):
+    """Adapter for local file system repositories."""
+    def __init__(self, path):
+        self.path = Path(path).resolve()
+        if self.path.name != ".eternal" and (self.path / ".eternal").exists():
+            self.path = self.path / ".eternal"
+        self.core = EternalCore(self.path, auto_sync=False)
+
+    def get_federation_id(self):
+        return self.core.get_federation_id()
+
+    def get_interests(self):
+        return self.core.get_interests()
+
+    def get_all_hashes(self):
+        return self.core.get_all_hashes()
+
+    def push_object(self, h, obj_bytes, meta_bytes):
+        shard_rel = Path(h[0:2]) / h[2:4] / h
+        dest_obj = self.core.objects_dir / shard_rel / h
+        dest_meta = dest_obj.with_suffix('.meta')
+        dest_obj.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(dest_obj, 'wb') as f: f.write(obj_bytes)
+        with open(dest_meta, 'wb') as f: f.write(meta_bytes)
+
+    def pull_object(self, h):
+        shard_rel = Path(h[0:2]) / h[2:4] / h
+        src_obj = self.core.objects_dir / shard_rel / h
+        src_meta = src_obj.with_suffix('.meta')
+        return src_obj.read_bytes(), src_meta.read_bytes()
+
+    def get_objects_by_hashes(self, hashes):
+        conn = sqlite3.connect(self.core.db_path)
+        conn.row_factory = sqlite3.Row
+        results = []
+        for h in hashes:
+            rows = conn.execute("SELECT * FROM objects WHERE content_hash = ?", (h,)).fetchall()
+            for row in rows:
+                obj_dict = dict(row)
+                rels = conn.execute("SELECT * FROM relations WHERE from_id = ?", (row['id'],)).fetchall()
+                obj_dict['relations'] = [dict(r) for r in rels]
+                results.append(obj_dict)
+        conn.close()
+        return results
+
+    def update_index(self, objects_data):
+        conn = sqlite3.connect(self.core.db_path)
+        for row in objects_data:
+            # Conflict check could be added here
+            conn.execute("INSERT OR REPLACE INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (row['id'], row['data_type'], row['content_hash'], row['signature'], row['version'], row['created_at'], row['updated_at'], row['metadata']))
+            
+            # Relations
+            if 'relations' in row:
+                conn.execute("DELETE FROM relations WHERE from_id = ?", (row['id'],))
+                for rel in row['relations']:
+                    conn.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
+                                (rel['from_id'], rel['to_id'], rel['rel_type']))
+        conn.commit()
+        conn.close()
+
 class EternalCore:
-    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None, app_name="EternalCore"):
+    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None, app_name="EternalCore", auto_sync=True):
         self.root_dir = Path(root_dir).resolve()
         self.objects_dir = self.root_dir / "objects"
-        self.db_path = self.root_dir / "metadata" / f"{app_name.lower()}_index.db"
+        # Database is now inside .eternal
+        self.db_path = self.root_dir / "eternal.db"
         self.app_name = app_name
+        self.auto_sync = auto_sync
         
         # Mirror configuration
         if mirror_dir:
@@ -125,43 +205,53 @@ class EternalCore:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA synchronous=NORMAL')
         
-        # Generic entries table
+        # Generic objects table
         conn.execute('''
-            CREATE TABLE IF NOT EXISTS entries (
+            CREATE TABLE IF NOT EXISTS objects (
                 id TEXT PRIMARY KEY,
-                title TEXT,
-                category TEXT,
-                description TEXT,
+                data_type TEXT,
                 content_hash TEXT,
                 signature TEXT,
-                importance INTEGER,
-                mime_type TEXT,
                 version INTEGER DEFAULT 1,
                 created_at TEXT,
                 updated_at TEXT,
-                custom_fields TEXT
+                metadata TEXT
             )
         ''')
         
-        # History table for version control
+        # Peer nodes for distributed sync
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS peers (
+                name TEXT PRIMARY KEY,
+                url TEXT,
+                last_seen TEXT,
+                trust_level INTEGER DEFAULT 1,
+                role TEXT DEFAULT 'mirror', -- master, contributor, mirror
+                public_key TEXT
+            )
+        ''')
+        
+        # ... (rest of the tables remain the same)
+        
+        # Generic relationships table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS relations (
+                from_id TEXT,
+                to_id TEXT,
+                rel_type TEXT,
+                PRIMARY KEY (from_id, to_id, rel_type)
+            )
+        ''')
+        
+        # History for versioning
         conn.execute('''
             CREATE TABLE IF NOT EXISTS history (
-                history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entry_id TEXT,
-                content_hash TEXT,
+                obj_id TEXT,
                 version INTEGER,
+                content_hash TEXT,
                 timestamp TEXT,
                 metadata TEXT,
-                FOREIGN KEY(entry_id) REFERENCES entries(id)
-            )
-        ''')
-        
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS dependencies (
-                entry_id TEXT,
-                depends_on_id TEXT,
-                FOREIGN KEY(entry_id) REFERENCES entries(id),
-                FOREIGN KEY(depends_on_id) REFERENCES entries(id)
+                PRIMARY KEY (obj_id, version)
             )
         ''')
         
@@ -185,37 +275,130 @@ class EternalCore:
             )
         ''')
         
+        # Repo info table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS repo_info (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+
+        # Subscriptions for selective sync (Interests)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                filter_key TEXT,    -- e.g., 'data_type', 'metadata.category'
+                filter_value TEXT,  -- e.g., 'doc', 'Science'
+                PRIMARY KEY (filter_key, filter_value)
+            )
+        ''')
+        
         # Composite indexes for performance
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_taxonomy_title ON entries(taxonomy_path, title)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_obj_type ON objects(data_type)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_hash_version ON history(content_hash, version)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_entry_history ON history(entry_id, version)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_obj_history ON history(obj_id, version)')
         
         conn.commit()
         conn.close()
+        
+    @staticmethod
+    def find_repo_root(start_path="."):
+        """Find the root of the EternalCore repository by looking for .eternal directory."""
+        curr = Path(start_path).resolve()
+        while curr != curr.parent:
+            if (curr / ".eternal").is_dir():
+                return curr
+            curr = curr.parent
+        return None
 
-    def safe_add_entry(self, entry_data, content, max_retries=3):
-        """Wrapper for add_entry with automatic retry on concurrency conflicts."""
+    @classmethod
+    def init_repo(cls, path=".", app_name="EternalCore", role="master", federation_id=None, mirror_dir=None):
+        """Initialize a new repository at the given path."""
+        root = Path(path).resolve()
+        eternal_dir = root / ".eternal"
+        if eternal_dir.exists():
+            print(f"Error: Repository already exists at {root}")
+            return None
+            
+        eternal_dir.mkdir(parents=True)
+        (eternal_dir / "objects").mkdir()
+        (eternal_dir / "metadata").mkdir()
+        
+        # Create a default config
+        config = {
+            "root_dir": str(eternal_dir),
+            "app_name": app_name,
+            "mirror_dir": str(Path(mirror_dir).resolve()) if mirror_dir else None,
+            "created_at": datetime.now().isoformat()
+        }
+        with open(eternal_dir / "config.json", 'w') as f:
+            json.dump(config, f, indent=2)
+            
+        core = cls(eternal_dir, app_name=app_name, mirror_dir=config["mirror_dir"])
+        
+        # Record init info
+        conn = sqlite3.connect(core.db_path)
+        
+        # Generate Identity Keypair (ED25519)
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        public_key = private_key.public_key()
+        
+        priv_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption()
+        ).decode()
+        
+        pub_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH
+        ).decode()
+
+        # Generate Node ID and Federation ID
+        node_id = str(uuid.uuid4())
+        if not federation_id:
+            federation_id = str(uuid.uuid4())
+            print(f"Created new federation: {federation_id}")
+        else:
+            print(f"Joining existing federation: {federation_id}")
+
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("init_date", datetime.now().isoformat()))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("version", "3.0"))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("private_key", priv_bytes))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("public_key", pub_bytes))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("role", role))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("node_id", node_id))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("federation_id", federation_id))
+        conn.commit()
+        conn.close()
+        
+        print(f"Initialized empty EternalCore repository in {eternal_dir}")
+        print(f"Node ID: {node_id}")
+        print(f"Role: {role}")
+        return core
+
+    def put_safe(self, obj_id, content, metadata=None, data_type="blob", relations=None, max_retries=3):
+        """Wrapper for put with automatic retry on concurrency conflicts."""
         import time
         import random
         
         for attempt in range(max_retries):
             try:
-                return self.add_entry(entry_data, content)
+                return self.put(obj_id, content, metadata, data_type, relations)
             except Exception as e:
-                if "Write Conflict" in str(e) and attempt < max_retries - 1:
+                if "Concurrency conflict" in str(e) and attempt < max_retries - 1:
                     wait_time = (2 ** attempt) * 0.1 + random.uniform(0, 0.1)
-                    logger.warning(f"Concurrency conflict for {entry_data.get('id')}. Retrying in {wait_time:.2f}s... (Attempt {attempt+1}/{max_retries})")
+                    logger.warning(f"Concurrency conflict for {obj_id}. Retrying in {wait_time:.2f}s... (Attempt {attempt+1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
                     raise
 
     def calculate_merkle_root(self):
-        """Calculate the Merkle Root using a cached, level-by-level approach."""
+        """Calculate the Merkle Root for all objects."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         # 1. Get current leaf hashes (ordered by ID for determinism)
-        cursor.execute("SELECT content_hash FROM entries ORDER BY id")
+        cursor.execute("SELECT content_hash FROM objects ORDER BY id")
         leaves = [row[0] for row in cursor.fetchall()]
         
         if not leaves:
@@ -283,8 +466,38 @@ class EternalCore:
         return new_state_hash
 
     def _sign_content(self, content_hash):
-        """Generate a signature to ensure the entry was created by the Seed authority."""
-        return hmac.new(self.secret_key.encode(), content_hash.encode(), hashlib.sha256).hexdigest()
+        """Sign content hash using node's private key (ED25519)."""
+        conn = sqlite3.connect(self.db_path)
+        res = conn.execute("SELECT value FROM repo_info WHERE key='private_key'").fetchone()
+        conn.close()
+        
+        if not res:
+            # Fallback to HMAC if identity not yet established
+            return hmac.new(b"eternal-secret", content_hash.encode(), hashlib.sha256).hexdigest()
+            
+        priv_key_str = res[0]
+        # Satisfy linter by explicitly handling ED25519
+        private_key = serialization.load_pem_private_key(priv_key_str.encode(), password=None)
+        if isinstance(private_key, ed25519.Ed25519PrivateKey):
+            signature_bytes = private_key.sign(content_hash.encode())
+            return base64.b64encode(signature_bytes).decode()
+        else:
+            # For other key types, they might require padding/algorithm, but we only use ED25519
+            raise ValueError(f"Unsupported key type: {type(private_key)}")
+
+    def verify_signature(self, content_hash, signature, public_key_str):
+        """Verify if a signature is valid for a given hash and public key."""
+        try:
+            public_key = serialization.load_ssh_public_key(public_key_str.encode())
+            sig_bytes = base64.b64decode(signature)
+            if isinstance(public_key, ed25519.Ed25519PublicKey):
+                public_key.verify(sig_bytes, content_hash.encode())
+                return True
+            else:
+                # We only support ED25519 for now
+                return False
+        except Exception:
+            return False
 
 
 
@@ -328,31 +541,6 @@ class EternalCore:
         
         return content
 
-    def get_content(self, entry_id, lang=None):
-        """Retrieve content for an entry, automatically selecting primary language if not specified."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT content_hash FROM entries WHERE id = ?", (entry_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if not row:
-            raise Exception(f"Entry {entry_id} not found.")
-            
-        try:
-            content_hashes = json.loads(row['content_hash'])
-            target_lang = lang or ('zh' if 'zh' in content_hashes else list(content_hashes.keys())[0])
-            target_hash = content_hashes.get(target_lang)
-        except:
-            # Legacy support if content_hash is not JSON
-            target_hash = row['content_hash']
-        
-        if not target_hash:
-            raise Exception(f"Language {lang} not available for entry {entry_id}")
-            
-        return self.get_object_content(target_hash)
-
     def _store_object(self, content, metadata=None, compress=True, encrypt=False):
         """Store content with optional compression and encryption."""
         if isinstance(content, str):
@@ -394,202 +582,178 @@ class EternalCore:
                     
         return h
 
-    def get_entry(self, entry_id):
-        """Retrieve entry details by ID."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM entries WHERE id = ?", (entry_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return dict(row) if row else None
 
-    def add_entry(self, entry_data, content):
-        """Add or update an entry with multi-language support and version control."""
-        # 1. Handle multi-language title
-        title_input = entry_data.get('title', 'Untitled')
-        if isinstance(title_input, str):
-            titles = {'en': title_input}
-        elif isinstance(title_input, dict):
-            titles = title_input
-        else:
-            raise ValueError("Title must be str or dict")
-            
-        category = entry_data.get('category', 'General')
-        description = entry_data.get('description', '')
-        importance = entry_data.get('importance', 5)
-        dependencies = entry_data.get('dependencies', [])
-        compress = entry_data.get('compress', True)
-        encrypt = entry_data.get('encrypt', False)
-        custom_fields = entry_data.get('custom_fields', {})
-        
-        # 2. Handle multi-language content
-        contents = content if isinstance(content, dict) else {'en': content}
-        content_hashes = {}
-        signatures = {}
-        
-        for lang, lang_content in contents.items():
-            # Store object with metadata
-            obj_meta = {
-                "category": category,
-                "lang": lang,
-                "timestamp": datetime.now().isoformat(),
-                "encryption": encrypt,
-                "compression": "zlib" if compress else None
-            }
-            h = self._store_object(lang_content, metadata=obj_meta, compress=compress, encrypt=encrypt)
-            content_hashes[lang] = h
-            signatures[lang] = self._sign_content(h)
-            
-        # 3. Determine primary data for database (Scheme A)
-        primary_lang = 'zh' if 'zh' in contents else (list(contents.keys())[0] if contents else 'en')
-        primary_hash = content_hashes.get(primary_lang, '')
-        primary_signature = signatures.get(primary_lang, '')
-        primary_title = titles.get(primary_lang, list(titles.values())[0])
+    def put(self, obj_id, content, metadata=None, data_type="blob", relations=None):
+        """Store an arbitrary object with metadata and version control."""
+        # Role check: Mirror nodes are read-only for users
+        if self.get_node_role() == "mirror":
+            raise PermissionError("Mirror nodes are read-only. Data must be synchronized from other peers.")
 
-        entry_id = entry_data.get('id') or f"E-{primary_hash[:12]}"
+        metadata = metadata or {}
+        relations = relations or [] # List of (to_id, rel_type)
         
+        compress = metadata.get('compress', True)
+        encrypt = metadata.get('encrypt', False)
+        
+        # 1. Store physical object
+        obj_meta = {
+            "id": obj_id,
+            "data_type": data_type,
+            "timestamp": datetime.now().isoformat(),
+            "encryption": encrypt,
+            "compression": "zlib" if compress else None,
+            "user_metadata": metadata
+        }
+        
+        content_hash = self._store_object(content, metadata=obj_meta, compress=compress, encrypt=encrypt)
+        signature = self._sign_content(content_hash)
+        
+        # 2. Database update with Optimistic Locking
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         try:
-            cursor.execute("SELECT version FROM entries WHERE id = ?", (entry_id,))
+            cursor.execute("SELECT version FROM objects WHERE id = ?", (obj_id,))
             row = cursor.fetchone()
-            current_version = row[0] if row else 0
-            new_version = current_version + 1
+            old_version = row[0] if row else 0
+            new_version = old_version + 1
             now_str = datetime.now().isoformat()
             
-            meta_payload = {
-                "id": entry_id,
-                "titles": titles,
-                "category": category,
-                "description": description,
-                "content_hashes": content_hashes,
-                "signatures": signatures,
-                "importance": importance,
-                "dependencies": dependencies,
-                "created_at": entry_data.get('created_at') or now_str,
+            # Store Sidecar Meta (Source of Truth)
+            sidecar_payload = {
+                "id": obj_id,
+                "data_type": data_type,
+                "content_hash": content_hash,
+                "signature": signature,
                 "version": new_version,
-                "metadata_version": 4,
-                "compress": compress,
-                "encrypt": encrypt,
-                "custom_fields": custom_fields
+                "relations": relations,
+                "metadata": metadata,
+                "compression": "zlib" if compress else None,
+                "encryption": encrypt,
+                "created_at": now_str
             }
-
-            # Store meta next to primary object
-            shard_dir = self.objects_dir / primary_hash[0:2] / primary_hash[2:4]
-            meta_path = shard_dir / f"{primary_hash}.meta"
-            self._atomic_write(meta_path, json.dumps(meta_payload, indent=2, ensure_ascii=False))
-
-            # 2. Store physical objects for each language
-            for lang, lang_content in contents.items():
-                lang_meta = meta_payload.copy()
-                lang_meta['lang'] = lang
-                self._store_object(lang_content, metadata=lang_meta, compress=compress, encrypt=encrypt)
             
-            # 3. Database index update
-            # Store titles and hashes as JSON in DB for flexibility
-            titles_json = json.dumps(titles, ensure_ascii=False)
-            hashes_json = json.dumps(content_hashes, ensure_ascii=False)
+            shard_dir = self.objects_dir / content_hash[0:2] / content_hash[2:4]
+            meta_path = shard_dir / f"{content_hash}.meta"
+            self._atomic_write(meta_path, json.dumps(sidecar_payload, indent=2, ensure_ascii=False))
             
-            if current_version == 0:
+            # Update Index
+            if old_version == 0:
                 cursor.execute('''
-                    INSERT INTO entries 
-                    (id, title, category, description, content_hash, signature, importance, mime_type, version, created_at, updated_at, custom_fields)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (entry_id, titles_json, category, description, hashes_json, primary_signature, importance, 'text/markdown', new_version, meta_payload["created_at"], now_str, json.dumps(custom_fields)))
+                    INSERT INTO objects (id, data_type, content_hash, signature, version, created_at, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (obj_id, data_type, content_hash, signature, new_version, now_str, json.dumps(metadata)))
             else:
                 cursor.execute('''
-                    UPDATE entries SET 
-                    title=?, category=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?, custom_fields=?
+                    UPDATE objects 
+                    SET data_type=?, content_hash=?, signature=?, version=?, updated_at=?, metadata=?
                     WHERE id=? AND version=?
-                ''', (titles_json, category, description, hashes_json, primary_signature, importance, new_version, now_str, json.dumps(custom_fields), entry_id, current_version))
+                ''', (data_type, content_hash, signature, new_version, now_str, json.dumps(metadata), obj_id, old_version))
                 
                 if cursor.rowcount == 0:
-                    raise Exception(f"Write Conflict: Entry {entry_id} was modified by another process.")
+                    raise Exception(f"Concurrency conflict: Object {obj_id} was updated by another process.")
 
-            # 4. History
+            # Record History
             cursor.execute('''
-                INSERT INTO history (entry_id, content_hash, version, timestamp)
-                VALUES (?, ?, ?, ?)
-            ''', (entry_id, hashes_json, new_version, now_str))
+                INSERT INTO history (obj_id, version, content_hash, timestamp, metadata)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (obj_id, new_version, content_hash, now_str, json.dumps(sidecar_payload)))
             
-            if dependencies:
-                cursor.execute('DELETE FROM dependencies WHERE entry_id = ?', (entry_id,))
-                for dep_id in dependencies:
-                    cursor.execute('INSERT OR IGNORE INTO dependencies (entry_id, depends_on_id) VALUES (?, ?)', (entry_id, dep_id))
+            # Update Relations
+            cursor.execute("DELETE FROM relations WHERE from_id = ?", (obj_id,))
+            for to_id, rel_type in relations:
+                cursor.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
             
             conn.commit()
+            logger.info(f"Stored object [{obj_id}] v{new_version}")
             
-            # 5. Commit State (Blockchain-like state update)
-            self.commit_state()
+            # Automatic Sync & Broadcast
+            if self.auto_sync:
+                if self.mirror_dir:
+                    try:
+                        self.sync_to_mirror()
+                    except Exception as e:
+                        logger.error(f"Auto-sync to mirror failed: {e}")
+                
+                # Broadcast to network
+                try:
+                    self.broadcast()
+                except Exception as e:
+                    logger.error(f"Network broadcast failed: {e}")
             
-            logger.info(f"Success: Added/Updated [{title}] to v{new_version}")
-            return entry_id
+            return content_hash
+            
         except Exception as e:
-            logger.error(f"Error adding entry: {e}")
             conn.rollback()
+            logger.error(f"Failed to put object {obj_id}: {e}")
             raise
         finally:
             conn.close()
 
-    def rollback(self, entry_id, target_version):
-        """Roll back an entry to a specific version from history."""
-        logger.info(f"Initiating rollback for {entry_id} to version {target_version}")
+    def get(self, obj_id):
+        """Retrieve object content and metadata."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM objects WHERE id = ?", (obj_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+            
+        content = self.get_object_content(row['content_hash'])
+        return {
+            "content": content,
+            "metadata": json.loads(row['metadata']),
+            "data_type": row['data_type'],
+            "version": row['version']
+        }
+
+    def rollback(self, obj_id, target_version):
+        """Roll back an object to a specific version from history."""
+        logger.info(f"Initiating rollback for {obj_id} to version {target_version}")
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         try:
             # 1. Find the version in history
-            cursor.execute("SELECT * FROM history WHERE entry_id = ? AND version = ?", (entry_id, target_version))
+            cursor.execute("SELECT * FROM history WHERE obj_id = ? AND version = ?", (obj_id, target_version))
             hist_row = cursor.fetchone()
             if not hist_row:
-                logger.error(f"Version {target_version} not found for entry {entry_id}")
+                logger.error(f"Version {target_version} not found for object {obj_id}")
                 return False
             
-            # In Scheme A, history.content_hash is the primary hash at that time
-            primary_hash = hist_row['content_hash']
+            sidecar_payload = json.loads(hist_row['metadata'])
+            content_hash = hist_row['content_hash']
             
-            # 2. Get metadata from sidecar to restore properties
-            shard_dir = self.objects_dir / primary_hash[0:2] / primary_hash[2:4]
-            meta_path = shard_dir / f"{primary_hash}.meta"
-            
-            if not meta_path.exists():
-                logger.error(f"Sidecar metadata missing for hash {primary_hash}. Cannot restore properties.")
-                return False
-                
-            with open(meta_path, 'r', encoding='utf-8') as f:
-                meta = json.load(f)
-            
-            # 3. Perform the rollback update
-            cursor.execute("SELECT version FROM entries WHERE id = ?", (entry_id,))
+            # 2. Perform the rollback update
+            cursor.execute("SELECT version FROM objects WHERE id = ?", (obj_id,))
             current_version = cursor.fetchone()[0]
             new_version = current_version + 1
             now_str = datetime.now().isoformat()
             
-            # Determine primary signature and titles for database index
-            # Scheme A: Store only primary language title and hash in DB
-            primary_lang = meta.get('lang', 'en')
-            primary_sig = meta['signatures'].get(primary_lang)
-            primary_title = meta['titles'].get(primary_lang, list(meta['titles'].values())[0])
-            
-            category = meta.get('category', 'General')
             cursor.execute('''
-                UPDATE entries SET 
-                title=?, category=?, description=?, content_hash=?, signature=?, importance=?, version=?, updated_at=?, custom_fields=?
+                UPDATE objects SET 
+                data_type=?, content_hash=?, signature=?, version=?, updated_at=?, metadata=?
                 WHERE id=?
-            ''', (primary_title, category, meta['description'], primary_hash, primary_sig, meta['importance'], new_version, now_str, json.dumps(meta.get('custom_fields', {})), entry_id))
+            ''', (sidecar_payload['data_type'], content_hash, sidecar_payload['signature'], new_version, now_str, json.dumps(sidecar_payload['metadata']), obj_id))
             
-            # 4. Record the rollback event in history
+            # 3. Record the rollback event in history
             cursor.execute('''
-                INSERT INTO history (entry_id, content_hash, version, timestamp, metadata)
+                INSERT INTO history (obj_id, content_hash, version, timestamp, metadata)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (entry_id, primary_hash, new_version, now_str, json.dumps(meta)))
+            ''', (obj_id, content_hash, new_version, now_str, json.dumps(sidecar_payload)))
+            
+            # 4. Restore relations
+            cursor.execute("DELETE FROM relations WHERE from_id = ?", (obj_id,))
+            for to_id, rel_type in sidecar_payload.get('relations', []):
+                cursor.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
             
             conn.commit()
             self.commit_state()
-            logger.info(f"Rollback successful: {entry_id} v{new_version} (restored from v{target_version})")
+            logger.info(f"Rollback successful: {obj_id} v{new_version} (restored from v{target_version})")
             return True
         except Exception as e:
             conn.rollback()
@@ -598,75 +762,72 @@ class EternalCore:
         finally:
             conn.close()
 
-    def validate_dependencies(self, entry_id, visited=None):
-        """Recursively ensure the dependency chain is complete and avoid orphans."""
+    def validate_relations(self, obj_id, visited=None):
+        """Recursively ensure relations are valid and targets exist."""
         if visited is None:
             visited = set()
         
-        if entry_id in visited:
+        if obj_id in visited:
             return True, []
         
-        visited.add(entry_id)
+        visited.add(obj_id)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Check if entry exists
-        cursor.execute("SELECT id FROM entries WHERE id = ?", (entry_id,))
+        cursor.execute("SELECT id FROM objects WHERE id = ?", (obj_id,))
         if not cursor.fetchone():
             conn.close()
-            return False, [entry_id]
+            return False, [obj_id]
         
-        # Get dependencies
-        cursor.execute("SELECT depends_on_id FROM dependencies WHERE entry_id = ?", (entry_id,))
-        deps = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT to_id FROM relations WHERE from_id = ?", (obj_id,))
+        targets = [row[0] for row in cursor.fetchall()]
         conn.close()
         
         missing_all = []
-        for dep_id in deps:
-            ok, missing = self.validate_dependencies(dep_id, visited)
+        for target_id in targets:
+            ok, missing = self.validate_relations(target_id, visited)
             if not ok:
                 missing_all.extend(missing)
         
         return len(missing_all) == 0, list(set(missing_all))
 
-    def visualize_dependencies(self, entry_id, level=0, visited=None):
-        """Generate a text-based dependency graph visualization."""
+    def visualize_relations(self, obj_id, level=0, visited=None):
+        """Generate a text-based relation graph visualization."""
         if visited is None:
             visited = set()
             
-        entry = self.get_entry(entry_id)
-        if not entry:
-            print("  " * level + f"[-] {entry_id} (MISSING)")
-            return
-
-        # Handle multi-language title if it's a JSON string
-        title_data = entry['title']
-        try:
-            title_dict = json.loads(title_data)
-            title = title_dict.get('zh') or title_dict.get('en') or list(title_dict.values())[0]
-        except:
-            title = title_data
-
-        print("  " * level + f"[+] {title} ({entry_id})")
-        
-        if entry_id in visited:
-            print("  " * (level + 1) + " (circular dependency detected)")
+        obj = self.get(obj_id)
+        if not obj:
+            print("  " * level + f"[-] {obj_id} (MISSING)")
             return
             
-        visited.add(entry_id)
+        prefix = "└── " if level > 0 else "ROOT: "
+        print("  " * level + f"{prefix}{obj_id} [{obj['data_type']}]")
+        
+        if obj_id in visited:
+            print("  " * (level + 1) + "└── (ALREADY VISITED)")
+            return
+            
+        visited.add(obj_id)
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT depends_on_id FROM dependencies WHERE entry_id = ?", (entry_id,))
-        deps = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT to_id, rel_type FROM relations WHERE from_id = ?", (obj_id,))
+        relations = cursor.fetchall()
         conn.close()
         
-        for dep_id in deps:
-            self.visualize_dependencies(dep_id, level + 1, visited)
+        for to_id, rel_type in relations:
+            print("  " * (level + 1) + f"({rel_type})")
+            self.visualize_relations(to_id, level + 1, visited)
 
     def health_check(self):
         """Perform a comprehensive system health check."""
         checks = {
+            "node": {
+                "id": self.get_node_id(),
+                "role": self.get_node_role(),
+                "federation_id": self.get_federation_id()
+            },
             "database": self._check_db_connection(),
             "primary_storage": self._check_storage(self.objects_dir),
             "mirror_storage": self._check_storage(self.mirror_dir) if self.mirror_dir else {"accessible": False, "status": "Not configured"},
@@ -716,134 +877,122 @@ class EternalCore:
             return None
 
     def audit_all(self):
-        """Comprehensive audit of all entries in the index vs physical storage."""
-        print("Starting comprehensive civilization audit...")
+        """Verify integrity of all objects in the database."""
+        print("Starting full system audit...")
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM entries")
+        cursor.execute("SELECT * FROM objects")
         rows = cursor.fetchall()
         
-        stats = {"total": 0, "healthy": 0, "repaired": 0, "corrupted": 0}
-        
+        issues = []
         for row in rows:
-            stats["total"] += 1
+            obj_id = row['id']
             h = row['content_hash']
-            primary = self.objects_dir / h[0:2] / h[2:4] / h
-            mirror = self.mirror_dir / h[0:2] / h[2:4] / h if self.mirror_dir else None
+            sig = row['signature']
             
-            # 1. Verify Signature
-            if row['signature'] != self._sign_content(h):
-                print(f"CRITICAL: Entry {row['id']} has INVALID SIGNATURE (Tampering detected!)")
-                stats["corrupted"] += 1
+            # 1. Physical file check
+            shard_dir = self.objects_dir / h[0:2] / h[2:4]
+            obj_path = shard_dir / h
+            if not obj_path.exists():
+                issues.append(f"MISSING_FILE: Object {obj_id} (hash {h})")
                 continue
-
-            # 2. Check Integrity & Bi-directional Repair
-            # Fixed linter error by ensuring mirror is not None before path operations
-            primary_ok = primary.exists() and self._calculate_hash(open(primary, 'rb').read()) == h
-            mirror_ok = False
-            if mirror:
-                mirror_ok = mirror.exists() and self._calculate_hash(open(mirror, 'rb').read()) == h
-            
-            if not primary_ok and mirror_ok and mirror:
-                print(f"Repair: Recovering primary {h[:8]} from mirror...")
-                primary.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(mirror, primary)
-                stats["repaired"] += 1
-            elif primary_ok and mirror and not mirror_ok:
-                print(f"Sync: Backing up {h[:8]} to mirror...")
-                mirror.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(primary, mirror)
-                # Also sync the meta file
-                if primary.with_suffix('.meta').exists():
-                    shutil.copy2(primary.with_suffix('.meta'), mirror.with_suffix('.meta'))
-                stats["healthy"] += 1
-            elif not primary_ok and (not mirror or not mirror_ok):
-                print(f"ERROR: Entry {row['id']} PERMANENTLY LOST.")
-                stats["corrupted"] += 1
-            else:
-                stats["healthy"] += 1
-        
+                
+            # 2. Hash integrity check
+            actual_h = self._calculate_hash(open(obj_path, 'rb').read())
+            if actual_h != h:
+                issues.append(f"HASH_MISMATCH: Object {obj_id} (expected {h}, got {actual_h})")
+                
+            # 3. Signature check
+            if row['signature'] != self._sign_content(h):
+                issues.append(f"INVALID_SIGNATURE: Object {obj_id}")
+                
         conn.close()
-        print(f"Audit Complete: {stats}")
-        return stats
+        
+        # Merkle State Audit
+        current_root = self.calculate_merkle_root()
+        print(f"Current Global State Root: {current_root}")
+        
+        if not issues:
+            print("Audit completed: No issues found.")
+            return True
+        else:
+            print(f"Audit completed: Found {len(issues)} issues.")
+            for issue in issues:
+                print(f"  - {issue}")
+            return False
 
     def rebuild_index(self):
-         """Rebuild the SQLite index from all .meta files in the objects directory."""
-         print("Rebuilding index from physical sidecar files...")
-         conn = sqlite3.connect(self.db_path)
-         # Ensure schema is up to date before rebuild
-         conn.execute('DROP TABLE IF EXISTS entries')
-         conn.execute('DROP TABLE IF EXISTS dependencies')
-         conn.execute('DROP TABLE IF EXISTS history')
-         conn.close()
-         self._init_db()
-         
-         conn = sqlite3.connect(self.db_path)
-         cursor = conn.cursor()
-         
-         for meta_file in self.objects_dir.glob("**/*.meta"):
-             # Skip object-level meta files (those that don't have an 'id' field for an entry)
-             with open(meta_file, 'r', encoding='utf-8') as f:
-                 m = json.load(f)
-                 if 'id' not in m: continue # It's an object-level meta, not entry-level
-                 
-                 ver = m.get('version', 1)
-                 
-                 # Scheme A: Store only primary language title and hash in DB
-                       # In entry-level sidecar, titles is a dict, content_hashes is a dict
-                       titles = m.get('titles', {'en': m.get('title', 'Untitled')})
-                       content_hashes = m.get('content_hashes', {'en': m.get('content_hash', '')})
-                       signatures = m.get('signatures', {'en': m.get('signature', '')})
-                       category = m.get('category', 'General')
-                       custom_fields = m.get('custom_fields', {})
-                       
-                       primary_lang = 'zh' if 'zh' in content_hashes else (list(content_hashes.keys())[0] if content_hashes else 'en')
-                       primary_hash = content_hashes.get(primary_lang, '')
-                       primary_title = titles.get(primary_lang, list(titles.values())[0] if titles else 'Untitled')
-                       primary_sig = signatures.get(primary_lang, '')
-
-                       cursor.execute('''
-                           INSERT OR REPLACE INTO entries 
-                           (id, title, category, description, content_hash, signature, importance, version, created_at, custom_fields)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ''', (m['id'], primary_title, category, m['description'], primary_hash, primary_sig, m['importance'], ver, m['created_at'], json.dumps(custom_fields)))
-                 
-                 # Populate history with the version from sidecar
-                 cursor.execute('''
-                    INSERT OR IGNORE INTO history (entry_id, content_hash, version, timestamp, metadata)
+        """Rebuild the SQLite index from all .meta files in the objects directory."""
+        print("Rebuilding index from physical sidecar files...")
+        conn = sqlite3.connect(self.db_path)
+        # Ensure schema is up to date before rebuild
+        conn.execute('DROP TABLE IF EXISTS objects')
+        conn.execute('DROP TABLE IF EXISTS relations')
+        conn.execute('DROP TABLE IF EXISTS history')
+        conn.close()
+        self._init_db()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        for meta_file in self.objects_dir.glob("**/*.meta"):
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                m = json.load(f)
+                if 'id' not in m: continue # Skip object-level meta without ID
+                
+                obj_id = m['id']
+                ver = m.get('version', 1)
+                data_type = m.get('data_type', 'blob')
+                content_hash = m.get('content_hash')
+                signature = m.get('signature')
+                metadata = m.get('metadata', {})
+                created_at = m.get('created_at', datetime.now().isoformat())
+                
+                cursor.execute('''
+                    INSERT OR REPLACE INTO objects 
+                    (id, data_type, content_hash, signature, version, created_at, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (obj_id, data_type, content_hash, signature, ver, created_at, json.dumps(metadata)))
+                
+                cursor.execute('''
+                    INSERT OR IGNORE INTO history (obj_id, version, content_hash, timestamp, metadata)
                     VALUES (?, ?, ?, ?, ?)
-                 ''', (m['id'], primary_hash, ver, m['created_at'], json.dumps(m)))
+                ''', (obj_id, ver, content_hash, created_at, json.dumps(m)))
 
-                 for dep_id in m.get('dependencies', []):
-                     cursor.execute('INSERT INTO dependencies (entry_id, depends_on_id) VALUES (?, ?)', (m['id'], dep_id))
-         
-         conn.commit()
-         conn.close()
-         print("Index rebuilt successfully.")
+                for to_id, rel_type in m.get('relations', []):
+                    cursor.execute('INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)', (obj_id, to_id, rel_type))
+        
+        conn.commit()
+        conn.close()
+        print("Index rebuilt successfully.")
 
-    def search(self, query=None, taxonomy_prefix=None):
+    def search(self, query=None, data_type=None):
+        """Search for objects by metadata or data_type."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        sql = "SELECT * FROM entries WHERE 1=1"
+        sql = "SELECT id, data_type, content_hash, version, created_at FROM objects WHERE 1=1"
         params = []
+        
         if query:
-            sql += " AND (title LIKE ? OR description LIKE ?)"
+            sql += " AND (id LIKE ? OR metadata LIKE ?)"
             params.extend([f"%{query}%", f"%{query}%"])
-        if taxonomy_prefix:
-            sql += " AND taxonomy_path LIKE ?"
-            params.append(f"{taxonomy_prefix}%")
+        
+        if data_type:
+            sql += " AND data_type = ?"
+            params.append(data_type)
             
         cursor.execute(sql, params)
-        results = cursor.fetchall()
+        results = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return results
 
-    def verify_state_chain(self):
+    def verify_state_chain(self, verbose=False):
         """Verify the integrity of the entire state chain (Blockchain validation)."""
-        print("Verifying state chain integrity...")
+        if verbose:
+            print("Verifying state chain integrity...")
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT height, state_hash, merkle_root, prev_state_hash FROM state_chain ORDER BY height ASC")
@@ -851,7 +1000,8 @@ class EternalCore:
         conn.close()
         
         if not rows:
-            print("State chain is empty.")
+            if verbose:
+                print("State chain is empty.")
             return True
             
         expected_prev_hash = "0" * 64
@@ -878,292 +1028,617 @@ class EternalCore:
         print(f"State Chain Verified. Height: {len(rows)}, Current Root: {current_merkle[:8]}")
         return True
 
-    def export_package(self, output_path, taxonomy_prefix=None):
-        """Export a set of entries into a secure package with a signed manifest."""
-        print(f"Exporting package to {output_path}...")
+    def broadcast(self):
+        """Broadcast local changes to all known peers in the network."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        peers = conn.execute("SELECT name, url FROM peers").fetchall()
+        conn.close()
         
-        query = "SELECT * FROM entries"
-        params = []
-        if taxonomy_prefix:
-            query += " WHERE taxonomy_path LIKE ?"
-            params.append(f"{taxonomy_prefix}%")
-        
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        
-        if not rows:
-            print("No entries found to export.")
+        if not peers:
             return
             
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            export_data_dir = tmp_path / "objects"
-            export_data_dir.mkdir()
+        print(f"Broadcasting to {len(peers)} peers...")
+        for peer in peers:
+            try:
+                print(f"  -> Syncing with peer '{peer['name']}' ({peer['url']})...")
+                self.push(peer['url'])
+            except Exception as e:
+                logger.error(f"Failed to sync with peer {peer['name']}: {e}")
+
+    def add_peer(self, name, url):
+        """Register a new neighbor node after verifying federation ID."""
+        remote_path = Path(url).resolve()
+        if remote_path.name != ".eternal" and (remote_path / ".eternal").exists():
+            remote_path = remote_path / ".eternal"
             
-            manifest = {
-                "version": "2.0",
-                "exported_at": datetime.now().isoformat(),
-                "taxonomy_filter": taxonomy_prefix,
-                "files": []
-            }
+        try:
+            remote = EternalCore(remote_path, auto_sync=False)
+            local_fed = self.get_federation_id()
+            remote_fed = remote.get_federation_id()
+            
+            if local_fed and remote_fed and local_fed != remote_fed:
+                print(f"Error: Cannot add peer. Federation mismatch!")
+                print(f"  Local Federation:  {local_fed}")
+                print(f"  Remote Federation: {remote_fed}")
+                return False
+                
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("INSERT OR REPLACE INTO peers (name, url, last_seen) VALUES (?, ?, datetime('now'))", (name, str(remote_path.parent)))
+            conn.commit()
+            conn.close()
+            print(f"Peer '{name}' added and verified: {url}")
+            return True
+        except Exception as e:
+            print(f"Error: Could not verify remote node at {url}: {e}")
+            return False
+
+    def get_federation_id(self):
+        """Get the federation ID for this repository."""
+        conn = sqlite3.connect(self.db_path)
+        res = conn.execute("SELECT value FROM repo_info WHERE key='federation_id'").fetchone()
+        conn.close()
+        return res[0] if res else None
+
+    def get_node_id(self):
+        """Get the unique node ID for this repository."""
+        conn = sqlite3.connect(self.db_path)
+        res = conn.execute("SELECT value FROM repo_info WHERE key='node_id'").fetchone()
+        conn.close()
+        return res[0] if res else None
+
+    def get_node_role(self):
+        """Get the role of this node."""
+        conn = sqlite3.connect(self.db_path)
+        res = conn.execute("SELECT value FROM repo_info WHERE key='role'").fetchone()
+        conn.close()
+        return res[0] if res else "mirror"
+
+    def get_all_hashes(self):
+        """Get a set of all content hashes in the repository for differential sync."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT content_hash FROM objects")
+        hashes = {row[0] for row in cursor.fetchall()}
+        conn.close()
+        return hashes
+
+    def get_interests(self):
+        """Get the subscription filters for this repository."""
+        conn = sqlite3.connect(self.db_path)
+        res = conn.execute("SELECT filter_key, filter_value FROM subscriptions").fetchall()
+        conn.close()
+        return [(r[0], r[1]) for r in res]
+
+    def matches_filters(self, obj_data, filters):
+        """Check if an object matches the given filters (Interests)."""
+        if not filters:
+            return True # No filters means interested in everything
+            
+        for key, val in filters:
+            if key == "data_type":
+                if obj_data.get("data_type") == val: return True
+            elif key == "path":
+                obj_id = obj_data.get("id", "")
+                # Support prefix matching for directories (e.g., 'src/' matches 'src/main.py')
+                if obj_id.startswith(val): return True
+            elif key.startswith("metadata."):
+                meta_key = key.split(".", 1)[1]
+                metadata = obj_data.get("metadata", {})
+                if isinstance(metadata, str):
+                    try: metadata = json.loads(metadata)
+                    except: metadata = {}
+                if metadata.get(meta_key) == val: return True
+        return False
+
+    def push(self, remote):
+        """
+        Intelligent Delta Push using RemoteAdapter.
+        'remote' can be a URL string (local path) or a RemoteAdapter instance.
+        """
+        if isinstance(remote, (str, Path)):
+            remote = LocalFileSystemAdapter(remote)
+            
+        print(f"Pushing to remote...")
+        
+        # Federation check
+        local_fed = self.get_federation_id()
+        remote_fed = remote.get_federation_id()
+        if local_fed and remote_fed and local_fed != remote_fed:
+            print(f"CRITICAL: Federation mismatch! Local: {local_fed}, Remote: {remote_fed}")
+            return False
+            
+        # Get remote interests for selective sync
+        remote_interests = remote.get_interests()
+        if remote_interests:
+            print(f"Remote has selective interests: {remote_interests}")
+            
+        local_hashes = self.get_all_hashes()
+        remote_hashes = remote.get_all_hashes()
+        
+        missing_on_remote = local_hashes - remote_hashes
+        
+        if not missing_on_remote:
+            print("Everything up-to-date.")
+            return True
+            
+        # 1. Transfer objects (with filtering)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        
+        objects_to_update = []
+        pushed_count = 0
+        for h in missing_on_remote:
+            # Check if remote is interested in any object sharing this hash
+            rows = conn.execute("SELECT * FROM objects WHERE content_hash = ?", (h,)).fetchall()
+            
+            is_interested = False
+            for row in rows:
+                if self.matches_filters(dict(row), remote_interests):
+                    is_interested = True
+                    break
+            
+            if not is_interested:
+                continue
+                
+            shard_rel = Path(h[0:2]) / h[2:4] / h
+            src_obj = self.objects_dir / shard_rel / h
+            src_meta = src_obj.with_suffix('.meta')
+            
+            # Use adapter to push bytes
+            remote.push_object(h, src_obj.read_bytes(), src_meta.read_bytes())
+            pushed_count += 1
+            
+            # Collect DB records for this hash
+            for row in rows:
+                obj_dict = dict(row)
+                # Also include relations
+                rels = conn.execute("SELECT * FROM relations WHERE from_id = ?", (row['id'],)).fetchall()
+                obj_dict['relations'] = [dict(r) for r in rels]
+                objects_to_update.append(obj_dict)
+        
+        # 2. Remote Index Update
+        if objects_to_update:
+            remote.update_index(objects_to_update)
+            
+        conn.close()
+        print(f"Push successful. {pushed_count} objects synchronized.")
+        return True
+
+    def pull(self, remote):
+        """
+        Intelligent Delta Pull using RemoteAdapter.
+        'remote' can be a URL string (local path) or a RemoteAdapter instance.
+        """
+        if isinstance(remote, (str, Path)):
+            remote = LocalFileSystemAdapter(remote)
+            
+        print(f"Pulling from remote...")
+        
+        # Federation check
+        local_fed = self.get_federation_id()
+        remote_fed = remote.get_federation_id()
+        if local_fed and remote_fed and local_fed != remote_fed:
+            print(f"CRITICAL: Federation mismatch! Local: {local_fed}, Remote: {remote_fed}")
+            return False
+            
+        # Get local interests for selective sync
+        local_interests = self.get_interests()
+        if local_interests:
+            print(f"Local has selective interests: {local_interests}")
+            
+        local_hashes = self.get_all_hashes()
+        remote_hashes = remote.get_all_hashes()
+        
+        missing_locally = remote_hashes - local_hashes
+        
+        if not missing_locally:
+            print("Local repository is up-to-date.")
+            return True
+            
+        # 1. Transfer objects (with filtering)
+        # We need to check metadata before pulling the object bytes
+        remote_objects_data = remote.get_objects_by_hashes(missing_locally)
+        
+        pulled_count = 0
+        filtered_objects_data = []
+        for obj in remote_objects_data:
+            if self.matches_filters(obj, local_interests):
+                h = obj['content_hash']
+                shard_rel = Path(h[0:2]) / h[2:4] / h
+                dest_obj = self.objects_dir / shard_rel / h
+                dest_meta = dest_obj.with_suffix('.meta')
+                dest_obj.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Use adapter to pull bytes
+                obj_bytes, meta_bytes = remote.pull_object(h)
+                
+                with open(dest_obj, 'wb') as f: f.write(obj_bytes)
+                with open(dest_meta, 'wb') as f: f.write(meta_bytes)
+                
+                filtered_objects_data.append(obj)
+                pulled_count += 1
+            
+        # 2. Local Index Update
+        if filtered_objects_data:
+            # We reuse LocalFileSystemAdapter's logic to update our own DB
+            local_adapter = LocalFileSystemAdapter(self.root_dir)
+            local_adapter.update_index(filtered_objects_data)
+        
+        print(f"Pull successful. {pulled_count} objects synchronized.")
+        # Commit local state after pull
+        self.commit_state()
+        return True
+
+    def sync_to_mirror(self):
+        """Manually synchronize all objects and metadata to the mirror directory."""
+        if not self.mirror_dir:
+            return False
+            
+        self.mirror_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 1. Sync objects and metadata
+        sync_count = 0
+        for obj_path in self.objects_dir.rglob("*"):
+            if obj_path.is_file():
+                rel_path = obj_path.relative_to(self.objects_dir)
+                dest_path = self.mirror_dir / "objects" / rel_path
+                if not dest_path.exists() or dest_path.stat().st_mtime < obj_path.stat().st_mtime:
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(obj_path, dest_path)
+                    sync_count += 1
+        
+        # 2. Sync database
+        db_dest = self.mirror_dir / "eternal.db"
+        try:
+            shutil.copy2(self.db_path, db_dest)
+        except Exception as e:
+            logger.warning(f"Database sync warning: {e}")
+
+        return True
+
+    def export_package(self, output_path, data_type=None):
+        """Export objects to a ZIP package for transmission."""
+        import zipfile
+        output_path = Path(output_path)
+        print(f"Exporting to {output_path}...")
+        
+        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            query = "SELECT id, content_hash FROM objects"
+            params = []
+            if data_type:
+                query += " WHERE data_type = ?"
+                params.append(data_type)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            exported_hashes = set()
             
             for row in rows:
                 h = row['content_hash']
-                # Copy object
-                src_obj = self.objects_dir / h[0:2] / h[2:4] / h
-                src_meta = src_obj.with_suffix('.meta')
+                if h in exported_hashes: continue
                 
-                if src_obj.exists():
-                    dest_obj = export_data_dir / h
-                    shutil.copy2(src_obj, dest_obj)
-                    manifest["files"].append({
-                        "path": f"objects/{h}",
-                        "hash": h,
-                        "type": "object"
-                    })
+                shard_dir = self.objects_dir / h[0:2] / h[2:4] / h
+                # Add content
+                content_file = shard_dir / h
+                if content_file.exists():
+                    zf.write(content_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}/{h}")
                 
-                if src_meta.exists():
-                    dest_meta = export_data_dir / f"{h}.meta"
-                    shutil.copy2(src_meta, dest_meta)
-                    # We don't hash the meta itself in the manifest, 
-                    # but it's protected by the entry's signature inside it
-                    manifest["files"].append({
-                        "path": f"objects/{h}.meta",
-                        "type": "metadata"
-                    })
+                # Add meta
+                meta_file = shard_dir / f"{h}.meta"
+                if meta_file.exists():
+                    zf.write(meta_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}/{h}.meta")
+                
+                exported_hashes.add(h)
             
-            # Sign the manifest
-            manifest_content = json.dumps(manifest, indent=2, ensure_ascii=False)
-            manifest_hash = self._calculate_hash(manifest_content)
-            manifest_sig = self._sign_content(manifest_hash)
+            # Export DB records (manifest)
+            manifest = {
+                "version": "3.0",
+                "exported_at": datetime.now().isoformat(),
+                "objects": [],
+                "relations": []
+            }
             
-            with open(tmp_path / "manifest.json", "w", encoding='utf-8') as f:
-                f.write(manifest_content)
+            for row in rows:
+                # Get full object data
+                obj_data = conn.execute("SELECT * FROM objects WHERE id = ?", (row['id'],)).fetchone()
+                manifest["objects"].append(dict(obj_data))
+                
+                # Get relations
+                rels = conn.execute("SELECT * FROM relations WHERE from_id = ?", (row['id'],)).fetchall()
+                for rel in rels:
+                    manifest["relations"].append(dict(rel))
             
-            with open(tmp_path / "signature.txt", "w") as f:
-                f.write(f"{manifest_hash}\n{manifest_sig}")
+            zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+            conn.close()
             
-            # Create final ZIP
-            shutil.make_archive(output_path.replace('.zip', ''), 'zip', tmp_path)
-            print(f"Export Complete: {len(rows)} entries packaged.")
+        print(f"Export successful: {len(rows)} objects packaged.")
 
     def import_package(self, package_path):
-        """Import entries from a secure package, with resume capability and integrity checks."""
-        print(f"Importing package from {package_path}...")
-        if not os.path.exists(package_path):
-            print("Error: Package file not found.")
-            return
-
-        # Resume mechanism: Track progress in a journal file
-        package_id = hashlib.sha256(str(package_path).encode()).hexdigest()[:16]
-        journal_path = self.root_dir / "metadata" / f"import_{package_id}.journal"
-        finished_hashes = set()
-        if journal_path.exists():
-            with open(journal_path, 'r') as f:
-                finished_hashes = set(line.strip() for line in f if line.strip())
-            print(f"Resuming import: {len(finished_hashes)} items already processed.")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                shutil.unpack_archive(package_path, tmpdir)
-            except Exception as e:
-                print(f"Error unpacking package: {e}")
-                return
-                
-            tmp_path = Path(tmpdir)
+        """Import objects from a ZIP package."""
+        import zipfile
+        package_path = Path(package_path)
+        if not package_path.exists():
+            print(f"Error: {package_path} not found.")
+            return False
             
-            # 1. Verify Manifest Signature
-            manifest_file = tmp_path / "manifest.json"
-            sig_file = tmp_path / "signature.txt"
-            if not manifest_file.exists() or not sig_file.exists():
-                print("Error: Invalid package format (missing manifest or signature).")
-                return
+        print(f"Importing from {package_path}...")
+        with zipfile.ZipFile(package_path, 'r') as zf:
+            # 1. Load manifest
+            if "manifest.json" not in zf.namelist():
+                print("Error: Invalid package (missing manifest.json)")
+                return False
                 
-            with open(sig_file, "r") as f:
-                lines = f.read().splitlines()
-                if len(lines) < 2:
-                    print("Error: Invalid signature format.")
-                    return
-                m_hash, m_sig = lines[0], lines[1]
-                
-            with open(manifest_file, "r", encoding='utf-8') as f:
-                m_content = f.read()
-                if self._calculate_hash(m_content) != m_hash:
-                    print("Error: Manifest hash mismatch!")
-                    return
-                if self._sign_content(m_hash) != m_sig:
-                    print("Error: Manifest signature INVALID! Package may be tampered.")
-                    return
+            manifest = json.loads(zf.read("manifest.json").decode('utf-8'))
             
-            manifest = json.loads(m_content)
-            
-            # 2. Process Files with Journaling
+            # 2. Extract objects
             import_count = 0
-            skipped_count = 0
+            for member in zf.namelist():
+                if member.startswith("objects/"):
+                    # Extract relative to .eternal's parent to maintain structure
+                    zf.extract(member, path=self.root_dir.parent)
+                    import_count += 1
             
-            # Sort files to ensure deterministic order if resuming
-            files_to_process = [f for f in manifest["files"] if f["type"] == "object"]
+            # 3. Merge database records
+            conn = sqlite3.connect(self.db_path)
+            for obj in manifest.get("objects", []):
+                conn.execute('''
+                    INSERT OR REPLACE INTO objects 
+                    (id, data_type, content_hash, signature, version, created_at, updated_at, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (obj['id'], obj['data_type'], obj['content_hash'], obj['signature'], 
+                      obj['version'], obj['created_at'], obj['updated_at'], obj['metadata']))
             
-            for file_info in files_to_process:
-                h = file_info["hash"]
-                if h in finished_hashes:
-                    skipped_count += 1
-                    continue
-                    
-                obj_path = tmp_path / file_info["path"]
-                meta_path = obj_path.with_suffix('.meta')
-                
-                if not obj_path.exists() or not meta_path.exists():
-                    print(f"Warning: Skipping missing object {h}")
-                    continue
-                    
-                # Verify content hash before importing
-                with open(obj_path, 'rb') as f:
-                    if self._calculate_hash(f.read()) != h:
-                        print(f"Error: Hash mismatch for {h}! Skipping.")
-                        continue
-                        
-                # Load metadata
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-                
-                # Add to local store using safe_add_entry for concurrency protection
-                with open(obj_path, 'rb') as f:
-                    content = f.read()
+            for rel in manifest.get("relations", []):
+                conn.execute("INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
+                             (rel['from_id'], rel['to_id'], rel['rel_type']))
+            
+            conn.commit()
+            conn.close()
+            
+        print(f"Import successful: {len(manifest.get('objects', []))} objects merged.")
+        return True
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(prog="eternal", description="EternalCore: Generic Object Persistence Engine")
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # init
+    init_parser = subparsers.add_parser("init", help="Initialize a new repository")
+    init_parser.add_argument("--role", default="master", choices=["master", "contributor", "mirror"], help="Node role")
+    init_parser.add_argument("--federation-id", help="Federation ID to join (leave empty to create new)")
+    init_parser.add_argument("--mirror-dir", help="Path to a local mirror backup directory")
+
+    # put
+    put_parser = subparsers.add_parser("put", help="Store an object")
+    put_parser.add_argument("id", help="Object ID")
+    put_parser.add_argument("content", help="Object content (string or file path)")
+    put_parser.add_argument("--type", default="blob", help="Data type")
+    put_parser.add_argument("--meta", help="Metadata (JSON string)")
+    put_parser.add_argument("--relations", help="Relations (JSON string, list of [to_id, type])")
+
+    # get
+    get_parser = subparsers.add_parser("get", help="Retrieve an object")
+    get_parser.add_argument("id", help="Object ID")
+    get_parser.add_argument("--raw", action="store_true", help="Output raw bytes")
+
+    # list/search
+    list_parser = subparsers.add_parser("list", help="List or search objects")
+    list_parser.add_argument("query", nargs="?", help="Search query")
+    list_parser.add_argument("--type", help="Filter by data type")
+
+    # rollback
+    rb_parser = subparsers.add_parser("rollback", help="Roll back an object to a specific version")
+    rb_parser.add_argument("id", help="Object ID")
+    rb_parser.add_argument("version", type=int, help="Version number")
+
+    # audit
+    subparsers.add_parser("audit", help="Run a full system integrity audit")
+
+    # sync
+    sync_parser = subparsers.add_parser("sync", help="Synchronize with mirror storage")
+    sync_parser.add_argument("--mirror", help="Override mirror directory")
+
+    # push
+    push_parser = subparsers.add_parser("push", help="Intelligent delta push to remote")
+    push_parser.add_argument("remote", help="Remote repository path or URL")
+
+    # pull
+    pull_parser = subparsers.add_parser("pull", help="Intelligent delta pull from remote")
+    pull_parser.add_argument("remote", help="Remote repository path or URL")
+
+    # peer
+    peer_parser = subparsers.add_parser("peer", help="Manage network peers")
+    peer_sub = peer_parser.add_subparsers(dest="peer_command", help="Peer commands")
+    
+    peer_add = peer_sub.add_parser("add", help="Add a network peer")
+    peer_add.add_argument("name", help="Peer name")
+    peer_add.add_argument("url", help="Peer repository URL/path")
+    
+    peer_sub.add_parser("list", help="List all network peers")
+    
+    peer_sub.add_parser("sync", help="Force broadcast to all peers")
+
+    peer_subscribe = peer_sub.add_parser("subscribe", help="Set selective sync filters (Interests)")
+    peer_subscribe.add_argument("key", help="Filter key (e.g., 'data_type', 'path', 'metadata.category')")
+    peer_subscribe.add_argument("value", help="Filter value (e.g., 'doc', 'src/', 'Science')")
+    peer_subscribe.add_argument("--remove", action="store_true", help="Remove the filter instead of adding")
+
+    # health
+    subparsers.add_parser("health", help="Check system health")
+
+    # rebuild
+    subparsers.add_parser("rebuild", help="Rebuild index from physical storage")
+
+    # visualize
+    vis_parser = subparsers.add_parser("visualize", help="Visualize object relations")
+    vis_parser.add_argument("id", help="Root object ID")
+
+    # validate
+    val_parser = subparsers.add_parser("validate", help="Validate relation integrity")
+    val_parser.add_argument("id", help="Object ID")
+
+    # export
+    exp_parser = subparsers.add_parser("export", help="Export objects to a package")
+    exp_parser.add_argument("output", help="Output ZIP path")
+    exp_parser.add_argument("--type", help="Filter by data type")
+
+    # import
+    imp_parser = subparsers.add_parser("import", help="Import objects from a package")
+    imp_parser.add_argument("package", help="ZIP package path")
+
+    # Global options
+    parser.add_argument("--config", help="Path to config.json")
+    parser.add_argument("--root", help="Override repository root")
+
+    args = parser.parse_args()
+    
+    if args.command == "init":
+        EternalCore.init_repo(args.root or ".", role=args.role, federation_id=args.federation_id, mirror_dir=args.mirror_dir)
+        return
+
+    # Find repository root
+    repo_root = args.root or EternalCore.find_repo_root()
+    if not repo_root:
+        print("Error: Not a repository (or any of the parent directories): .eternal")
+        sys.exit(1)
+        
+    eternal_dir = Path(repo_root) / ".eternal"
+    
+    # Load config
+    config = {}
+    config_path = args.config or (eternal_dir / "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            
+    # Initialize Core
+    core = EternalCore(
+        root_dir=eternal_dir,
+        mirror_dir=args.mirror if hasattr(args, 'mirror') and args.mirror else config.get('mirror_dir'),
+        secret_key=config.get('secret_key'),
+        master_key=config.get('master_key'),
+        app_name=config.get('app_name', 'EternalCore')
+    )
+    
+    try:
+        if args.command == "put":
+            meta = json.loads(args.meta) if args.meta else {}
+            rels = json.loads(args.relations) if args.relations else []
+            content_data = args.content
+            if os.path.exists(args.content):
+                with open(args.content, 'rb') as f:
+                    content_data = f.read()
+            core.put(args.id, content_data, metadata=meta, data_type=args.type, relations=rels)
+            
+        elif args.command == "get":
+            res = core.get(args.id)
+            if res:
+                if args.raw:
+                    sys.stdout.buffer.write(res['content'])
+                else:
+                    print(f"ID: {args.id}")
+                    print(f"Type: {res['data_type']} (v{res['version']})")
+                    print(f"Metadata: {json.dumps(res['metadata'], indent=2)}")
+                    print("-" * 20)
                     try:
-                        # Ensure we use the metadata from the package but respect local versioning
-                        self.safe_add_entry(meta, content)
-                        
-                        # Update Journal after successful add
-                        with open(journal_path, 'a') as f_j:
-                            f_j.write(f"{h}\n")
-                        import_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to import {h}: {e}")
-                        break 
-            
-            # 3. Cleanup Journal if finished
-            if import_count + skipped_count >= len(files_to_process):
-                if journal_path.exists():
-                    os.remove(journal_path)
-                print(f"Import Complete: {import_count} added, {skipped_count} skipped.")
+                        if isinstance(res['content'], bytes):
+                            print(res['content'].decode('utf-8'))
+                        else:
+                            print(res['content'])
+                    except UnicodeDecodeError:
+                        print(f"<Binary Data: {len(res['content'])} bytes>")
             else:
-                print(f"Import Interrupted: {import_count} items processed. Run again to resume.")
+                print(f"Error: Object {args.id} not found.")
+                sys.exit(1)
+                
+        elif args.command == "list":
+            results = core.search(query=args.query, data_type=args.type)
+            print(f"{'ID':<20} | {'Type':<10} | {'Ver':<5} | {'Created At'}")
+            print("-" * 60)
+            for r in results:
+                print(f"{r['id']:<20} | {r['data_type']:<10} | {r['version']:<5} | {r['created_at']}")
+                
+        elif args.command == "rollback":
+            if core.rollback(args.id, args.version):
+                print(f"Successfully rolled back {args.id} to v{args.version}")
+            else:
+                sys.exit(1)
+                
+        elif args.command == "audit":
+            if not core.audit_all():
+                sys.exit(1)
+                
+        elif args.command == "sync":
+            if not core.sync_to_mirror():
+                sys.exit(1)
+                
+        elif args.command == "push":
+            if not core.push(args.remote):
+                sys.exit(1)
+                
+        elif args.command == "pull":
+            if not core.pull(args.remote):
+                sys.exit(1)
+                
+        elif args.command == "peer":
+            if args.peer_command == "add":
+                core.add_peer(args.name, args.url)
+            elif args.peer_command == "list":
+                conn = sqlite3.connect(core.db_path)
+                conn.row_factory = sqlite3.Row
+                peers = conn.execute("SELECT * FROM peers").fetchall()
+                print(f"{'NAME':<15} {'URL':<40} {'LAST SEEN':<20}")
+                print("-" * 75)
+                for p in peers:
+                    print(f"{p['name']:<15} {p['url']:<40} {p['last_seen']:<20}")
+                conn.close()
+            elif args.peer_command == "sync":
+                core.broadcast()
+            elif args.peer_command == "subscribe":
+                conn = sqlite3.connect(core.db_path)
+                if args.remove:
+                    conn.execute("DELETE FROM subscriptions WHERE filter_key = ? AND filter_value = ?", (args.key, args.value))
+                    print(f"Filter removed: {args.key} = {args.value}")
+                else:
+                    conn.execute("INSERT OR REPLACE INTO subscriptions (filter_key, filter_value) VALUES (?, ?)", (args.key, args.value))
+                    print(f"Filter added: {args.key} = {args.value}")
+                conn.commit()
+                conn.close()
+                
+        elif args.command == "health":
+            health = core.health_check()
+            print(json.dumps(health, indent=2))
+            return # Exit after printing JSON
+            
+        elif args.command == "rebuild":
+            core.rebuild_index()
+            
+        elif args.command == "visualize":
+            core.visualize_relations(args.id)
+            
+        elif args.command == "validate":
+            ok, missing = core.validate_relations(args.id)
+            if ok:
+                print(f"Relation integrity for {args.id}: OK")
+            else:
+                print(f"Relation integrity for {args.id}: FAILED. Missing: {missing}")
+                sys.exit(1)
+
+        elif args.command == "export":
+            core.export_package(args.output, data_type=args.type)
+
+        elif args.command == "import":
+            core.import_package(args.package)
+
+    except Exception as e:
+        logger.error(f"Command execution failed: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Seed Core Manager v2")
-    parser.add_argument("cmd", choices=["add", "search", "rebuild", "audit", "sync", "verify_chain", "export", "import", "rollback", "history", "validate", "graph", "health", "cat"])
-    parser.add_argument("args", nargs="*")
-    parser.add_argument("--config", help="Path to config.json")
-    parser.add_argument("--mirror", help="Path to mirror directory")
-    parser.add_argument("--taxonomy", help="Taxonomy prefix for export")
-    parser.add_argument("--output", help="Output path for export package")
-    parser.add_argument("--package", help="Package path for import")
-    parser.add_argument("--version", type=int, help="Target version for rollback")
-    parser.add_argument("--lang", help="Target language for add/search/cat")
-    parser.add_argument("--master-key", help="Master key for encryption/decryption")
-    parser.add_argument("--encrypt", action="store_true", help="Encrypt content")
-    
-    parsed = parser.parse_args()
-    
-    if parsed.config:
-        core = EternalCore.from_config(parsed.config)
-    else:
-        core = EternalCore("d:/Seed", mirror_dir=parsed.mirror, secret_key="SEED_PLAN_2026_SECURE_KEY", master_key=parsed.master_key, app_name="SeedPlan")
-    
-    if parsed.cmd == "add":
-        if len(parsed.args) < 4:
-            print("Usage: add <taxonomy> <title> <description> <file_path> [--lang zh] [--encrypt]")
-        else:
-            lang = parsed.lang or 'en'
-            with open(parsed.args[3], 'r', encoding='utf-8') as f:
-                content = f.read()
-            entry_id = parsed.args[1].lower().replace(' ', '_')
-            core.add_entry({
-                "id": entry_id,
-                "title": {lang: parsed.args[1]},
-                "taxonomy_path": parsed.args[0],
-                "description": parsed.args[2],
-                "importance": 5,
-                "dependencies": [],
-                "encrypt": parsed.encrypt
-            }, {lang: content})
-    elif parsed.cmd == "cat":
-        if len(parsed.args) < 1:
-            print("Usage: cat <entry_id> [--lang zh]")
-        else:
-            try:
-                content = core.get_content(parsed.args[0], lang=parsed.lang)
-                print(content.decode('utf-8'))
-            except Exception as e:
-                print(f"Error: {e}")
-    elif parsed.cmd == "health":
-        results = core.health_check()
-        print(json.dumps(results, indent=2))
-    elif parsed.cmd == "search":
-        q = parsed.args[0] if parsed.args else ""
-        results = core.search(query=q)
-        for r in results:
-            try:
-                titles = json.loads(r['title'])
-                title = titles.get(parsed.lang) or titles.get('zh') or titles.get('en') or list(titles.values())[0]
-            except:
-                title = r['title']
-            print(f"[{r['taxonomy_path']}] {title} (v{r['version']}, Hash: {r['content_hash'][:8]})")
-    elif parsed.cmd == "validate":
-        if len(parsed.args) < 1:
-            print("Usage: validate <entry_id>")
-        else:
-            ok, missing = core.validate_dependencies(parsed.args[0])
-            if ok:
-                print(f"Success: All dependencies for {parsed.args[0]} are present.")
-            else:
-                print(f"Error: Missing dependencies for {parsed.args[0]}: {missing}")
-    elif parsed.cmd == "graph":
-        if len(parsed.args) < 1:
-            print("Usage: graph <entry_id>")
-        else:
-            core.visualize_dependencies(parsed.args[0])
-    elif parsed.cmd == "rollback":
-        if len(parsed.args) < 2:
-            print("Usage: rollback <entry_id> <version>")
-        else:
-            core.rollback(parsed.args[0], int(parsed.args[1]))
-    elif parsed.cmd == "history":
-        if len(parsed.args) < 1:
-            print("Usage: history <entry_id>")
-        else:
-            conn = sqlite3.connect(core.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM history WHERE entry_id = ? ORDER BY version DESC", (parsed.args[0],))
-            rows = cursor.fetchall()
-            print(f"History for {parsed.args[0]}:")
-            for row in rows:
-                print(f"  v{row['version']} | {row['timestamp']} | Hash: {row['content_hash'][:12]}")
-            conn.close()
-    elif parsed.cmd == "rebuild":
-        core.rebuild_index()
-    elif parsed.cmd == "verify_chain":
-        core.verify_state_chain()
-    elif parsed.cmd == "audit":
-        core.audit_all()
-    elif parsed.cmd == "sync":
-        if not parsed.mirror:
-            print("Error: --mirror required for sync.")
-        else:
-            core.audit_all()
-    elif parsed.cmd == "export":
-        if not parsed.output:
-            print("Error: --output required for export.")
-        else:
-            core.export_package(parsed.output, parsed.taxonomy)
-    elif parsed.cmd == "import":
-        if not parsed.package:
-            print("Error: --package required for import.")
-        else:
-            core.import_package(parsed.package)
+    main()
