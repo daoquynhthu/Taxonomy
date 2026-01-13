@@ -13,7 +13,6 @@ import uuid
 import typing
 from datetime import datetime
 from pathlib import Path
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 
@@ -21,12 +20,14 @@ try:
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
     Fernet = None
     hashes = None
     PBKDF2HMAC = None
+    Scrypt = None
 
 # Configure structured logging
 logging.basicConfig(
@@ -48,6 +49,7 @@ class RemoteAdapter:
     def pull_object(self, h): raise NotImplementedError() # Returns (obj_bytes, meta_bytes)
     def get_objects_by_hashes(self, hashes): raise NotImplementedError() # Returns list of dicts
     def update_index(self, objects_data): raise NotImplementedError()
+    def authenticate(self, challenge): raise NotImplementedError() # Returns dict with signature and node info
 
 class LocalFileSystemAdapter(RemoteAdapter):
     """Adapter for local file system repositories."""
@@ -97,8 +99,42 @@ class LocalFileSystemAdapter(RemoteAdapter):
 
     def update_index(self, objects_data):
         conn = sqlite3.connect(self.core.db_path)
+        
+        # Load trusted public keys from peers table to verify signatures
+        trusted_keys = {}
+        res = conn.execute("SELECT public_key, name FROM peers").fetchall()
+        for pub_key, name in res:
+            if pub_key: trusted_keys[pub_key] = name
+            
+        # Also trust ourselves
+        my_pub = self.core.get_public_key()
+        if my_pub: trusted_keys[my_pub] = "self"
+        
         for row in objects_data:
-            # Conflict check could be added here
+            # 1. Signature Verification
+            h = row['content_hash']
+            sig = row['signature']
+            
+            # If we have a pool of trusted keys, verify the signature
+            is_valid = False
+            if not sig:
+                logger.warning(f"Object {row['id']} has no signature. Skipping.")
+                continue
+                
+            for pub_key in trusted_keys:
+                if self.core.verify_signature(h, sig, pub_key):
+                    is_valid = True
+                    break
+            
+            if not is_valid and trusted_keys:
+                logger.error(f"Object {row['id']} signature verification failed! Not from a trusted peer.")
+                continue
+            elif not is_valid and not trusted_keys:
+                # If no peers yet, we might be the first one or in bootstrap mode
+                # For now, allow but log warning. In strict mode, this would be rejected.
+                logger.warning(f"No trusted peers found. Accepting object {row['id']} without verification.")
+
+            # 2. Update DB
             conn.execute("INSERT OR REPLACE INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (row['id'], row['data_type'], row['content_hash'], row['signature'], row['version'], row['created_at'], row['updated_at'], row['metadata']))
             
@@ -110,6 +146,16 @@ class LocalFileSystemAdapter(RemoteAdapter):
                                 (rel['from_id'], rel['to_id'], rel['rel_type']))
         conn.commit()
         conn.close()
+
+    def authenticate(self, challenge):
+        """Respond to an authentication challenge."""
+        signature = self.core._sign_content(challenge)
+        return {
+            "signature": signature,
+            "public_key": self.core.get_public_key(),
+            "node_id": self.core.get_node_id(),
+            "role": self.core.get_node_role()
+        }
 
 class EternalCore:
     def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None, app_name="EternalCore", auto_sync=True):
@@ -132,16 +178,43 @@ class EternalCore:
         
         # Encryption Key Setup
         self.fernet = None
-        if master_key and HAS_CRYPTO and PBKDF2HMAC is not None and hashes is not None and Fernet is not None:
-            salt = b'seed-plan-salt-2026' # In production, use a unique salt per installation
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=salt,
-                iterations=100000,
-            )
+        if master_key and HAS_CRYPTO:
+            # Try to load unique salt from DB
+            salt = b'seed-plan-salt-2026' # Default fallback
+            try:
+                conn = sqlite3.connect(self.db_path)
+                res = conn.execute("SELECT value FROM repo_info WHERE key='crypto_salt'").fetchone()
+                conn.close()
+                if res:
+                    salt = base64.b64decode(res[0])
+            except:
+                pass
+
+            if HAS_CRYPTO and Scrypt is not None:
+                # Use Scrypt (stronger than PBKDF2)
+                kdf = Scrypt(
+                    salt=salt,
+                    length=32,
+                    n=2**14,
+                    r=8,
+                    p=1,
+                )
+            elif HAS_CRYPTO and PBKDF2HMAC is not None and hashes is not None:
+                # Fallback to PBKDF2
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=salt,
+                    iterations=100000,
+                )
+            else:
+                raise Exception("Cryptography components missing.")
+            
             key = base64.urlsafe_b64encode(kdf.derive(master_key.encode()))
-            self.fernet = Fernet(key)
+            if Fernet is not None:
+                self.fernet = Fernet(key)
+            else:
+                raise Exception("Fernet missing.")
         elif master_key and not HAS_CRYPTO:
             logger.error("Master key provided but 'cryptography' library is not installed!")
             
@@ -344,7 +417,7 @@ class EternalCore:
         
         priv_bytes = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.OpenSSH,
+            format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption()
         ).decode()
         
@@ -361,6 +434,9 @@ class EternalCore:
         else:
             print(f"Joining existing federation: {federation_id}")
 
+        # Generate a unique salt for this repository
+        crypto_salt = base64.b64encode(os.urandom(16)).decode()
+
         conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("init_date", datetime.now().isoformat()))
         conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("version", "3.0"))
         conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("private_key", priv_bytes))
@@ -368,6 +444,7 @@ class EternalCore:
         conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("role", role))
         conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("node_id", node_id))
         conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("federation_id", federation_id))
+        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("crypto_salt", crypto_salt))
         conn.commit()
         conn.close()
         
@@ -530,8 +607,17 @@ class EternalCore:
             
         # Try to read sidecar metadata for this specific object
         if meta_path.exists():
-            with open(meta_path, 'r', encoding='utf-8') as f:
-                meta = json.load(f)
+            with open(meta_path, 'rb') as f:
+                meta_raw = f.read()
+            
+            # Check for encrypted metadata header
+            if meta_raw.startswith(b"[ENCRYPTED]"):
+                if not self.fernet:
+                    raise Exception("Metadata is encrypted but no master key provided.")
+                meta_json = self.fernet.decrypt(meta_raw[11:]).decode('utf-8')
+                meta = json.loads(meta_json)
+            else:
+                meta = json.loads(meta_raw.decode('utf-8'))
             
             if meta.get('encryption'):
                 content = self._decrypt(content)
@@ -567,7 +653,13 @@ class EternalCore:
             # Store sidecar metadata for the object itself (not the entry)
             if metadata:
                 meta_path = shard_dir / f"{h}.meta"
-                self._atomic_write(meta_path, json.dumps(metadata, indent=2, ensure_ascii=False))
+                meta_json = json.dumps(metadata, indent=2, ensure_ascii=False)
+                if encrypt and self.fernet:
+                    # Encrypt metadata as well if encryption is enabled
+                    encrypted_meta = b"[ENCRYPTED]" + self.fernet.encrypt(meta_json.encode('utf-8'))
+                    self._atomic_write(meta_path, encrypted_meta)
+                else:
+                    self._atomic_write(meta_path, meta_json)
                 
             # Mirroring
             if self.mirror_dir:
@@ -1047,27 +1139,46 @@ class EternalCore:
                 logger.error(f"Failed to sync with peer {peer['name']}: {e}")
 
     def add_peer(self, name, url):
-        """Register a new neighbor node after verifying federation ID."""
+        """Register a new neighbor node after verifying federation ID and identity."""
+        import secrets
         remote_path = Path(url).resolve()
         if remote_path.name != ".eternal" and (remote_path / ".eternal").exists():
             remote_path = remote_path / ".eternal"
             
         try:
-            remote = EternalCore(remote_path, auto_sync=False)
+            adapter = LocalFileSystemAdapter(remote_path.parent)
+            
+            # 1. Federation Check
             local_fed = self.get_federation_id()
-            remote_fed = remote.get_federation_id()
+            remote_fed = adapter.get_federation_id()
             
             if local_fed and remote_fed and local_fed != remote_fed:
                 print(f"Error: Cannot add peer. Federation mismatch!")
-                print(f"  Local Federation:  {local_fed}")
-                print(f"  Remote Federation: {remote_fed}")
                 return False
                 
+            # 2. Challenge-Response Authentication
+            challenge = secrets.token_hex(32)
+            auth_data = adapter.authenticate(challenge)
+            
+            signature = auth_data.get("signature")
+            public_key = auth_data.get("public_key")
+            node_id = auth_data.get("node_id")
+            role = auth_data.get("role")
+            
+            if not self.verify_signature(challenge, signature, public_key):
+                print(f"Error: Peer authentication failed! Signature invalid.")
+                return False
+                
+            # 3. Store Peer with Identity Info
             conn = sqlite3.connect(self.db_path)
-            conn.execute("INSERT OR REPLACE INTO peers (name, url, last_seen) VALUES (?, ?, datetime('now'))", (name, str(remote_path.parent)))
+            conn.execute("""
+                INSERT OR REPLACE INTO peers (name, url, last_seen, public_key, role) 
+                VALUES (?, ?, datetime('now'), ?, ?)
+            """, (name, str(remote_path.parent), public_key, role))
             conn.commit()
             conn.close()
-            print(f"Peer '{name}' added and verified: {url}")
+            
+            print(f"Peer '{name}' verified and added (Node ID: {(node_id or 'unknown')[:8]}, Role: {role})")
             return True
         except Exception as e:
             print(f"Error: Could not verify remote node at {url}: {e}")
@@ -1077,6 +1188,13 @@ class EternalCore:
         """Get the federation ID for this repository."""
         conn = sqlite3.connect(self.db_path)
         res = conn.execute("SELECT value FROM repo_info WHERE key='federation_id'").fetchone()
+        conn.close()
+        return res[0] if res else None
+
+    def get_public_key(self):
+        """Get the public key of this node."""
+        conn = sqlite3.connect(self.db_path)
+        res = conn.execute("SELECT value FROM repo_info WHERE key='public_key'").fetchone()
         conn.close()
         return res[0] if res else None
 
@@ -1141,14 +1259,24 @@ class EternalCore:
             
         print(f"Pushing to remote...")
         
-        # Federation check
+        # 1. Identity & Federation Check
         local_fed = self.get_federation_id()
         remote_fed = remote.get_federation_id()
         if local_fed and remote_fed and local_fed != remote_fed:
             print(f"CRITICAL: Federation mismatch! Local: {local_fed}, Remote: {remote_fed}")
             return False
             
-        # Get remote interests for selective sync
+        import secrets
+        challenge = secrets.token_hex(32)
+        try:
+            auth_data = remote.authenticate(challenge)
+            if not self.verify_signature(challenge, auth_data.get("signature"), auth_data.get("public_key")):
+                print("CRITICAL: Remote identity verification failed!")
+                return False
+        except Exception as e:
+            print(f"Warning: Could not authenticate remote: {e}. Proceeding with caution.")
+            
+        # 2. Get remote interests for selective sync
         remote_interests = remote.get_interests()
         if remote_interests:
             print(f"Remote has selective interests: {remote_interests}")
@@ -1215,14 +1343,26 @@ class EternalCore:
             
         print(f"Pulling from remote...")
         
-        # Federation check
+        # 1. Identity & Federation Check
         local_fed = self.get_federation_id()
         remote_fed = remote.get_federation_id()
         if local_fed and remote_fed and local_fed != remote_fed:
             print(f"CRITICAL: Federation mismatch! Local: {local_fed}, Remote: {remote_fed}")
             return False
             
-        # Get local interests for selective sync
+        import secrets
+        challenge = secrets.token_hex(32)
+        remote_pub_key = None
+        try:
+            auth_data = remote.authenticate(challenge)
+            remote_pub_key = auth_data.get("public_key")
+            if not self.verify_signature(challenge, auth_data.get("signature"), remote_pub_key):
+                print("CRITICAL: Remote identity verification failed!")
+                return False
+        except Exception as e:
+            print(f"Warning: Could not authenticate remote: {e}. Proceeding with caution.")
+            
+        # 2. Get local interests for selective sync
         local_interests = self.get_interests()
         if local_interests:
             print(f"Local has selective interests: {local_interests}")
