@@ -5,7 +5,7 @@ objects/
 metadata/seed_index.db
 metadata/*.journal
 config.json.template
-tests/
+# tests/
 
 # Python build artifacts
 *.egg-info/
