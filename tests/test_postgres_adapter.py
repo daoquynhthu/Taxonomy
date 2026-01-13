@@ -6,9 +6,10 @@ import os
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-# Mock psycopg2 before importing manager_v2 if it tries to import it at top level (it doesn't, but good practice)
+# Mock psycopg2 before importing manager_v2
 sys.modules['psycopg2'] = MagicMock()
 sys.modules['psycopg2.extras'] = MagicMock()
+sys.modules['psycopg2.pool'] = MagicMock()
 
 from manager_v2 import PostgreSQLAdapter
 
@@ -18,8 +19,19 @@ class TestPostgreSQLAdapter(unittest.TestCase):
         self.mock_cursor = MagicMock()
         self.mock_conn.cursor.return_value = self.mock_cursor
         
-        with patch('psycopg2.connect', return_value=self.mock_conn):
-            self.adapter = PostgreSQLAdapter("dbname=test user=postgres")
+        self.mock_pool = MagicMock()
+        self.mock_pool.getconn.return_value = self.mock_conn
+        
+        # Configure the mock module directly via the parent package mock
+        import sys
+        psycopg2_mock = sys.modules['psycopg2']
+        # manager_v2.pool refers to psycopg2.pool (attribute of the mock)
+        psycopg2_mock.pool.ThreadedConnectionPool.return_value = self.mock_pool
+        
+        # Reset pools to ensure new mock is used
+        PostgreSQLAdapter._pools = {}
+        
+        self.adapter = PostgreSQLAdapter("dbname=test user=postgres")
 
     def test_convert_sql(self):
         sql = "SELECT * FROM table WHERE id = ? AND name = ?"

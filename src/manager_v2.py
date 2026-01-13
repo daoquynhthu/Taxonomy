@@ -1097,7 +1097,7 @@ class EternalCore:
                 "created_at": now_str
             }
             
-            shard_dir = self.objects_dir / content_hash[0:2] / content_hash[2:4]
+            shard_dir = self.objects_dir / content_hash[0:2] / content_hash[2:4] / content_hash[4:6]
             meta_path = shard_dir / f"{content_hash}.meta"
             self._atomic_write(meta_path, json.dumps(sidecar_payload, indent=2, ensure_ascii=False))
             
@@ -1115,7 +1115,7 @@ class EternalCore:
                 ''', (data_type, content_hash, signature, new_version, now_str, json.dumps(metadata), obj_id, old_version))
                 
                 if cursor.rowcount == 0:
-                    raise Exception(f"Concurrency conflict: Object {obj_id} was updated by another process.")
+                    raise ConflictError(f"Concurrency conflict: Object {obj_id} was updated by another process.")
 
             # Record History
             self.db.execute('''
@@ -1129,6 +1129,18 @@ class EternalCore:
                 self.db.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
             
             self.db.commit()
+
+            # 3. Merkle Tree Incremental Update (Optimization)
+            try:
+                # Find the index of this object in the sorted list of leaves
+                res = self.db.fetchone("SELECT COUNT(*) as cnt FROM objects WHERE id < ?", (obj_id,))
+                index = res['cnt'] if res else 0
+                
+                # Update the branch
+                self.update_merkle_branch(index, content_hash)
+            except Exception as e:
+                logger.warning(f"Failed to update Merkle branch incrementally: {e}")
+
             logger.info(f"Stored object [{obj_id}] v{new_version}")
             
             # Automatic Sync & Broadcast
