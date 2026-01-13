@@ -4,6 +4,7 @@ import json
 import sqlite3 # Required for SQLiteAdapter
 import hashlib
 import shutil
+import tarfile
 import hmac
 import tempfile
 import logging
@@ -15,6 +16,10 @@ from datetime import datetime
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
+
+class ConflictError(Exception):
+    """Raised when a concurrency conflict occurs."""
+    pass
 
 try:
     from cryptography.fernet import Fernet
@@ -44,6 +49,7 @@ logger = logging.getLogger("SeedCore")
 class DatabaseAdapter:
     """Abstract interface for database operations to support multiple backends."""
     def execute(self, sql: str, params: tuple = ()) -> typing.Any: raise NotImplementedError()
+    def executemany(self, sql: str, params_list: typing.List[tuple]) -> typing.Any: raise NotImplementedError()
     def fetchone(self, sql: str, params: tuple = ()) -> typing.Optional[dict]: raise NotImplementedError()
     def fetchall(self, sql: str, params: tuple = ()) -> typing.List[dict]: raise NotImplementedError()
     def commit(self): raise NotImplementedError()
@@ -59,6 +65,9 @@ class SQLiteAdapter(DatabaseAdapter):
 
     def execute(self, sql, params=()):
         return self.conn.execute(sql, params)
+
+    def executemany(self, sql, params_list):
+        return self.conn.executemany(sql, params_list)
 
     def fetchone(self, sql, params=()):
         cursor = self.conn.execute(sql, params)
@@ -80,11 +89,22 @@ class SQLiteAdapter(DatabaseAdapter):
 
 class PostgreSQLAdapter(DatabaseAdapter):
     """PostgreSQL implementation of the database adapter."""
+    _pools = {} # Class-level pool cache keyed by DSN
+
     def __init__(self, dsn: str):
         try:
             import psycopg2
+            from psycopg2 import pool
             from psycopg2.extras import RealDictCursor
-            self.conn = psycopg2.connect(dsn)
+            
+            # Initialize pool if not exists (Singleton-ish per DSN)
+            if dsn not in PostgreSQLAdapter._pools:
+                 # minconn=1, maxconn=20
+                 PostgreSQLAdapter._pools[dsn] = pool.ThreadedConnectionPool(1, 20, dsn)
+            
+            self.dsn = dsn
+            self.pool = PostgreSQLAdapter._pools[dsn]
+            self.conn = self.pool.getconn()
             self.cursor_factory = RealDictCursor
         except ImportError:
             raise ImportError("PostgreSQL support requires 'psycopg2-binary' package. Install it with: pip install psycopg2-binary")
@@ -97,6 +117,12 @@ class PostgreSQLAdapter(DatabaseAdapter):
         sql = self._convert_sql(sql)
         cursor = self.conn.cursor()
         cursor.execute(sql, params)
+        return cursor
+
+    def executemany(self, sql, params_list):
+        sql = self._convert_sql(sql)
+        cursor = self.conn.cursor()
+        cursor.executemany(sql, params_list)
         return cursor
 
     def fetchone(self, sql, params=()):
@@ -119,7 +145,9 @@ class PostgreSQLAdapter(DatabaseAdapter):
         self.conn.rollback()
 
     def close(self):
-        self.conn.close()
+        if self.conn:
+            self.pool.putconn(self.conn)
+            self.conn = None
 
 class RemoteAdapter:
     """Abstract interface for remote repository operations."""
@@ -131,6 +159,7 @@ class RemoteAdapter:
     def get_objects_by_hashes(self, hashes): raise NotImplementedError() # Returns list of dicts
     def update_index(self, objects_data): raise NotImplementedError()
     def authenticate(self, challenge): raise NotImplementedError() # Returns dict with signature and node info
+    def receive_archive(self, archive_bytes): raise NotImplementedError()
 
 class LocalFileSystemAdapter(RemoteAdapter):
     """Adapter for local file system repositories."""
@@ -163,8 +192,8 @@ class LocalFileSystemAdapter(RemoteAdapter):
         return self.core.get_all_hashes()
 
     def push_object(self, h, obj_bytes, meta_bytes):
-        shard_rel = Path(h[0:2]) / h[2:4] / h
-        dest_obj = self.core.objects_dir / shard_rel / h
+        # Use core's safe path logic (3-level sharding)
+        dest_obj = self.core._get_safe_path(h)
         dest_meta = dest_obj.with_suffix('.meta')
         dest_obj.parent.mkdir(parents=True, exist_ok=True)
         
@@ -172,10 +201,67 @@ class LocalFileSystemAdapter(RemoteAdapter):
         with open(dest_meta, 'wb') as f: f.write(meta_bytes)
 
     def pull_object(self, h):
-        shard_rel = Path(h[0:2]) / h[2:4] / h
-        src_obj = self.core.objects_dir / shard_rel / h
+        # Use core's safe path logic (3-level sharding)
+        src_obj = self.core._get_safe_path(h)
         src_meta = src_obj.with_suffix('.meta')
         return src_obj.read_bytes(), src_meta.read_bytes()
+
+    def receive_archive(self, archive_bytes):
+        """Receive and unpack a batch of objects."""
+        import io
+        
+        # 1. Extract to temp dir
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            try:
+                with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode='r:gz') as tar:
+                    tar.extractall(path=temp_path)
+            except Exception as e:
+                print(f"Failed to extract archive: {e}")
+                return False
+
+            # 2. Process extracted files
+            objects_data = []
+            
+            # Find all .meta files to guide processing
+            for meta_file in temp_path.rglob("*.meta"):
+                try:
+                    # Read metadata
+                    with open(meta_file, 'rb') as f:
+                        meta_content = f.read()
+                        
+                    # The filename should be {hash}.meta
+                    h = meta_file.stem
+                    
+                    # Find corresponding object file
+                    obj_file = meta_file.with_suffix('')
+                    if not obj_file.exists():
+                        continue
+                        
+                    obj_bytes = obj_file.read_bytes()
+                    
+                    # Verify Hash
+                    if self.core._calculate_hash(obj_bytes) != h:
+                        print(f"Integrity check failed for {h} in archive")
+                        continue
+                        
+                    # Move to permanent storage
+                    self.push_object(h, obj_bytes, meta_content)
+                    
+                except Exception as e:
+                    print(f"Error processing file {meta_file}: {e}")
+            
+            # 3. Process index if exists
+            index_file = temp_path / "index.json"
+            if index_file.exists():
+                try:
+                    with open(index_file, 'r', encoding='utf-8') as f:
+                        objects_data = json.load(f)
+                    self.update_index(objects_data)
+                except Exception as e:
+                    print(f"Failed to update index from archive: {e}")
+
+        return True
 
     def get_objects_by_hashes(self, hashes):
         results = []
@@ -220,15 +306,35 @@ class LocalFileSystemAdapter(RemoteAdapter):
                 continue
 
             # 2. Update DB
-            self.core.db.execute("INSERT OR REPLACE INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (row['id'], row['data_type'], row['content_hash'], row['signature'], row['version'], row['created_at'], row['updated_at'], row['metadata']))
+            if isinstance(self.core.db, PostgreSQLAdapter):
+                 self.core.db.execute("""
+                     INSERT INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     ON CONFLICT (id) DO UPDATE SET
+                        data_type = EXCLUDED.data_type,
+                        content_hash = EXCLUDED.content_hash,
+                        signature = EXCLUDED.signature,
+                        version = EXCLUDED.version,
+                        created_at = EXCLUDED.created_at,
+                        updated_at = EXCLUDED.updated_at,
+                        metadata = EXCLUDED.metadata
+                 """, (row['id'], row['data_type'], row['content_hash'], row['signature'], row['version'], row['created_at'], row['updated_at'], row['metadata']))
+            else:
+                self.core.db.execute("INSERT OR REPLACE INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (row['id'], row['data_type'], row['content_hash'], row['signature'], row['version'], row['created_at'], row['updated_at'], row['metadata']))
             
             # Relations
             if 'relations' in row:
                 self.core.db.execute("DELETE FROM relations WHERE from_id = ?", (row['id'],))
                 for rel in row['relations']:
-                    self.core.db.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
-                                (rel['from_id'], rel['to_id'], rel['rel_type']))
+                    if isinstance(self.core.db, PostgreSQLAdapter):
+                         self.core.db.execute("""
+                             INSERT INTO relations (from_id, to_id, rel_type) VALUES (%s, %s, %s)
+                             ON CONFLICT (from_id, to_id, rel_type) DO NOTHING
+                         """, (rel['from_id'], rel['to_id'], rel['rel_type']))
+                    else:
+                        self.core.db.execute("INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
+                                    (rel['from_id'], rel['to_id'], rel['rel_type']))
         self.core.db.commit()
 
     def authenticate(self, challenge):
@@ -319,6 +425,7 @@ class EternalCore:
             logger.error("Master key provided but 'cryptography' library is not installed!")
             
         self._init_db()
+        self.signature_cache = {} # Cache for verified signatures
         logger.info(f"SeedCore initialized at {self.root_dir}")
 
     def _encrypt(self, data):
@@ -417,7 +524,8 @@ class EternalCore:
     def _get_safe_path(self, h):
         """Get safe path for a hash, preventing path traversal."""
         self._validate_hash(h)
-        shard_dir = self.objects_dir / h[0:2] / h[2:4]
+        # Deep sharding: 3 levels (e.g., ab/cd/ef/hash)
+        shard_dir = self.objects_dir / h[0:2] / h[2:4] / h[4:6]
         obj_path = shard_dir / h
         
         # Verify the path is within objects_dir
@@ -646,25 +754,27 @@ class EternalCore:
         if not leaves:
             return "0" * 64
             
-        # 2. Build tree and cache levels
-        # Note: A truly incremental tree would only update the branch of the changed leaf.
-        # Here we optimize by using the cache to avoid re-calculating unchanged branches 
-        # if the number of leaves remains the same.
         current_level = leaves
         level = 0
         
-        # Simple optimization: If number of leaves hasn't changed, we could theoretically 
-        # compare with cache. For now, we rebuild but store in cache for future 
-        # partial update implementation.
+        # Cache ALL nodes to support incremental updates
+        nodes_to_cache = []
         
-        while len(current_level) > 1:
+        while len(current_level) > 0:
+            # Cache current level nodes
+            for i, h in enumerate(current_level):
+                nodes_to_cache.append((level, i, h))
+            
+            if len(current_level) == 1:
+                root = current_level[0]
+                break
+                
             next_level = []
             for i in range(0, len(current_level), 2):
                 combined = current_level[i]
                 if i + 1 < len(current_level):
                     combined += current_level[i+1]
                 else:
-                    # Odd number of nodes: hash with itself or just pass through
                     combined += current_level[i] 
                 
                 next_level.append(self._calculate_hash(combined))
@@ -672,36 +782,116 @@ class EternalCore:
             current_level = next_level
             level += 1
             
-        root = current_level[0]
-        
-        # Update cache with the new root
+        # Bulk insert/update cache
         if isinstance(self.db, PostgreSQLAdapter):
-            self.db.execute("INSERT INTO merkle_cache (level, pos, hash) VALUES (%s, 0, %s) ON CONFLICT (level, pos) DO UPDATE SET hash = EXCLUDED.hash", (level, root))
+             self.db.executemany("""
+                 INSERT INTO merkle_cache (level, pos, hash) VALUES (%s, %s, %s) 
+                 ON CONFLICT (level, pos) DO UPDATE SET hash = EXCLUDED.hash
+             """, nodes_to_cache)
         else:
-            self.db.execute("INSERT OR REPLACE INTO merkle_cache (level, pos, hash) VALUES (?, 0, ?)", (level, root))
+            self.db.executemany("""
+                INSERT OR REPLACE INTO merkle_cache (level, pos, hash) VALUES (?, ?, ?)
+            """, nodes_to_cache)
         
         self.db.commit()
         return root
+
+    def _update_merkle_cache_node(self, level, pos, hash_val):
+        if isinstance(self.db, PostgreSQLAdapter):
+             self.db.execute("""
+                 INSERT INTO merkle_cache (level, pos, hash) VALUES (%s, %s, %s) 
+                 ON CONFLICT (level, pos) DO UPDATE SET hash = EXCLUDED.hash
+             """, (level, pos, hash_val))
+        else:
+            self.db.execute("""
+                INSERT OR REPLACE INTO merkle_cache (level, pos, hash) VALUES (?, ?, ?)
+            """, (level, pos, hash_val))
+
+    def get_leaf_index(self, content_hash):
+        """Find the index of a leaf node by its hash."""
+        # Try to find in cache level 0
+        row = self.db.fetchone("SELECT pos FROM merkle_cache WHERE level=0 AND hash=?", (content_hash,))
+        if row:
+            return row['pos']
+        return None
+
+    def update_merkle_branch(self, changed_leaf_index, new_hash):
+        """Update only the affected branch of the Merkle Tree (Incremental Update)."""
+        if changed_leaf_index is None:
+             return
+             
+        # Get max level
+        row = self.db.fetchone("SELECT MAX(level) as max_lvl FROM merkle_cache")
+        max_level = row['max_lvl'] if row and row['max_lvl'] is not None else 0
+             
+        current_index = changed_leaf_index
+        current_hash = new_hash
+        level = 0
+        
+        # Update leaf in cache
+        self._update_merkle_cache_node(level, current_index, current_hash)
+        
+        while level < max_level:
+            # Find sibling
+            sibling_index = current_index ^ 1
+            sibling_row = self.db.fetchone("SELECT hash FROM merkle_cache WHERE level=? AND pos=?", (level, sibling_index))
+            
+            if not sibling_row:
+                # If sibling missing, assume duplication (if we are even index, duplicate self)
+                if current_index % 2 == 0:
+                    sibling_hash = current_hash
+                else:
+                    # Should not happen in balanced/complete filling.
+                    logger.warning(f"Merkle update error: Missing left sibling for {current_index} at level {level}")
+                    break
+            else:
+                sibling_hash = sibling_row['hash']
+                
+            # Calculate parent
+            if current_index % 2 == 0:
+                combined = current_hash + sibling_hash
+            else:
+                combined = sibling_hash + current_hash
+                
+            parent_hash = self._calculate_hash(combined)
+            parent_index = current_index // 2
+            
+            level += 1
+            self._update_merkle_cache_node(level, parent_index, parent_hash)
+            
+            current_index = parent_index
+            current_hash = parent_hash
 
     def commit_state(self):
         """Commit current state to the 'blockchain' state chain."""
         merkle_root = self.calculate_merkle_root()
         
         # Get previous state hash
-        row = self.db.fetchone("SELECT state_hash FROM state_chain ORDER BY height DESC LIMIT 1")
+        row = self.db.fetchone("SELECT height, state_hash FROM state_chain ORDER BY height DESC LIMIT 1")
         prev_hash = row['state_hash'] if row else "0" * 64
+        last_height = row['height'] if row else 0
         
         # New state hash = hash(prev_hash + merkle_root)
         new_state_hash = self._calculate_hash(prev_hash + merkle_root)
         
-        self.db.execute('''
-            INSERT INTO state_chain (state_hash, merkle_root, prev_state_hash, timestamp)
-            VALUES (?, ?, ?, ?)
-        ''', (new_state_hash, merkle_root, prev_hash, datetime.now().isoformat()))
+        next_height = last_height + 1
         
-        self.db.commit()
-        print(f"State Committed. Height: {new_state_hash[:8]} | Merkle: {merkle_root[:8]}")
-        return new_state_hash
+        try:
+            self.db.execute('''
+                INSERT INTO state_chain (height, state_hash, merkle_root, prev_state_hash, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (next_height, new_state_hash, merkle_root, prev_hash, datetime.now().isoformat()))
+            
+            self.db.commit()
+            print(f"State Committed. Height: {next_height} | Merkle: {merkle_root[:8]}")
+            return new_state_hash
+            
+        except Exception as e:
+            self.db.rollback()
+            msg = str(e).lower()
+            if "integrity" in msg or "unique" in msg or "duplicate" in msg:
+                 raise ConflictError(f"State chain conflict: Height {next_height} already committed by another node.")
+            raise e
 
     def _sign_content(self, content_hash):
         """Sign content hash using node's private key (ED25519)."""
@@ -724,11 +914,18 @@ class EternalCore:
 
     def verify_signature(self, content_hash, signature, public_key_str):
         """Verify if a signature is valid for a given hash and public key."""
+        # 1. Check cache
+        cache_key = f"{signature}:{public_key_str}"
+        if cache_key in self.signature_cache:
+            return self.signature_cache[cache_key]
+
         try:
             public_key = serialization.load_ssh_public_key(public_key_str.encode())
             sig_bytes = base64.b64decode(signature)
             if isinstance(public_key, ed25519.Ed25519PublicKey):
                 public_key.verify(sig_bytes, content_hash.encode())
+                # 2. Update cache
+                self.signature_cache[cache_key] = True
                 return True
             else:
                 # We only support ED25519 for now
@@ -1444,6 +1641,55 @@ class EternalCore:
                 if metadata.get(meta_key) == val: return True
         return False
 
+    def _push_batch_to_remote(self, remote, hashes_to_push):
+        """Push a batch of objects as a tar archive."""
+        import io
+        
+        # 1. Create Archive
+        archive_buffer = io.BytesIO()
+        objects_to_update = []
+        
+        try:
+            with tarfile.open(fileobj=archive_buffer, mode='w:gz') as tar:
+                for h in hashes_to_push:
+                    try:
+                        # Use core's safe path logic (3-level sharding)
+                        src_obj, _ = self._get_safe_path(h)
+                        src_meta = src_obj.with_suffix('.meta')
+                        
+                        if not src_obj.exists():
+                             continue
+                             
+                        # Add object
+                        tar.add(src_obj, arcname=h)
+                        # Add meta
+                        if src_meta.exists():
+                            tar.add(src_meta, arcname=f"{h}.meta")
+                            
+                        # Collect DB records for this hash
+                        rows = self.db.fetchall("SELECT * FROM objects WHERE content_hash = ?", (h,))
+                        for row in rows:
+                            obj_dict = dict(row)
+                            rels = self.db.fetchall("SELECT * FROM relations WHERE from_id = ?", (row['id'],))
+                            obj_dict['relations'] = [dict(r) for r in rels]
+                            objects_to_update.append(obj_dict)
+                            
+                    except Exception as e:
+                        logger.error(f"Error packing {h}: {e}")
+
+                # Add index.json
+                index_json = json.dumps(objects_to_update).encode('utf-8')
+                tar_info = tarfile.TarInfo(name="index.json")
+                tar_info.size = len(index_json)
+                tar.addfile(tar_info, io.BytesIO(index_json))
+        except Exception as e:
+            logger.error(f"Failed to create archive: {e}")
+            return False
+            
+        # 2. Send Archive
+        archive_buffer.seek(0)
+        return remote.receive_archive(archive_buffer.read())
+
     def push(self, remote):
         """
         Intelligent Delta Push using RemoteAdapter.
@@ -1485,9 +1731,8 @@ class EternalCore:
             print("Everything up-to-date.")
             return True
             
-        # 1. Transfer objects (with filtering)
-        objects_to_update = []
-        pushed_count = 0
+        # 1. Filter objects based on interests
+        hashes_to_sync = []
         for h in missing_on_remote:
             # Check if remote is interested in any object sharing this hash
             rows = self.db.fetchall("SELECT * FROM objects WHERE content_hash = ?", (h,))
@@ -1498,26 +1743,46 @@ class EternalCore:
                     is_interested = True
                     break
             
-            if not is_interested:
-                continue
+            if is_interested:
+                hashes_to_sync.append(h)
                 
-            shard_rel = Path(h[0:2]) / h[2:4] / h
-            src_obj = self.objects_dir / shard_rel / h
-            src_meta = src_obj.with_suffix('.meta')
-            
-            # Use adapter to push bytes
-            remote.push_object(h, src_obj.read_bytes(), src_meta.read_bytes())
-            pushed_count += 1
-            
-            # Collect DB records for this hash
-            for row in rows:
-                obj_dict = dict(row)
-                # Also include relations
-                rels = self.db.fetchall("SELECT * FROM relations WHERE from_id = ?", (row['id'],))
-                obj_dict['relations'] = [dict(r) for r in rels]
-                objects_to_update.append(obj_dict)
+        if not hashes_to_sync:
+            print("No interesting objects to sync.")
+            return True
+
+        # 2. Try Batch Push
+        if hasattr(remote, 'receive_archive') and len(hashes_to_sync) > 0:
+             print(f"Batch pushing {len(hashes_to_sync)} objects...")
+             if self._push_batch_to_remote(remote, hashes_to_sync):
+                 print(f"Push successful. {len(hashes_to_sync)} objects synchronized (Batch).")
+                 return True
+             print("Batch push failed, falling back to sequential...")
+
+        # 3. Fallback to Sequential Transfer
+        objects_to_update = []
+        pushed_count = 0
+        for h in hashes_to_sync:
+            try:
+                # Use core's safe path logic (3-level sharding)
+                src_obj, _ = self.core._get_safe_path(h)
+                src_meta = src_obj.with_suffix('.meta')
+                
+                # Use adapter to push bytes
+                remote.push_object(h, src_obj.read_bytes(), src_meta.read_bytes())
+                pushed_count += 1
+                
+                # Collect DB records for this hash
+                rows = self.db.fetchall("SELECT * FROM objects WHERE content_hash = ?", (h,))
+                for row in rows:
+                    obj_dict = dict(row)
+                    # Also include relations
+                    rels = self.db.fetchall("SELECT * FROM relations WHERE from_id = ?", (row['id'],))
+                    obj_dict['relations'] = [dict(r) for r in rels]
+                    objects_to_update.append(obj_dict)
+            except Exception as e:
+                logger.error(f"Failed to push object {h}: {e}")
         
-        # 2. Remote Index Update
+        # 4. Remote Index Update
         if objects_to_update:
             remote.update_index(objects_to_update)
             
@@ -1576,8 +1841,8 @@ class EternalCore:
         for obj in remote_objects_data:
             if self.matches_filters(obj, local_interests):
                 h = obj['content_hash']
-                shard_rel = Path(h[0:2]) / h[2:4] / h
-                dest_obj = self.objects_dir / shard_rel / h
+                # Use core's safe path logic (3-level sharding)
+                dest_obj, _ = self.core._get_safe_path(h)
                 dest_meta = dest_obj.with_suffix('.meta')
                 dest_obj.parent.mkdir(parents=True, exist_ok=True)
                 
@@ -1651,16 +1916,20 @@ class EternalCore:
                 h = row['content_hash']
                 if h in exported_hashes: continue
                 
-                shard_dir = self.objects_dir / h[0:2] / h[2:4]
-                # Add content
-                content_file = shard_dir / h
+                # Use core's safe path logic
+                content_file, _ = self._get_safe_path(h)
+                
+                # Determine relative path for archive
+                # We want: objects/ab/cd/ef/hash
+                rel_path = f"objects/{h[0:2]}/{h[2:4]}/{h[4:6]}/{h}"
+                
                 if content_file.exists():
-                    zf.write(content_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}")
+                    zf.write(content_file, arcname=rel_path)
                 
                 # Add meta
-                meta_file = shard_dir / f"{h}.meta"
+                meta_file = content_file.with_suffix('.meta')
                 if meta_file.exists():
-                    zf.write(meta_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}.meta")
+                    zf.write(meta_file, arcname=f"{rel_path}.meta")
                 
                 exported_hashes.add(h)
             

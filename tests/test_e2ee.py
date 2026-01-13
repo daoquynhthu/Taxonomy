@@ -27,6 +27,7 @@ def test_e2ee_flow():
 
     # 1. Master Node Setup
     print("\n[1] Setting up Master Node...")
+    # Initialize with auto-generated salt
     EternalCore.init_repo(master_dir, role="master")
     
     # Inject Master Key
@@ -53,7 +54,8 @@ def test_e2ee_flow():
     
     # 2. Mirror Node Setup (Blind)
     print("\n[2] Setting up Blind Mirror Node...")
-    EternalCore.init_repo(mirror_dir, role="mirror")
+    # Initialize with same salt as Master
+    EternalCore.init_repo(mirror_dir, role="mirror", crypto_salt=master_salt)
     
     # Ensure NO Master Key in config (default)
     
