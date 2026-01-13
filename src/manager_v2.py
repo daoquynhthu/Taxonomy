@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-import sqlite3
+import sqlite3 # Required for SQLiteAdapter
 import hashlib
 import shutil
 import hmac
@@ -40,6 +40,87 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SeedCore")
 
+# --- Database Adapters ---
+class DatabaseAdapter:
+    """Abstract interface for database operations to support multiple backends."""
+    def execute(self, sql: str, params: tuple = ()) -> typing.Any: raise NotImplementedError()
+    def fetchone(self, sql: str, params: tuple = ()) -> typing.Optional[dict]: raise NotImplementedError()
+    def fetchall(self, sql: str, params: tuple = ()) -> typing.List[dict]: raise NotImplementedError()
+    def commit(self): raise NotImplementedError()
+    def rollback(self): raise NotImplementedError()
+    def close(self): raise NotImplementedError()
+
+class SQLiteAdapter(DatabaseAdapter):
+    """SQLite implementation of the database adapter."""
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+
+    def execute(self, sql, params=()):
+        return self.conn.execute(sql, params)
+
+    def fetchone(self, sql, params=()):
+        cursor = self.conn.execute(sql, params)
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def fetchall(self, sql, params=()):
+        cursor = self.conn.execute(sql, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        self.conn.close()
+
+class PostgreSQLAdapter(DatabaseAdapter):
+    """PostgreSQL implementation of the database adapter."""
+    def __init__(self, dsn: str):
+        try:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            self.conn = psycopg2.connect(dsn)
+            self.cursor_factory = RealDictCursor
+        except ImportError:
+            raise ImportError("PostgreSQL support requires 'psycopg2-binary' package. Install it with: pip install psycopg2-binary")
+
+    def _convert_sql(self, sql):
+        # Convert SQLite ? placeholders to PostgreSQL %s
+        return sql.replace('?', '%s')
+
+    def execute(self, sql, params=()):
+        sql = self._convert_sql(sql)
+        cursor = self.conn.cursor()
+        cursor.execute(sql, params)
+        return cursor
+
+    def fetchone(self, sql, params=()):
+        sql = self._convert_sql(sql)
+        cursor = self.conn.cursor(cursor_factory=self.cursor_factory)
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def fetchall(self, sql, params=()):
+        sql = self._convert_sql(sql)
+        cursor = self.conn.cursor(cursor_factory=self.cursor_factory)
+        cursor.execute(sql, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        self.conn.close()
+
 class RemoteAdapter:
     """Abstract interface for remote repository operations."""
     def get_federation_id(self): raise NotImplementedError()
@@ -57,7 +138,20 @@ class LocalFileSystemAdapter(RemoteAdapter):
         self.path = Path(path).resolve()
         if self.path.name != ".eternal" and (self.path / ".eternal").exists():
             self.path = self.path / ".eternal"
-        self.core = EternalCore(self.path, auto_sync=False)
+            
+        # Load config to check for DB type
+        config_path = self.path / "config.json"
+        db_adapter = None
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    cfg = json.load(f)
+                    if cfg.get('db_type') == 'postgresql':
+                        db_adapter = PostgreSQLAdapter(cfg.get('db_dsn', ''))
+            except:
+                pass
+                
+        self.core = EternalCore(self.path, auto_sync=False, db_adapter=db_adapter)
 
     def get_federation_id(self):
         return self.core.get_federation_id()
@@ -84,27 +178,22 @@ class LocalFileSystemAdapter(RemoteAdapter):
         return src_obj.read_bytes(), src_meta.read_bytes()
 
     def get_objects_by_hashes(self, hashes):
-        conn = sqlite3.connect(self.core.db_path)
-        conn.row_factory = sqlite3.Row
         results = []
         for h in hashes:
-            rows = conn.execute("SELECT * FROM objects WHERE content_hash = ?", (h,)).fetchall()
+            rows = self.core.db.fetchall("SELECT * FROM objects WHERE content_hash = ?", (h,))
             for row in rows:
                 obj_dict = dict(row)
-                rels = conn.execute("SELECT * FROM relations WHERE from_id = ?", (row['id'],)).fetchall()
+                rels = self.core.db.fetchall("SELECT * FROM relations WHERE from_id = ?", (row['id'],))
                 obj_dict['relations'] = [dict(r) for r in rels]
                 results.append(obj_dict)
-        conn.close()
         return results
 
     def update_index(self, objects_data):
-        conn = sqlite3.connect(self.core.db_path)
-        
         # Load trusted public keys from peers table to verify signatures
         trusted_keys = {}
-        res = conn.execute("SELECT public_key, name FROM peers").fetchall()
-        for pub_key, name in res:
-            if pub_key: trusted_keys[pub_key] = name
+        res = self.core.db.fetchall("SELECT public_key, name FROM peers")
+        for row in res:
+            if row['public_key']: trusted_keys[row['public_key']] = row['name']
             
         # Also trust ourselves
         my_pub = self.core.get_public_key()
@@ -126,26 +215,21 @@ class LocalFileSystemAdapter(RemoteAdapter):
                     is_valid = True
                     break
             
-            if not is_valid and trusted_keys:
-                logger.error(f"Object {row['id']} signature verification failed! Not from a trusted peer.")
+            if not is_valid:
+                logger.error(f"Object {row['id']} signature verification failed! Signature is invalid or not from a trusted peer.")
                 continue
-            elif not is_valid and not trusted_keys:
-                # If no peers yet, we might be the first one or in bootstrap mode
-                # For now, allow but log warning. In strict mode, this would be rejected.
-                logger.warning(f"No trusted peers found. Accepting object {row['id']} without verification.")
 
             # 2. Update DB
-            conn.execute("INSERT OR REPLACE INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            self.core.db.execute("INSERT OR REPLACE INTO objects (id, data_type, content_hash, signature, version, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (row['id'], row['data_type'], row['content_hash'], row['signature'], row['version'], row['created_at'], row['updated_at'], row['metadata']))
             
             # Relations
             if 'relations' in row:
-                conn.execute("DELETE FROM relations WHERE from_id = ?", (row['id'],))
+                self.core.db.execute("DELETE FROM relations WHERE from_id = ?", (row['id'],))
                 for rel in row['relations']:
-                    conn.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
+                    self.core.db.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
                                 (rel['from_id'], rel['to_id'], rel['rel_type']))
-        conn.commit()
-        conn.close()
+        self.core.db.commit()
 
     def authenticate(self, challenge):
         """Respond to an authentication challenge."""
@@ -158,13 +242,18 @@ class LocalFileSystemAdapter(RemoteAdapter):
         }
 
 class EternalCore:
-    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None, app_name="EternalCore", auto_sync=True):
+    def __init__(self, root_dir, mirror_dir=None, secret_key=None, master_key=None, app_name="EternalCore", auto_sync=True, db_adapter=None):
         self.root_dir = Path(root_dir).resolve()
         self.objects_dir = self.root_dir / "objects"
-        # Database is now inside .eternal
         self.db_path = self.root_dir / "eternal.db"
         self.app_name = app_name
         self.auto_sync = auto_sync
+        
+        # Initialize Database Adapter
+        if db_adapter:
+            self.db = db_adapter
+        else:
+            self.db = SQLiteAdapter(self.db_path)
         
         # Mirror configuration
         if mirror_dir:
@@ -174,7 +263,20 @@ class EternalCore:
         else:
             self.mirror_dir = None
             
-        self.secret_key = secret_key or "humanity-eternal-2026"
+        self.secret_key = secret_key
+        
+        # Load secret_key from DB if not provided
+        if not self.secret_key and (isinstance(self.db, SQLiteAdapter) and self.db_path.exists() or not isinstance(self.db, SQLiteAdapter)):
+            try:
+                res = self.db.fetchone("SELECT value FROM repo_info WHERE key='secret_key'")
+                if res:
+                    self.secret_key = res['value']
+            except:
+                pass
+        
+        if not self.secret_key:
+            # If still no secret key, we'll need it for some operations, but don't use a default
+            self.secret_key = None
         
         # Encryption Key Setup
         self.fernet = None
@@ -182,11 +284,9 @@ class EternalCore:
             # Try to load unique salt from DB
             salt = b'seed-plan-salt-2026' # Default fallback
             try:
-                conn = sqlite3.connect(self.db_path)
-                res = conn.execute("SELECT value FROM repo_info WHERE key='crypto_salt'").fetchone()
-                conn.close()
+                res = self.db.fetchone("SELECT value FROM repo_info WHERE key='crypto_salt'")
                 if res:
-                    salt = base64.b64decode(res[0])
+                    salt = base64.b64decode(res['value'])
             except:
                 pass
 
@@ -272,14 +372,67 @@ class EternalCore:
             app_name=config.get('app_name', 'EternalCore')
         )
 
+    def _validate_hash(self, h):
+        """Validate that the hash is a valid SHA256 hex string."""
+        if not isinstance(h, str) or len(h) != 64 or not all(c in '0123456789abcdef' for c in h):
+            raise ValueError(f"Security Error: Invalid hash format detected: {h}")
+        return True
+
+    def _validate_obj_id(self, obj_id):
+        """Validate object ID format (alphanumeric, -, _, .)."""
+        if not isinstance(obj_id, str) or not obj_id:
+            raise ValueError("Security Error: Invalid object ID")
+        # Prevent path traversal in obj_id
+        if '..' in obj_id or '/' in obj_id or '\\' in obj_id:
+            raise ValueError(f"Security Error: Potential path traversal in object ID: {obj_id}")
+        return True
+
+    @staticmethod
+    def _safe_json_loads(data, max_depth=5, max_items=1000):
+        """Safely load JSON with depth and size limits to prevent JSON bombs."""
+        if not data:
+            return {}
+        if len(data) > 1024 * 1024: # 1MB limit
+            raise ValueError("Security Error: JSON input too large")
+            
+        obj = json.loads(data)
+        
+        def check_depth(o, depth):
+            if depth > max_depth:
+                raise ValueError("Security Error: JSON nesting too deep")
+            if isinstance(o, dict):
+                if len(o) > max_items:
+                    raise ValueError("Security Error: JSON object has too many keys")
+                for k, v in o.items():
+                    check_depth(v, depth + 1)
+            elif isinstance(o, list):
+                if len(o) > max_items:
+                    raise ValueError("Security Error: JSON list too long")
+                for item in o:
+                    check_depth(item, depth + 1)
+        
+        check_depth(obj, 0)
+        return obj
+
+    def _get_safe_path(self, h):
+        """Get safe path for a hash, preventing path traversal."""
+        self._validate_hash(h)
+        shard_dir = self.objects_dir / h[0:2] / h[2:4]
+        obj_path = shard_dir / h
+        
+        # Verify the path is within objects_dir
+        if not obj_path.resolve().is_relative_to(self.objects_dir.resolve()):
+            raise ValueError(f"Security Error: Path traversal detected for hash {h}")
+        return obj_path, shard_dir
+
     def _init_db(self):
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        conn.execute('PRAGMA journal_mode=WAL')
-        conn.execute('PRAGMA synchronous=NORMAL')
+        if isinstance(self.db, SQLiteAdapter):
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.db.execute('PRAGMA journal_mode=WAL')
+            self.db.execute('PRAGMA synchronous=NORMAL')
         
         # Generic objects table
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS objects (
                 id TEXT PRIMARY KEY,
                 data_type TEXT,
@@ -293,21 +446,19 @@ class EternalCore:
         ''')
         
         # Peer nodes for distributed sync
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS peers (
                 name TEXT PRIMARY KEY,
                 url TEXT,
                 last_seen TEXT,
                 trust_level INTEGER DEFAULT 1,
-                role TEXT DEFAULT 'mirror', -- master, contributor, mirror
+                role TEXT DEFAULT 'mirror',
                 public_key TEXT
             )
         ''')
         
-        # ... (rest of the tables remain the same)
-        
         # Generic relationships table
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS relations (
                 from_id TEXT,
                 to_id TEXT,
@@ -317,7 +468,7 @@ class EternalCore:
         ''')
         
         # History for versioning
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS history (
                 obj_id TEXT,
                 version INTEGER,
@@ -328,9 +479,11 @@ class EternalCore:
             )
         ''')
         
-        conn.execute('''
+        # Handle SQLite/PostgreSQL difference for autoincrement
+        height_col = "height SERIAL PRIMARY KEY" if isinstance(self.db, PostgreSQLAdapter) else "height INTEGER PRIMARY KEY AUTOINCREMENT"
+        self.db.execute(f'''
             CREATE TABLE IF NOT EXISTS state_chain (
-                height INTEGER PRIMARY KEY AUTOINCREMENT,
+                {height_col},
                 state_hash TEXT,
                 merkle_root TEXT,
                 prev_state_hash TEXT,
@@ -339,7 +492,7 @@ class EternalCore:
         ''')
         
         # Merkle Tree nodes cache for incremental updates
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS merkle_cache (
                 level INTEGER,
                 pos INTEGER,
@@ -349,7 +502,7 @@ class EternalCore:
         ''')
         
         # Repo info table
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS repo_info (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -357,21 +510,24 @@ class EternalCore:
         ''')
 
         # Subscriptions for selective sync (Interests)
-        conn.execute('''
+        self.db.execute('''
             CREATE TABLE IF NOT EXISTS subscriptions (
-                filter_key TEXT,    -- e.g., 'data_type', 'metadata.category'
-                filter_value TEXT,  -- e.g., 'doc', 'Science'
+                filter_key TEXT,
+                filter_value TEXT,
                 PRIMARY KEY (filter_key, filter_value)
             )
         ''')
         
         # Composite indexes for performance
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_obj_type ON objects(data_type)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_hash_version ON history(content_hash, version)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_obj_history ON history(obj_id, version)')
-        
-        conn.commit()
-        conn.close()
+        try:
+            self.db.execute('CREATE INDEX idx_obj_type ON objects(data_type)')
+            self.db.execute('CREATE INDEX idx_hash_version ON history(content_hash, version)')
+            self.db.execute('CREATE INDEX idx_obj_history ON history(obj_id, version)')
+        except:
+            # Index might already exist or handled by IF NOT EXISTS (SQLite)
+            pass
+            
+        self.db.commit()
         
     @staticmethod
     def find_repo_root(start_path="."):
@@ -384,7 +540,7 @@ class EternalCore:
         return None
 
     @classmethod
-    def init_repo(cls, path=".", app_name="EternalCore", role="master", federation_id=None, mirror_dir=None):
+    def init_repo(cls, path=".", app_name="EternalCore", role="master", federation_id=None, mirror_dir=None, db_type="sqlite", db_dsn=None, crypto_salt=None, repo_secret_key=None):
         """Initialize a new repository at the given path."""
         root = Path(path).resolve()
         eternal_dir = root / ".eternal"
@@ -401,16 +557,25 @@ class EternalCore:
             "root_dir": str(eternal_dir),
             "app_name": app_name,
             "mirror_dir": str(Path(mirror_dir).resolve()) if mirror_dir else None,
+            "db_type": db_type,
+            "db_dsn": db_dsn,
             "created_at": datetime.now().isoformat()
         }
         with open(eternal_dir / "config.json", 'w') as f:
             json.dump(config, f, indent=2)
             
-        core = cls(eternal_dir, app_name=app_name, mirror_dir=config["mirror_dir"])
+        # Initialize adapter based on type
+        if db_type == "postgres":
+            if not db_dsn:
+                raise ValueError("PostgreSQL DSN is required when db_type is 'postgres'")
+            db_adapter = PostgreSQLAdapter(db_dsn)
+        else:
+            db_adapter = SQLiteAdapter(eternal_dir / "eternal.db")
+
+        core = cls(eternal_dir, app_name=app_name, mirror_dir=config["mirror_dir"], db_adapter=db_adapter)
+        core._init_db()
         
         # Record init info
-        conn = sqlite3.connect(core.db_path)
-        
         # Generate Identity Keypair (ED25519)
         private_key = ed25519.Ed25519PrivateKey.generate()
         public_key = private_key.public_key()
@@ -434,19 +599,22 @@ class EternalCore:
         else:
             print(f"Joining existing federation: {federation_id}")
 
-        # Generate a unique salt for this repository
-        crypto_salt = base64.b64encode(os.urandom(16)).decode()
+        # Generate a unique salt and secret key for this repository if not provided
+        if not crypto_salt:
+            crypto_salt = base64.b64encode(os.urandom(16)).decode()
+        if not repo_secret_key:
+            repo_secret_key = base64.b64encode(os.urandom(32)).decode()
 
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("init_date", datetime.now().isoformat()))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("version", "3.0"))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("private_key", priv_bytes))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("public_key", pub_bytes))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("role", role))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("node_id", node_id))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("federation_id", federation_id))
-        conn.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("crypto_salt", crypto_salt))
-        conn.commit()
-        conn.close()
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("init_date", datetime.now().isoformat()))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("version", "3.0"))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("private_key", priv_bytes))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("public_key", pub_bytes))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("role", role))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("node_id", node_id))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("federation_id", federation_id))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("crypto_salt", crypto_salt))
+        core.db.execute("INSERT INTO repo_info (key, value) VALUES (?, ?)", ("secret_key", repo_secret_key))
+        core.db.commit()
         
         print(f"Initialized empty EternalCore repository in {eternal_dir}")
         print(f"Node ID: {node_id}")
@@ -471,15 +639,11 @@ class EternalCore:
 
     def calculate_merkle_root(self):
         """Calculate the Merkle Root for all objects."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         # 1. Get current leaf hashes (ordered by ID for determinism)
-        cursor.execute("SELECT content_hash FROM objects ORDER BY id")
-        leaves = [row[0] for row in cursor.fetchall()]
+        res = self.db.fetchall("SELECT content_hash FROM objects ORDER BY id")
+        leaves = [row['content_hash'] for row in res]
         
         if not leaves:
-            conn.close()
             return "0" * 64
             
         # 2. Build tree and cache levels
@@ -511,48 +675,44 @@ class EternalCore:
         root = current_level[0]
         
         # Update cache with the new root
-        cursor.execute("INSERT OR REPLACE INTO merkle_cache (level, pos, hash) VALUES (?, 0, ?)", (level, root))
+        if isinstance(self.db, PostgreSQLAdapter):
+            self.db.execute("INSERT INTO merkle_cache (level, pos, hash) VALUES (%s, 0, %s) ON CONFLICT (level, pos) DO UPDATE SET hash = EXCLUDED.hash", (level, root))
+        else:
+            self.db.execute("INSERT OR REPLACE INTO merkle_cache (level, pos, hash) VALUES (?, 0, ?)", (level, root))
         
-        conn.commit()
-        conn.close()
+        self.db.commit()
         return root
 
     def commit_state(self):
         """Commit current state to the 'blockchain' state chain."""
         merkle_root = self.calculate_merkle_root()
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         # Get previous state hash
-        cursor.execute("SELECT state_hash FROM state_chain ORDER BY height DESC LIMIT 1")
-        row = cursor.fetchone()
-        prev_hash = row[0] if row else "0" * 64
+        row = self.db.fetchone("SELECT state_hash FROM state_chain ORDER BY height DESC LIMIT 1")
+        prev_hash = row['state_hash'] if row else "0" * 64
         
         # New state hash = hash(prev_hash + merkle_root)
         new_state_hash = self._calculate_hash(prev_hash + merkle_root)
         
-        cursor.execute('''
+        self.db.execute('''
             INSERT INTO state_chain (state_hash, merkle_root, prev_state_hash, timestamp)
             VALUES (?, ?, ?, ?)
         ''', (new_state_hash, merkle_root, prev_hash, datetime.now().isoformat()))
         
-        conn.commit()
-        conn.close()
+        self.db.commit()
         print(f"State Committed. Height: {new_state_hash[:8]} | Merkle: {merkle_root[:8]}")
         return new_state_hash
 
     def _sign_content(self, content_hash):
         """Sign content hash using node's private key (ED25519)."""
-        conn = sqlite3.connect(self.db_path)
-        res = conn.execute("SELECT value FROM repo_info WHERE key='private_key'").fetchone()
-        conn.close()
+        res = self.db.fetchone("SELECT value FROM repo_info WHERE key='private_key'")
         
         if not res:
             # Fallback to HMAC if identity not yet established
-            return hmac.new(b"eternal-secret", content_hash.encode(), hashlib.sha256).hexdigest()
+            key = (self.secret_key or "temporary-init-key").encode()
+            return hmac.new(key, content_hash.encode(), hashlib.sha256).hexdigest()
             
-        priv_key_str = res[0]
+        priv_key_str = res['value']
         # Satisfy linter by explicitly handling ED25519
         private_key = serialization.load_pem_private_key(priv_key_str.encode(), password=None)
         if isinstance(private_key, ed25519.Ed25519PrivateKey):
@@ -579,24 +739,27 @@ class EternalCore:
 
 
     def _atomic_write(self, path, data):
-        """Atomic write using a temporary file."""
+        """Atomic write using a temporary file and O_EXCL to prevent TOCTOU."""
         temp_path = path.with_suffix('.tmp')
-        if isinstance(data, (bytes, bytearray)):
-            with open(temp_path, 'wb') as f:
+        # Use O_CREAT | O_EXCL to ensure we are the ones creating the file
+        try:
+            fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | (os.O_BINARY if hasattr(os, 'O_BINARY') else 0))
+            with os.fdopen(fd, 'wb' if isinstance(data, (bytes, bytearray)) else 'w', encoding=None if isinstance(data, (bytes, bytearray)) else 'utf-8') as f:
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-        else:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-        os.replace(temp_path, path)
+            os.replace(temp_path, path)
+        except FileExistsError:
+            # Another process is writing to this temp file, skip or handle
+            pass
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise e
 
     def get_object_content(self, content_hash):
         """Retrieve, decrypt, and decompress an object based on its sidecar metadata."""
-        shard_dir = self.objects_dir / content_hash[0:2] / content_hash[2:4]
-        obj_path = shard_dir / content_hash
+        obj_path, shard_dir = self._get_safe_path(content_hash)
         meta_path = shard_dir / f"{content_hash}.meta"
         
         if not obj_path.exists():
@@ -604,7 +767,15 @@ class EternalCore:
             
         with open(obj_path, 'rb') as f:
             content = f.read()
-            
+        
+        # Verify integrity
+        current_hash = self._calculate_hash(content)
+        if current_hash != content_hash:
+             logger.error(f"Integrity Error: Hash mismatch for {content_hash}. Got {current_hash}")
+             raise ValueError("Integrity Error: Object corrupted on disk.")
+             
+        # logger.info(f"Read {len(content)} bytes for {content_hash}")
+
         # Try to read sidecar metadata for this specific object
         if meta_path.exists():
             with open(meta_path, 'rb') as f:
@@ -620,10 +791,18 @@ class EternalCore:
                 meta = json.loads(meta_raw.decode('utf-8'))
             
             if meta.get('encryption'):
-                content = self._decrypt(content)
+                try:
+                    content = self._decrypt(content)
+                except Exception as e:
+                    logger.error(f"Decryption failed for {content_hash}. Content len: {len(content)}. Meta: {meta}")
+                    raise e
                 
             if meta.get('compression') == 'zlib':
-                content = zlib.decompress(content)
+                # Security: Protection against compression bombs
+                d = zlib.decompressobj()
+                content = d.decompress(content, 100 * 1024 * 1024) # 100MB limit
+                if d.unconsumed_tail:
+                    raise ValueError("Security Error: Decompressed data exceeds limit (Potential Compression Bomb)")
         
         return content
 
@@ -643,10 +822,9 @@ class EternalCore:
                 metadata['encryption'] = 'fernet-aes128'
 
         h = self._calculate_hash(content)
-        shard_dir = self.objects_dir / h[0:2] / h[2:4]
+        obj_path, shard_dir = self._get_safe_path(h)
         shard_dir.mkdir(parents=True, exist_ok=True)
         
-        obj_path = shard_dir / h
         if not obj_path.exists():
             self._atomic_write(obj_path, content)
             
@@ -677,6 +855,7 @@ class EternalCore:
 
     def put(self, obj_id, content, metadata=None, data_type="blob", relations=None):
         """Store an arbitrary object with metadata and version control."""
+        self._validate_obj_id(obj_id)
         # Role check: Mirror nodes are read-only for users
         if self.get_node_role() == "mirror":
             raise PermissionError("Mirror nodes are read-only. Data must be synchronized from other peers.")
@@ -701,13 +880,9 @@ class EternalCore:
         signature = self._sign_content(content_hash)
         
         # 2. Database update with Optimistic Locking
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
-            cursor.execute("SELECT version FROM objects WHERE id = ?", (obj_id,))
-            row = cursor.fetchone()
-            old_version = row[0] if row else 0
+            row = self.db.fetchone("SELECT version FROM objects WHERE id = ?", (obj_id,))
+            old_version = row['version'] if row else 0
             new_version = old_version + 1
             now_str = datetime.now().isoformat()
             
@@ -731,12 +906,12 @@ class EternalCore:
             
             # Update Index
             if old_version == 0:
-                cursor.execute('''
+                self.db.execute('''
                     INSERT INTO objects (id, data_type, content_hash, signature, version, created_at, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (obj_id, data_type, content_hash, signature, new_version, now_str, json.dumps(metadata)))
             else:
-                cursor.execute('''
+                cursor = self.db.execute('''
                     UPDATE objects 
                     SET data_type=?, content_hash=?, signature=?, version=?, updated_at=?, metadata=?
                     WHERE id=? AND version=?
@@ -746,17 +921,17 @@ class EternalCore:
                     raise Exception(f"Concurrency conflict: Object {obj_id} was updated by another process.")
 
             # Record History
-            cursor.execute('''
+            self.db.execute('''
                 INSERT INTO history (obj_id, version, content_hash, timestamp, metadata)
                 VALUES (?, ?, ?, ?, ?)
             ''', (obj_id, new_version, content_hash, now_str, json.dumps(sidecar_payload)))
             
             # Update Relations
-            cursor.execute("DELETE FROM relations WHERE from_id = ?", (obj_id,))
+            self.db.execute("DELETE FROM relations WHERE from_id = ?", (obj_id,))
             for to_id, rel_type in relations:
-                cursor.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
+                self.db.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
             
-            conn.commit()
+            self.db.commit()
             logger.info(f"Stored object [{obj_id}] v{new_version}")
             
             # Automatic Sync & Broadcast
@@ -769,27 +944,20 @@ class EternalCore:
                 
                 # Broadcast to network
                 try:
-                    self.broadcast()
+                    self.broadcast_update()
                 except Exception as e:
                     logger.error(f"Network broadcast failed: {e}")
             
             return content_hash
             
         except Exception as e:
-            conn.rollback()
+            self.db.rollback()
             logger.error(f"Failed to put object {obj_id}: {e}")
             raise
-        finally:
-            conn.close()
 
     def get(self, obj_id):
         """Retrieve object content and metadata."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM objects WHERE id = ?", (obj_id,))
-        row = cursor.fetchone()
-        conn.close()
+        row = self.db.fetchone("SELECT * FROM objects WHERE id = ?", (obj_id,))
         
         if not row:
             return None
@@ -805,14 +973,10 @@ class EternalCore:
     def rollback(self, obj_id, target_version):
         """Roll back an object to a specific version from history."""
         logger.info(f"Initiating rollback for {obj_id} to version {target_version}")
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
         
         try:
             # 1. Find the version in history
-            cursor.execute("SELECT * FROM history WHERE obj_id = ? AND version = ?", (obj_id, target_version))
-            hist_row = cursor.fetchone()
+            hist_row = self.db.fetchone("SELECT * FROM history WHERE obj_id = ? AND version = ?", (obj_id, target_version))
             if not hist_row:
                 logger.error(f"Version {target_version} not found for object {obj_id}")
                 return False
@@ -821,38 +985,39 @@ class EternalCore:
             content_hash = hist_row['content_hash']
             
             # 2. Perform the rollback update
-            cursor.execute("SELECT version FROM objects WHERE id = ?", (obj_id,))
-            current_version = cursor.fetchone()[0]
+            row = self.db.fetchone("SELECT version FROM objects WHERE id = ?", (obj_id,))
+            if not row:
+                logger.error(f"Object {obj_id} not found in current state.")
+                return False
+            current_version = row['version']
             new_version = current_version + 1
             now_str = datetime.now().isoformat()
             
-            cursor.execute('''
+            self.db.execute('''
                 UPDATE objects SET 
                 data_type=?, content_hash=?, signature=?, version=?, updated_at=?, metadata=?
                 WHERE id=?
             ''', (sidecar_payload['data_type'], content_hash, sidecar_payload['signature'], new_version, now_str, json.dumps(sidecar_payload['metadata']), obj_id))
             
             # 3. Record the rollback event in history
-            cursor.execute('''
+            self.db.execute('''
                 INSERT INTO history (obj_id, content_hash, version, timestamp, metadata)
                 VALUES (?, ?, ?, ?, ?)
             ''', (obj_id, content_hash, new_version, now_str, json.dumps(sidecar_payload)))
             
             # 4. Restore relations
-            cursor.execute("DELETE FROM relations WHERE from_id = ?", (obj_id,))
+            self.db.execute("DELETE FROM relations WHERE from_id = ?", (obj_id,))
             for to_id, rel_type in sidecar_payload.get('relations', []):
-                cursor.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
+                self.db.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)", (obj_id, to_id, rel_type))
             
-            conn.commit()
+            self.db.commit()
             self.commit_state()
             logger.info(f"Rollback successful: {obj_id} v{new_version} (restored from v{target_version})")
             return True
         except Exception as e:
-            conn.rollback()
+            self.db.rollback()
             logger.error(f"Rollback failed: {e}")
             return False
-        finally:
-            conn.close()
 
     def validate_relations(self, obj_id, visited=None):
         """Recursively ensure relations are valid and targets exist."""
@@ -863,17 +1028,13 @@ class EternalCore:
             return True, []
         
         visited.add(obj_id)
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
         
-        cursor.execute("SELECT id FROM objects WHERE id = ?", (obj_id,))
-        if not cursor.fetchone():
-            conn.close()
+        res = self.db.fetchone("SELECT id FROM objects WHERE id = ?", (obj_id,))
+        if not res:
             return False, [obj_id]
         
-        cursor.execute("SELECT to_id FROM relations WHERE from_id = ?", (obj_id,))
-        targets = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        targets_res = self.db.fetchall("SELECT to_id FROM relations WHERE from_id = ?", (obj_id,))
+        targets = [row['to_id'] for row in targets_res]
         
         missing_all = []
         for target_id in targets:
@@ -887,6 +1048,10 @@ class EternalCore:
         """Generate a text-based relation graph visualization."""
         if visited is None:
             visited = set()
+            
+        if level > 100: # Security: limit recursion depth
+            print("  " * level + "└── (MAX DEPTH REACHED)")
+            return
             
         obj = self.get(obj_id)
         if not obj:
@@ -902,15 +1067,11 @@ class EternalCore:
             
         visited.add(obj_id)
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT to_id, rel_type FROM relations WHERE from_id = ?", (obj_id,))
-        relations = cursor.fetchall()
-        conn.close()
+        relations = self.db.fetchall("SELECT to_id, rel_type FROM relations WHERE from_id = ?", (obj_id,))
         
-        for to_id, rel_type in relations:
-            print("  " * (level + 1) + f"({rel_type})")
-            self.visualize_relations(to_id, level + 1, visited)
+        for row in relations:
+            print("  " * (level + 1) + f"({row['rel_type']})")
+            self.visualize_relations(row['to_id'], level + 1, visited)
 
     def health_check(self):
         """Perform a comprehensive system health check."""
@@ -930,9 +1091,7 @@ class EternalCore:
 
     def _check_db_connection(self):
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("SELECT 1")
-            conn.close()
+            self.db.execute("SELECT 1")
             return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
@@ -959,23 +1118,15 @@ class EternalCore:
 
     def _get_last_commit_time(self):
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT timestamp FROM state_chain ORDER BY height DESC LIMIT 1")
-            row = cursor.fetchone()
-            conn.close()
-            return row[0] if row else None
+            row = self.db.fetchone("SELECT timestamp FROM state_chain ORDER BY height DESC LIMIT 1")
+            return row['timestamp'] if row else None
         except:
             return None
 
     def audit_all(self):
         """Verify integrity of all objects in the database."""
         print("Starting full system audit...")
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM objects")
-        rows = cursor.fetchall()
+        rows = self.db.fetchall("SELECT * FROM objects")
         
         issues = []
         for row in rows:
@@ -999,8 +1150,6 @@ class EternalCore:
             if row['signature'] != self._sign_content(h):
                 issues.append(f"INVALID_SIGNATURE: Object {obj_id}")
                 
-        conn.close()
-        
         # Merkle State Audit
         current_root = self.calculate_merkle_root()
         print(f"Current Global State Root: {current_root}")
@@ -1017,16 +1166,18 @@ class EternalCore:
     def rebuild_index(self):
         """Rebuild the SQLite index from all .meta files in the objects directory."""
         print("Rebuilding index from physical sidecar files...")
-        conn = sqlite3.connect(self.db_path)
-        # Ensure schema is up to date before rebuild
-        conn.execute('DROP TABLE IF EXISTS objects')
-        conn.execute('DROP TABLE IF EXISTS relations')
-        conn.execute('DROP TABLE IF EXISTS history')
-        conn.close()
-        self._init_db()
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        # Ensure schema is up to date before rebuild
+        if isinstance(self.db, PostgreSQLAdapter):
+            self.db.execute('DROP TABLE IF EXISTS objects CASCADE')
+            self.db.execute('DROP TABLE IF EXISTS relations CASCADE')
+            self.db.execute('DROP TABLE IF EXISTS history CASCADE')
+        else:
+            self.db.execute('DROP TABLE IF EXISTS objects')
+            self.db.execute('DROP TABLE IF EXISTS relations')
+            self.db.execute('DROP TABLE IF EXISTS history')
+            
+        self._init_db()
         
         for meta_file in self.objects_dir.glob("**/*.meta"):
             with open(meta_file, 'r', encoding='utf-8') as f:
@@ -1041,55 +1192,77 @@ class EternalCore:
                 metadata = m.get('metadata', {})
                 created_at = m.get('created_at', datetime.now().isoformat())
                 
-                cursor.execute('''
-                    INSERT OR REPLACE INTO objects 
-                    (id, data_type, content_hash, signature, version, created_at, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (obj_id, data_type, content_hash, signature, ver, created_at, json.dumps(metadata)))
-                
-                cursor.execute('''
-                    INSERT OR IGNORE INTO history (obj_id, version, content_hash, timestamp, metadata)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (obj_id, ver, content_hash, created_at, json.dumps(m)))
+                if isinstance(self.db, PostgreSQLAdapter):
+                    self.db.execute('''
+                        INSERT INTO objects 
+                        (id, data_type, content_hash, signature, version, created_at, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            data_type = EXCLUDED.data_type,
+                            content_hash = EXCLUDED.content_hash,
+                            signature = EXCLUDED.signature,
+                            version = EXCLUDED.version,
+                            created_at = EXCLUDED.created_at,
+                            metadata = EXCLUDED.metadata
+                    ''', (obj_id, data_type, content_hash, signature, ver, created_at, json.dumps(metadata)))
+                    
+                    self.db.execute('''
+                        INSERT INTO history (obj_id, version, content_hash, timestamp, metadata)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                    ''', (obj_id, ver, content_hash, created_at, json.dumps(m)))
 
-                for to_id, rel_type in m.get('relations', []):
-                    cursor.execute('INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)', (obj_id, to_id, rel_type))
+                    for to_id, rel_type in m.get('relations', []):
+                        self.db.execute('''
+                            INSERT INTO relations (from_id, to_id, rel_type) 
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (from_id, to_id, rel_type) DO NOTHING
+                        ''', (obj_id, to_id, rel_type))
+                else:
+                    self.db.execute('''
+                        INSERT OR REPLACE INTO objects 
+                        (id, data_type, content_hash, signature, version, created_at, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (obj_id, data_type, content_hash, signature, ver, created_at, json.dumps(metadata)))
+                    
+                    self.db.execute('''
+                        INSERT OR IGNORE INTO history (obj_id, version, content_hash, timestamp, metadata)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (obj_id, ver, content_hash, created_at, json.dumps(m)))
+
+                    for to_id, rel_type in m.get('relations', []):
+                        self.db.execute('INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)', (obj_id, to_id, rel_type))
         
-        conn.commit()
-        conn.close()
+        self.db.commit()
         print("Index rebuilt successfully.")
 
     def search(self, query=None, data_type=None):
         """Search for objects by metadata or data_type."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
         sql = "SELECT id, data_type, content_hash, version, created_at FROM objects WHERE 1=1"
         params = []
         
         if query:
-            sql += " AND (id LIKE ? OR metadata LIKE ?)"
+            if isinstance(self.db, PostgreSQLAdapter):
+                sql += " AND (id LIKE %s OR metadata LIKE %s)"
+            else:
+                sql += " AND (id LIKE ? OR metadata LIKE ?)"
             params.extend([f"%{query}%", f"%{query}%"])
         
         if data_type:
-            sql += " AND data_type = ?"
+            if isinstance(self.db, PostgreSQLAdapter):
+                sql += " AND data_type = %s"
+            else:
+                sql += " AND data_type = ?"
             params.append(data_type)
             
-        cursor.execute(sql, params)
-        results = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return results
+        results = self.db.fetchall(sql, tuple(params))
+        return [dict(row) for row in results]
 
     def verify_state_chain(self, verbose=False):
         """Verify the integrity of the entire state chain (Blockchain validation)."""
         if verbose:
             print("Verifying state chain integrity...")
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT height, state_hash, merkle_root, prev_state_hash FROM state_chain ORDER BY height ASC")
-        rows = cursor.fetchall()
-        conn.close()
+        rows = self.db.fetchall("SELECT height, state_hash, merkle_root, prev_state_hash FROM state_chain ORDER BY height ASC")
         
         if not rows:
             if verbose:
@@ -1097,7 +1270,12 @@ class EternalCore:
             return True
             
         expected_prev_hash = "0" * 64
-        for height, state_hash, merkle_root, prev_state_hash in rows:
+        for row in rows:
+            height = row['height']
+            state_hash = row['state_hash']
+            merkle_root = row['merkle_root']
+            prev_state_hash = row['prev_state_hash']
+            
             # 1. Check Linkage
             if prev_state_hash != expected_prev_hash:
                 print(f"CHAIN BROKEN at height {height}: prev_hash mismatch!")
@@ -1113,19 +1291,16 @@ class EternalCore:
             
         # 3. Verify current Merkle Root matches the latest block
         current_merkle = self.calculate_merkle_root()
-        if rows and rows[-1][2] != current_merkle:
+        if rows and rows[-1]['merkle_root'] != current_merkle:
             print("CRITICAL: Current data does not match the latest state root!")
             return False
             
         print(f"State Chain Verified. Height: {len(rows)}, Current Root: {current_merkle[:8]}")
         return True
 
-    def broadcast(self):
+    def broadcast_update(self):
         """Broadcast local changes to all known peers in the network."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        peers = conn.execute("SELECT name, url FROM peers").fetchall()
-        conn.close()
+        peers = self.db.fetchall("SELECT name, url FROM peers")
         
         if not peers:
             return
@@ -1170,13 +1345,22 @@ class EternalCore:
                 return False
                 
             # 3. Store Peer with Identity Info
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("""
-                INSERT OR REPLACE INTO peers (name, url, last_seen, public_key, role) 
-                VALUES (?, ?, datetime('now'), ?, ?)
-            """, (name, str(remote_path.parent), public_key, role))
-            conn.commit()
-            conn.close()
+            if isinstance(self.db, PostgreSQLAdapter):
+                self.db.execute("""
+                    INSERT INTO peers (name, url, last_seen, public_key, role) 
+                    VALUES (%s, %s, CURRENT_TIMESTAMP, %s, %s)
+                    ON CONFLICT (name) DO UPDATE SET 
+                        url = EXCLUDED.url, 
+                        last_seen = EXCLUDED.last_seen, 
+                        public_key = EXCLUDED.public_key, 
+                        role = EXCLUDED.role
+                """, (name, str(remote_path.parent), public_key, role))
+            else:
+                self.db.execute("""
+                    INSERT OR REPLACE INTO peers (name, url, last_seen, public_key, role) 
+                    VALUES (?, ?, datetime('now'), ?, ?)
+                """, (name, str(remote_path.parent), public_key, role))
+            self.db.commit()
             
             print(f"Peer '{name}' verified and added (Node ID: {(node_id or 'unknown')[:8]}, Role: {role})")
             return True
@@ -1186,47 +1370,58 @@ class EternalCore:
 
     def get_federation_id(self):
         """Get the federation ID for this repository."""
-        conn = sqlite3.connect(self.db_path)
-        res = conn.execute("SELECT value FROM repo_info WHERE key='federation_id'").fetchone()
-        conn.close()
-        return res[0] if res else None
+        res = self.db.fetchone("SELECT value FROM repo_info WHERE key='federation_id'")
+        return res['value'] if res else None
 
     def get_public_key(self):
         """Get the public key of this node."""
-        conn = sqlite3.connect(self.db_path)
-        res = conn.execute("SELECT value FROM repo_info WHERE key='public_key'").fetchone()
-        conn.close()
-        return res[0] if res else None
+        res = self.db.fetchone("SELECT value FROM repo_info WHERE key='public_key'")
+        return res['value'] if res else None
 
     def get_node_id(self):
         """Get the unique node ID for this repository."""
-        conn = sqlite3.connect(self.db_path)
-        res = conn.execute("SELECT value FROM repo_info WHERE key='node_id'").fetchone()
-        conn.close()
-        return res[0] if res else None
+        res = self.db.fetchone("SELECT value FROM repo_info WHERE key='node_id'")
+        return res['value'] if res else None
 
     def get_node_role(self):
         """Get the role of this node."""
-        conn = sqlite3.connect(self.db_path)
-        res = conn.execute("SELECT value FROM repo_info WHERE key='role'").fetchone()
-        conn.close()
-        return res[0] if res else "mirror"
+        res = self.db.fetchone("SELECT value FROM repo_info WHERE key='role'")
+        return res['value'] if res else "mirror"
 
     def get_all_hashes(self):
         """Get a set of all content hashes in the repository for differential sync."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT content_hash FROM objects")
-        hashes = {row[0] for row in cursor.fetchall()}
-        conn.close()
+        res = self.db.fetchall("SELECT DISTINCT content_hash FROM objects")
+        hashes = {row['content_hash'] for row in res}
         return hashes
 
     def get_interests(self):
         """Get the subscription filters for this repository."""
-        conn = sqlite3.connect(self.db_path)
-        res = conn.execute("SELECT filter_key, filter_value FROM subscriptions").fetchall()
-        conn.close()
-        return [(r[0], r[1]) for r in res]
+        res = self.db.fetchall("SELECT filter_key, filter_value FROM subscriptions")
+        return [(r['filter_key'], r['filter_value']) for r in res]
+
+    def list_peers(self):
+        """List all known peers."""
+        return self.db.fetchall("SELECT * FROM peers")
+
+    def update_subscription(self, key, value, remove=False):
+        """Update subscription filters."""
+        if remove:
+            if isinstance(self.db, PostgreSQLAdapter):
+                self.db.execute("DELETE FROM subscriptions WHERE filter_key = %s AND filter_value = %s", (key, value))
+            else:
+                self.db.execute("DELETE FROM subscriptions WHERE filter_key = ? AND filter_value = ?", (key, value))
+            print(f"Filter removed: {key} = {value}")
+        else:
+            if isinstance(self.db, PostgreSQLAdapter):
+                 self.db.execute("""
+                    INSERT INTO subscriptions (filter_key, filter_value) 
+                    VALUES (%s, %s)
+                    ON CONFLICT (filter_key, filter_value) DO NOTHING
+                """, (key, value))
+            else:
+                self.db.execute("INSERT OR REPLACE INTO subscriptions (filter_key, filter_value) VALUES (?, ?)", (key, value))
+            print(f"Filter added: {key} = {value}")
+        self.db.commit()
 
     def matches_filters(self, obj_data, filters):
         """Check if an object matches the given filters (Interests)."""
@@ -1291,14 +1486,11 @@ class EternalCore:
             return True
             
         # 1. Transfer objects (with filtering)
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        
         objects_to_update = []
         pushed_count = 0
         for h in missing_on_remote:
             # Check if remote is interested in any object sharing this hash
-            rows = conn.execute("SELECT * FROM objects WHERE content_hash = ?", (h,)).fetchall()
+            rows = self.db.fetchall("SELECT * FROM objects WHERE content_hash = ?", (h,))
             
             is_interested = False
             for row in rows:
@@ -1321,7 +1513,7 @@ class EternalCore:
             for row in rows:
                 obj_dict = dict(row)
                 # Also include relations
-                rels = conn.execute("SELECT * FROM relations WHERE from_id = ?", (row['id'],)).fetchall()
+                rels = self.db.fetchall("SELECT * FROM relations WHERE from_id = ?", (row['id'],))
                 obj_dict['relations'] = [dict(r) for r in rels]
                 objects_to_update.append(obj_dict)
         
@@ -1329,7 +1521,6 @@ class EternalCore:
         if objects_to_update:
             remote.update_index(objects_to_update)
             
-        conn.close()
         print(f"Push successful. {pushed_count} objects synchronized.")
         return True
 
@@ -1444,34 +1635,32 @@ class EternalCore:
         print(f"Exporting to {output_path}...")
         
         with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
             query = "SELECT id, content_hash FROM objects"
             params = []
             if data_type:
-                query += " WHERE data_type = ?"
+                if isinstance(self.db, PostgreSQLAdapter):
+                    query += " WHERE data_type = %s"
+                else:
+                    query += " WHERE data_type = ?"
                 params.append(data_type)
             
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
+            rows = self.db.fetchall(query, tuple(params))
             exported_hashes = set()
             
             for row in rows:
                 h = row['content_hash']
                 if h in exported_hashes: continue
                 
-                shard_dir = self.objects_dir / h[0:2] / h[2:4] / h
+                shard_dir = self.objects_dir / h[0:2] / h[2:4]
                 # Add content
                 content_file = shard_dir / h
                 if content_file.exists():
-                    zf.write(content_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}/{h}")
+                    zf.write(content_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}")
                 
                 # Add meta
                 meta_file = shard_dir / f"{h}.meta"
                 if meta_file.exists():
-                    zf.write(meta_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}/{h}.meta")
+                    zf.write(meta_file, arcname=f"objects/{h[0:2]}/{h[2:4]}/{h}.meta")
                 
                 exported_hashes.add(h)
             
@@ -1485,16 +1674,16 @@ class EternalCore:
             
             for row in rows:
                 # Get full object data
-                obj_data = conn.execute("SELECT * FROM objects WHERE id = ?", (row['id'],)).fetchone()
-                manifest["objects"].append(dict(obj_data))
+                obj_data = self.db.fetchone("SELECT * FROM objects WHERE id = ?", (row['id'],))
+                if obj_data:
+                    manifest["objects"].append(dict(obj_data))
                 
                 # Get relations
-                rels = conn.execute("SELECT * FROM relations WHERE from_id = ?", (row['id'],)).fetchall()
+                rels = self.db.fetchall("SELECT * FROM relations WHERE from_id = ?", (row['id'],))
                 for rel in rels:
                     manifest["relations"].append(dict(rel))
             
             zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
-            conn.close()
             
         print(f"Export successful: {len(rows)} objects packaged.")
 
@@ -1519,26 +1708,49 @@ class EternalCore:
             import_count = 0
             for member in zf.namelist():
                 if member.startswith("objects/"):
-                    # Extract relative to .eternal's parent to maintain structure
-                    zf.extract(member, path=self.root_dir.parent)
+                    # Security check for Zip Slip
+                    dest_path = (self.root_dir / member).resolve()
+                    if not str(dest_path).startswith(str(self.root_dir.resolve())):
+                         logger.warning(f"Security Warning: Skipping malicious path {member}")
+                         continue
+
+                    # Extract into .eternal
+                    zf.extract(member, path=self.root_dir)
                     import_count += 1
             
             # 3. Merge database records
-            conn = sqlite3.connect(self.db_path)
             for obj in manifest.get("objects", []):
-                conn.execute('''
-                    INSERT OR REPLACE INTO objects 
-                    (id, data_type, content_hash, signature, version, created_at, updated_at, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (obj['id'], obj['data_type'], obj['content_hash'], obj['signature'], 
-                      obj['version'], obj['created_at'], obj['updated_at'], obj['metadata']))
+                if isinstance(self.db, PostgreSQLAdapter):
+                    self.db.execute('''
+                        INSERT INTO objects 
+                        (id, data_type, content_hash, signature, version, created_at, updated_at, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            data_type = EXCLUDED.data_type,
+                            content_hash = EXCLUDED.content_hash,
+                            signature = EXCLUDED.signature,
+                            version = EXCLUDED.version,
+                            updated_at = EXCLUDED.updated_at,
+                            metadata = EXCLUDED.metadata
+                    ''', (obj['id'], obj['data_type'], obj['content_hash'], obj['signature'], 
+                          obj['version'], obj['created_at'], obj['updated_at'], obj['metadata']))
+                else:
+                    self.db.execute('''
+                        INSERT OR REPLACE INTO objects 
+                        (id, data_type, content_hash, signature, version, created_at, updated_at, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (obj['id'], obj['data_type'], obj['content_hash'], obj['signature'], 
+                          obj['version'], obj['created_at'], obj['updated_at'], obj['metadata']))
             
             for rel in manifest.get("relations", []):
-                conn.execute("INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
-                             (rel['from_id'], rel['to_id'], rel['rel_type']))
+                if isinstance(self.db, PostgreSQLAdapter):
+                    self.db.execute("INSERT INTO relations (from_id, to_id, rel_type) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                                 (rel['from_id'], rel['to_id'], rel['rel_type']))
+                else:
+                    self.db.execute("INSERT OR REPLACE INTO relations (from_id, to_id, rel_type) VALUES (?, ?, ?)",
+                                 (rel['from_id'], rel['to_id'], rel['rel_type']))
             
-            conn.commit()
-            conn.close()
+            self.db.commit()
             
         print(f"Import successful: {len(manifest.get('objects', []))} objects merged.")
         return True
@@ -1657,19 +1869,25 @@ def main():
         with open(config_path, 'r') as f:
             config = json.load(f)
             
+    # Initialize Database Adapter from config
+    db_adapter = None
+    if config.get('db_type') == 'postgresql':
+        db_adapter = PostgreSQLAdapter(config.get('db_dsn', ''))
+        
     # Initialize Core
     core = EternalCore(
         root_dir=eternal_dir,
         mirror_dir=args.mirror if hasattr(args, 'mirror') and args.mirror else config.get('mirror_dir'),
         secret_key=config.get('secret_key'),
         master_key=config.get('master_key'),
-        app_name=config.get('app_name', 'EternalCore')
+        app_name=config.get('app_name', 'EternalCore'),
+        db_adapter=db_adapter
     )
     
     try:
         if args.command == "put":
-            meta = json.loads(args.meta) if args.meta else {}
-            rels = json.loads(args.relations) if args.relations else []
+            meta = EternalCore._safe_json_loads(args.meta) if args.meta else {}
+            rels = EternalCore._safe_json_loads(args.relations) if args.relations else []
             content_data = args.content
             if os.path.exists(args.content):
                 with open(args.content, 'rb') as f:
@@ -1730,26 +1948,15 @@ def main():
             if args.peer_command == "add":
                 core.add_peer(args.name, args.url)
             elif args.peer_command == "list":
-                conn = sqlite3.connect(core.db_path)
-                conn.row_factory = sqlite3.Row
-                peers = conn.execute("SELECT * FROM peers").fetchall()
+                peers = core.list_peers()
                 print(f"{'NAME':<15} {'URL':<40} {'LAST SEEN':<20}")
                 print("-" * 75)
                 for p in peers:
                     print(f"{p['name']:<15} {p['url']:<40} {p['last_seen']:<20}")
-                conn.close()
             elif args.peer_command == "sync":
-                core.broadcast()
+                core.broadcast_update()
             elif args.peer_command == "subscribe":
-                conn = sqlite3.connect(core.db_path)
-                if args.remove:
-                    conn.execute("DELETE FROM subscriptions WHERE filter_key = ? AND filter_value = ?", (args.key, args.value))
-                    print(f"Filter removed: {args.key} = {args.value}")
-                else:
-                    conn.execute("INSERT OR REPLACE INTO subscriptions (filter_key, filter_value) VALUES (?, ?)", (args.key, args.value))
-                    print(f"Filter added: {args.key} = {args.value}")
-                conn.commit()
-                conn.close()
+                core.update_subscription(args.key, args.value, args.remove)
                 
         elif args.command == "health":
             health = core.health_check()
