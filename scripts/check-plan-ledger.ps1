@@ -174,19 +174,20 @@ foreach ($id in $allTasks.Keys) {
     }
 }
 
-# ── Check 7: Phase consistency (optional, informational) ────────────────
+# ── Check 7: Phase consistency ───────────────────────────────────────────
 Write-Host "--- Checking phase assignment ---"
-# Every task should belong to a phase that matches its prefix
-$phaseMismatches = [System.Collections.Generic.List[String]]::new()
+$phaseMismatched = 0
 foreach ($id in $allTasks.Keys) {
-    $task = $allTasks[$id]
     $phase = $phaseMap[$id]
-    # Extract phase prefix from task ID (e.g. "F2" from "F2.1")
     $prefix = $id -replace '\..*$', ''
-    # The phase ID should start with the same prefix (e.g. "F2" → phase "F2")
-    if (-not ($phase -like "$prefix*")) {
-        # This is informational only — some phases may use different naming
+    if ($phase -ne $prefix) {
+        Write-Host "  [FAIL] Task $id belongs to phase $phase but prefix is $prefix" -ForegroundColor Red
+        $exitCode = 1
+        $phaseMismatched++
     }
+}
+if ($phaseMismatched -eq 0) {
+    Write-Host "  [OK] All tasks belong to the correct phase" -ForegroundColor Green
 }
 
 # ── Summary counts ─────────────────────────────────────────────────────
