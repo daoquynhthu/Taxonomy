@@ -1,5 +1,14 @@
 # Progress
 
+## F2.4 — Implement bounded deterministic CBOR decoder
+
+- Status: GREEN
+- Commit: d9441f5
+- Completed: CanonicalDecoder with depth-bounded recursive descent, checked allocation, and rejection of all non-canonical forms. Value enum with reencode(). All FORMAT.md §4 rejection criteria implemented.
+- Tests: `cargo test --workspace --all-features` (89 tests)
+- Evidence: Golden vector re-encodes identically; rejects non-shortest integers, indefinite items, floats, tag, undefined, invalid UTF-8, duplicate/unsorted map keys, depth exceeded, oversized string, trailing data.
+- Follow-up: F2.5 (CanonicalValue)
+
 ## F2.3 — Implement deterministic CBOR encoder
 
 - Status: GREEN
