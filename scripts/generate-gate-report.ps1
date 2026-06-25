@@ -101,12 +101,11 @@ $testCounts = @{
 
 # ── Ignored test list ────────────────────────────────────────────────────
 $ignoredTests = @()
-$ignoreMatches = Select-String -Path (Join-Path $root "crates/**/*.rs") -Pattern '#\[ignore\]' -SimpleMatch -CaseSensitive 2>$null
+$ignoreMatches = Select-String -Path (Join-Path $root "crates/**/*.rs") -Pattern '#\[ignore\]' -CaseSensitive 2>$null
 if ($ignoreMatches) {
     $ignoredTests = $ignoreMatches | ForEach-Object {
         $file = $_.Filename
         $line = $_.LineNumber
-        # Find the test function name on the next line or nearby
         "$file`:$line"
     }
 }
@@ -159,16 +158,24 @@ $report = @{
 # ── Write JSON ──────────────────────────────────────────────────────────
 $json = $report | ConvertTo-Json -Depth 10
 Set-Content -LiteralPath $outputPath -Value $json -Encoding UTF8
-if ($totalPassed -eq 0 -and $totalFailed -eq 0) {
-    Write-Host "[WARN] No test counts parsed. The output may have an unexpected format." -ForegroundColor Yellow
-}
 Write-Host "gate-report.json written to $outputPath" -ForegroundColor Green
 
 # ── Determine overall exit code ──────────────────────────────────────────
 $anyFailed = $steps | Where-Object { $_.exit_code -ne 0 } | Select-Object -First 1
+$testCountsOk = ($totalPassed -ne 0 -or $totalFailed -ne 0)
+$noIgnoredTests = ($ignoredTests.Count -eq 0)
+
+if (-not $testCountsOk) {
+    Write-Host "[FAIL] No test counts parsed. The output may have an unexpected format." -ForegroundColor Red
+}
+if (-not $noIgnoredTests) {
+    Write-Host "[FAIL] Ignored tests detected ($($ignoredTests.Count)). G1 gate forbids #[ignore]." -ForegroundColor Red
+}
 if ($anyFailed) {
     Write-Host "Gate FAILED. Some steps had non-zero exit codes." -ForegroundColor Red
-    exit 1
 }
-Write-Host "All gate steps passed." -ForegroundColor Green
-exit 0
+if ($testCountsOk -and $noIgnoredTests -and -not $anyFailed) {
+    Write-Host "All gate steps passed." -ForegroundColor Green
+    exit 0
+}
+exit 1

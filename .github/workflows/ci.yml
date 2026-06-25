@@ -59,6 +59,7 @@ jobs:
       - name: Generate gate report
         run: pwsh -File scripts/generate-gate-report.ps1 -OutputDir .
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gate-report
           path: gate-report.json

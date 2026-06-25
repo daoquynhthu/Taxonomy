@@ -14,7 +14,7 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: CI workflows, G1
@@ -22,7 +22,7 @@
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: PENDING (initial script created but has bugs: #[ignore] search pattern wrong, no hard fail on ignored tests or parse failure, upload-artifact missing if: always(); must be fixed and verified in CI before closing)
+- Resolution: RESOLVED (Select-String regex pattern corrected by removing -SimpleMatch; hard fail on ignored tests with exit 1; hard fail on zero-test-count parse failure with exit 1; if: always() added to upload-artifact step; gate runs locally: 203 tests, 0 ignored, all OK)
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
@@ -86,7 +86,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -94,7 +94,7 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: PENDING (cv_from_json lacks node counter; no canonical_value_from_json_slice() with dup-key detection; CanonicalEncoder::canonical_value() still pub bypasses limits; check_strings/count_nodes/encode_value are three separate unbounded traversals; FormatLimits fields pub allowing spec-limit bypass)
+- Resolution: RESOLVED (cv_from_json added &mut u64 nodes with checked_add; canonical_value_from_json_slice() with custom recursive-descent JSON parser detecting duplicate keys, rejecting floats, enforcing all limits; CanonicalEncoder::canonical_value() changed to pub(crate); single-pass validate_encode_value() replaces three separate traversals; FormatLimits fields private with new() enforcing FORMAT absolute caps and builder methods only allowing reductions; Debug+Clone+PartialEq+Eq derives added)
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 

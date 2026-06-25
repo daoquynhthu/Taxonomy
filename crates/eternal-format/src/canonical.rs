@@ -116,7 +116,8 @@ impl CanonicalEncoder {
     }
 
     /// Encode a `CanonicalValue` in the tagged-array format (FORMAT.md §4.5).
-    pub fn canonical_value(&mut self, value: &CanonicalValue) {
+    #[allow(dead_code)]
+    pub(crate) fn canonical_value(&mut self, value: &CanonicalValue) {
         match value {
             CanonicalValue::Null => {
                 self.begin_array(1);
@@ -191,90 +192,63 @@ pub fn encode_canonical_value(
     value: &CanonicalValue,
     limits: &FormatLimits,
 ) -> Result<Vec<u8>, CanonicalEncodeError> {
-    check_strings(value, limits)?;
-    let node_count = count_nodes(value);
-    if node_count > limits.max_nodes {
-        return Err(CanonicalEncodeError::NodeCountExceeded {
-            max: limits.max_nodes,
-        });
-    }
     let mut encoder = CanonicalEncoder::new();
-    encode_value(&mut encoder, value, 0, limits)?;
+    let mut node_count = 0u64;
+    validate_encode_value(&mut encoder, value, 0, &mut node_count, limits)?;
     Ok(encoder.into_bytes())
 }
 
-fn count_nodes(value: &CanonicalValue) -> u64 {
-    match value {
-        CanonicalValue::Array(items) => 1 + items.iter().map(count_nodes).sum::<u64>(),
-        CanonicalValue::Map(entries) => 1 + entries.values().map(count_nodes).sum::<u64>(),
-        _ => 1,
-    }
-}
-
-fn check_strings(
+/// Single-pass validation + encoding.
+/// Checks depth, node count (with `checked_add`), string length,
+/// and NUL-free text before/during encoding.
+fn validate_encode_value(
+    encoder: &mut CanonicalEncoder,
     value: &CanonicalValue,
+    depth: u64,
+    node_count: &mut u64,
     limits: &FormatLimits,
 ) -> Result<(), CanonicalEncodeError> {
+    if depth > limits.max_depth() {
+        return Err(CanonicalEncodeError::DepthExceeded);
+    }
+    *node_count = node_count
+        .checked_add(1)
+        .ok_or(CanonicalEncodeError::NodeCountExceeded {
+            max: limits.max_nodes(),
+        })?;
+    if *node_count > limits.max_nodes() {
+        return Err(CanonicalEncodeError::NodeCountExceeded {
+            max: limits.max_nodes(),
+        });
+    }
     match value {
         CanonicalValue::Text(s) => {
             if s.contains('\0') {
                 return Err(CanonicalEncodeError::TextContainsNul);
             }
             let len = s.len() as u64;
-            if len > limits.max_string_bytes {
+            if len > limits.max_string_bytes() {
                 return Err(CanonicalEncodeError::StringTooLong {
-                    max: limits.max_string_bytes,
+                    max: limits.max_string_bytes(),
                     actual: len,
                 });
             }
-            Ok(())
+            encoder.begin_array(2);
+            encoder.u64(4);
+            encoder.text(s);
         }
         CanonicalValue::Bytes(b) => {
             let len = b.len() as u64;
-            if len > limits.max_string_bytes {
+            if len > limits.max_string_bytes() {
                 return Err(CanonicalEncodeError::StringTooLong {
-                    max: limits.max_string_bytes,
+                    max: limits.max_string_bytes(),
                     actual: len,
                 });
             }
-            Ok(())
+            encoder.begin_array(2);
+            encoder.u64(5);
+            encoder.bytes(b);
         }
-        CanonicalValue::Array(items) => {
-            for item in items {
-                check_strings(item, limits)?;
-            }
-            Ok(())
-        }
-        CanonicalValue::Map(entries) => {
-            for (key, value) in entries {
-                if key.contains('\0') {
-                    return Err(CanonicalEncodeError::TextContainsNul);
-                }
-                let len = key.len() as u64;
-                if len > limits.max_string_bytes {
-                    return Err(CanonicalEncodeError::StringTooLong {
-                        max: limits.max_string_bytes,
-                        actual: len,
-                    });
-                }
-                check_strings(value, limits)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn encode_value(
-    encoder: &mut CanonicalEncoder,
-    value: &CanonicalValue,
-    depth: u64,
-    limits: &FormatLimits,
-) -> Result<(), CanonicalEncodeError> {
-    if depth > limits.max_depth {
-        return Err(CanonicalEncodeError::DepthExceeded);
-    }
-    match value {
         CanonicalValue::Null => {
             encoder.begin_array(1);
             encoder.u64(0);
@@ -294,22 +268,12 @@ fn encode_value(
             encoder.u64(3);
             encoder.u64(*v);
         }
-        CanonicalValue::Text(v) => {
-            encoder.begin_array(2);
-            encoder.u64(4);
-            encoder.text(v);
-        }
-        CanonicalValue::Bytes(v) => {
-            encoder.begin_array(2);
-            encoder.u64(5);
-            encoder.bytes(v);
-        }
         CanonicalValue::Array(items) => {
             encoder.begin_array(2);
             encoder.u64(6);
             encoder.begin_array(items.len() as u64);
             for item in items {
-                encode_value(encoder, item, depth + 1, limits)?;
+                validate_encode_value(encoder, item, depth + 1, node_count, limits)?;
             }
         }
         CanonicalValue::Map(entries) => {
@@ -317,9 +281,19 @@ fn encode_value(
             encoder.u64(7);
             encoder.begin_array(entries.len() as u64);
             for (key, value) in entries {
+                if key.contains('\0') {
+                    return Err(CanonicalEncodeError::TextContainsNul);
+                }
+                let len = key.len() as u64;
+                if len > limits.max_string_bytes() {
+                    return Err(CanonicalEncodeError::StringTooLong {
+                        max: limits.max_string_bytes(),
+                        actual: len,
+                    });
+                }
                 encoder.begin_array(2);
                 encoder.text(key);
-                encode_value(encoder, value, depth + 1, limits)?;
+                validate_encode_value(encoder, value, depth + 1, node_count, limits)?;
             }
         }
     }
@@ -340,23 +314,133 @@ pub(crate) struct CanonicalSortedMap {
 pub enum CanonicalEncodeError {
     DuplicateMapKey,
     DepthExceeded,
-    NodeCountExceeded { max: u64 },
-    StringTooLong { max: u64, actual: u64 },
+    NodeCountExceeded {
+        max: u64,
+    },
+    StringTooLong {
+        max: u64,
+        actual: u64,
+    },
     TextContainsNul,
     FloatUnsupported,
     NumberOutOfRange,
+    LimitExceedsAbsoluteMax {
+        field: &'static str,
+        requested: u64,
+        absolute_max: u64,
+    },
+    /// JSON syntax error or duplicate textual key.
+    JsonSyntax(String),
 }
 
 /// Resource limits for CanonicalValue encoding and JSON conversion.
 ///
-/// These mirror the FORMAT.md §20 parser limits:
-/// - `max_depth`: maximum nesting depth (default: 64)
-/// - `max_nodes`: maximum total nodes (default: 1_000_000)
-/// - `max_string_bytes`: maximum byte length for Text/Bytes (default: 1_048_576)
+/// These mirror the FORMAT.md §20 parser limits.
+/// All fields are private with a checked constructor `new()` that enforces
+/// the FORMAT absolute caps below and returns an error if exceeded.
+///
+/// Absolute FORMAT caps (cannot be exceeded):
+/// - `max_depth`: 64
+/// - `max_nodes`: 1_000_000
+/// - `max_string_bytes`: 1_048_576
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatLimits {
-    pub max_depth: u64,
-    pub max_nodes: u64,
-    pub max_string_bytes: u64,
+    max_depth: u64,
+    max_nodes: u64,
+    max_string_bytes: u64,
+}
+
+impl FormatLimits {
+    pub const ABSOLUTE_MAX_DEPTH: u64 = 64;
+    pub const ABSOLUTE_MAX_NODES: u64 = 1_000_000;
+    pub const ABSOLUTE_MAX_STRING_BYTES: u64 = 1_048_576;
+
+    /// Create a `FormatLimits` with all limits set to their maximum allowed values.
+    /// Returns an error if any value exceeds the FORMAT absolute cap.
+    pub fn new(
+        max_depth: u64,
+        max_nodes: u64,
+        max_string_bytes: u64,
+    ) -> Result<Self, CanonicalEncodeError> {
+        if max_depth > Self::ABSOLUTE_MAX_DEPTH {
+            return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_depth",
+                requested: max_depth,
+                absolute_max: Self::ABSOLUTE_MAX_DEPTH,
+            });
+        }
+        if max_nodes > Self::ABSOLUTE_MAX_NODES {
+            return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_nodes",
+                requested: max_nodes,
+                absolute_max: Self::ABSOLUTE_MAX_NODES,
+            });
+        }
+        if max_string_bytes > Self::ABSOLUTE_MAX_STRING_BYTES {
+            return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_string_bytes",
+                requested: max_string_bytes,
+                absolute_max: Self::ABSOLUTE_MAX_STRING_BYTES,
+            });
+        }
+        Ok(Self {
+            max_depth,
+            max_nodes,
+            max_string_bytes,
+        })
+    }
+
+    pub fn max_depth(&self) -> u64 {
+        self.max_depth
+    }
+    pub fn max_nodes(&self) -> u64 {
+        self.max_nodes
+    }
+    pub fn max_string_bytes(&self) -> u64 {
+        self.max_string_bytes
+    }
+
+    /// Return a copy with a reduced max_depth (must be ≤ current value).
+    pub fn with_max_depth(mut self, max_depth: u64) -> Result<Self, CanonicalEncodeError> {
+        if max_depth > self.max_depth {
+            return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_depth",
+                requested: max_depth,
+                absolute_max: self.max_depth,
+            });
+        }
+        self.max_depth = max_depth;
+        Ok(self)
+    }
+
+    /// Return a copy with a reduced max_nodes (must be ≤ current value).
+    pub fn with_max_nodes(mut self, max_nodes: u64) -> Result<Self, CanonicalEncodeError> {
+        if max_nodes > self.max_nodes {
+            return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_nodes",
+                requested: max_nodes,
+                absolute_max: self.max_nodes,
+            });
+        }
+        self.max_nodes = max_nodes;
+        Ok(self)
+    }
+
+    /// Return a copy with a reduced max_string_bytes (must be ≤ current value).
+    pub fn with_max_string_bytes(
+        mut self,
+        max_string_bytes: u64,
+    ) -> Result<Self, CanonicalEncodeError> {
+        if max_string_bytes > self.max_string_bytes {
+            return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_string_bytes",
+                requested: max_string_bytes,
+                absolute_max: self.max_string_bytes,
+            });
+        }
+        self.max_string_bytes = max_string_bytes;
+        Ok(self)
+    }
 }
 
 impl Default for FormatLimits {
@@ -501,17 +585,34 @@ impl TryFrom<serde_json::Value> for CanonicalValue {
 
     fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
         let limits = FormatLimits::default();
-        cv_from_json(&value, 0, &limits)
+        let mut nodes = 0u64;
+        cv_from_json(&value, 0, &mut nodes, &limits)
     }
 }
 
+/// Convert a `serde_json::Value` into `CanonicalValue` with resource limits.
+///
+/// NOTE: This entry does NOT detect duplicate textual keys because
+/// `serde_json::Value::Object` already deduplicates them. For authoritative
+/// duplicate-key detection use `canonical_value_from_json_slice()`.
 fn cv_from_json(
     value: &serde_json::Value,
     depth: u64,
+    nodes: &mut u64,
     limits: &FormatLimits,
 ) -> Result<CanonicalValue, CanonicalEncodeError> {
-    if depth > limits.max_depth {
+    if depth > limits.max_depth() {
         return Err(CanonicalEncodeError::DepthExceeded);
+    }
+    *nodes = nodes
+        .checked_add(1)
+        .ok_or(CanonicalEncodeError::NodeCountExceeded {
+            max: limits.max_nodes(),
+        })?;
+    if *nodes > limits.max_nodes() {
+        return Err(CanonicalEncodeError::NodeCountExceeded {
+            max: limits.max_nodes(),
+        });
     }
     match value {
         serde_json::Value::Null => Ok(CanonicalValue::Null),
@@ -520,7 +621,6 @@ fn cv_from_json(
             if n.is_f64() {
                 return Err(CanonicalEncodeError::FloatUnsupported);
             }
-            // Try signed first so i64::MAX maps to I64 not U64
             if let Some(v) = n.as_i64() {
                 return Ok(CanonicalValue::I64(v));
             }
@@ -530,22 +630,22 @@ fn cv_from_json(
             Err(CanonicalEncodeError::NumberOutOfRange)
         }
         serde_json::Value::String(s) => {
-            let len = s.len() as u64;
-            if len > limits.max_string_bytes {
-                return Err(CanonicalEncodeError::StringTooLong {
-                    max: limits.max_string_bytes,
-                    actual: len,
-                });
-            }
             if s.contains('\0') {
                 return Err(CanonicalEncodeError::TextContainsNul);
+            }
+            let len = s.len() as u64;
+            if len > limits.max_string_bytes() {
+                return Err(CanonicalEncodeError::StringTooLong {
+                    max: limits.max_string_bytes(),
+                    actual: len,
+                });
             }
             Ok(CanonicalValue::Text(s.clone()))
         }
         serde_json::Value::Array(arr) => {
             let mut items = Vec::with_capacity(arr.len());
             for item in arr {
-                items.push(cv_from_json(item, depth + 1, limits)?);
+                items.push(cv_from_json(item, depth + 1, nodes, limits)?);
             }
             Ok(CanonicalValue::Array(items))
         }
@@ -558,17 +658,344 @@ fn cv_from_json(
                     return Err(CanonicalEncodeError::TextContainsNul);
                 }
                 let len = k.len() as u64;
-                if len > limits.max_string_bytes {
+                if len > limits.max_string_bytes() {
                     return Err(CanonicalEncodeError::StringTooLong {
-                        max: limits.max_string_bytes,
+                        max: limits.max_string_bytes(),
                         actual: len,
                     });
                 }
-                let val = cv_from_json(&obj[k], depth + 1, limits)?;
+                let val = cv_from_json(&obj[k], depth + 1, nodes, limits)?;
                 map.insert(k.clone(), val);
             }
             Ok(CanonicalValue::Map(map))
         }
+    }
+}
+
+/// Authoritative JSON-to-CanonicalValue conversion with resource limits
+/// and duplicate textual key detection.
+///
+/// Unlike `TryFrom<serde_json::Value>`, this parses raw JSON bytes with
+/// a custom recursive descent parser so that duplicate keys in the input
+/// (e.g. `{"a":1,"a":2}`) are detected before they are deduplicated.
+///
+/// Limits (depth, node count, string length, NUL rejection) are enforced
+/// during parsing.
+pub fn canonical_value_from_json_slice(
+    input: &[u8],
+    limits: &FormatLimits,
+) -> Result<CanonicalValue, CanonicalEncodeError> {
+    let mut parser = JsonParser::new(input);
+    let mut nodes = 0u64;
+    let result = parser.parse_value(0, &mut nodes, limits)?;
+    if parser.pos < parser.input.len() {
+        // Skip trailing whitespace
+        while parser.pos < parser.input.len() && parser.input[parser.pos].is_ascii_whitespace() {
+            parser.pos += 1;
+        }
+        if parser.pos < parser.input.len() {
+            return Err(CanonicalEncodeError::JsonSyntax(
+                "trailing data after JSON value".into(),
+            ));
+        }
+    }
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Minimal recursive-descent JSON parser for canonical_value_from_json_slice
+// ---------------------------------------------------------------------------
+
+struct JsonParser<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.input.len() && self.input[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+
+    fn advance(&mut self) -> Result<u8, CanonicalEncodeError> {
+        let b = self
+            .input
+            .get(self.pos)
+            .copied()
+            .ok_or(CanonicalEncodeError::JsonSyntax(
+                "unexpected end of input".into(),
+            ))?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn expect(&mut self, expected: u8) -> Result<(), CanonicalEncodeError> {
+        let actual = self.advance()?;
+        if actual != expected {
+            return Err(CanonicalEncodeError::JsonSyntax(format!(
+                "expected byte {expected:#04x}, got {actual:#04x}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn parse_value(
+        &mut self,
+        depth: u64,
+        nodes: &mut u64,
+        limits: &FormatLimits,
+    ) -> Result<CanonicalValue, CanonicalEncodeError> {
+        if depth > limits.max_depth() {
+            return Err(CanonicalEncodeError::DepthExceeded);
+        }
+        *nodes = nodes
+            .checked_add(1)
+            .ok_or(CanonicalEncodeError::NodeCountExceeded {
+                max: limits.max_nodes(),
+            })?;
+        if *nodes > limits.max_nodes() {
+            return Err(CanonicalEncodeError::NodeCountExceeded {
+                max: limits.max_nodes(),
+            });
+        }
+
+        self.skip_ws();
+        match self.peek() {
+            None => Err(CanonicalEncodeError::JsonSyntax(
+                "unexpected end of input".into(),
+            )),
+            Some(b'n') => self.parse_null(),
+            Some(b't') => self.parse_true(),
+            Some(b'f') => self.parse_false(),
+            Some(b'-' | b'0'..=b'9') => self.parse_number(),
+            Some(b'"') => self.parse_string(limits),
+            Some(b'[') => self.parse_array(depth, nodes, limits),
+            Some(b'{') => self.parse_object(depth, nodes, limits),
+            Some(c) => Err(CanonicalEncodeError::JsonSyntax(format!(
+                "unexpected byte {c:#04x} ({})",
+                char::from(c)
+            ))),
+        }
+    }
+
+    fn parse_null(&mut self) -> Result<CanonicalValue, CanonicalEncodeError> {
+        for &b in b"null" {
+            self.expect(b)?;
+        }
+        Ok(CanonicalValue::Null)
+    }
+
+    fn parse_true(&mut self) -> Result<CanonicalValue, CanonicalEncodeError> {
+        for &b in b"true" {
+            self.expect(b)?;
+        }
+        Ok(CanonicalValue::Bool(true))
+    }
+
+    fn parse_false(&mut self) -> Result<CanonicalValue, CanonicalEncodeError> {
+        for &b in b"false" {
+            self.expect(b)?;
+        }
+        Ok(CanonicalValue::Bool(false))
+    }
+
+    fn parse_number(&mut self) -> Result<CanonicalValue, CanonicalEncodeError> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        // integer part
+        match self.peek() {
+            Some(b'0') => {
+                self.pos += 1;
+            }
+            Some(b'1'..=b'9') => {
+                while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err(CanonicalEncodeError::JsonSyntax("invalid number".into())),
+        }
+        // Check for fractional part or exponent → reject floats
+        if self.pos < self.input.len()
+            && (self.input[self.pos] == b'.'
+                || self.input[self.pos] == b'e'
+                || self.input[self.pos] == b'E')
+        {
+            return Err(CanonicalEncodeError::FloatUnsupported);
+        }
+        let s = std::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|_| CanonicalEncodeError::JsonSyntax("invalid utf-8 in number".into()))?;
+        // Try I64 first (signed), then U64
+        if let Ok(v) = s.parse::<i64>() {
+            return Ok(CanonicalValue::I64(v));
+        }
+        if let Ok(v) = s.parse::<u64>() {
+            return Ok(CanonicalValue::U64(v));
+        }
+        Err(CanonicalEncodeError::NumberOutOfRange)
+    }
+
+    fn parse_string(
+        &mut self,
+        limits: &FormatLimits,
+    ) -> Result<CanonicalValue, CanonicalEncodeError> {
+        let s = self.read_json_string()?;
+        if s.contains('\0') {
+            return Err(CanonicalEncodeError::TextContainsNul);
+        }
+        let len = s.len() as u64;
+        if len > limits.max_string_bytes() {
+            return Err(CanonicalEncodeError::StringTooLong {
+                max: limits.max_string_bytes(),
+                actual: len,
+            });
+        }
+        Ok(CanonicalValue::Text(s))
+    }
+
+    fn parse_array(
+        &mut self,
+        depth: u64,
+        nodes: &mut u64,
+        limits: &FormatLimits,
+    ) -> Result<CanonicalValue, CanonicalEncodeError> {
+        self.expect(b'[')?;
+        let mut items = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b']') {
+                self.pos += 1;
+                break;
+            }
+            if !items.is_empty() {
+                self.expect(b',')?;
+            }
+            items.push(self.parse_value(depth + 1, nodes, limits)?);
+        }
+        Ok(CanonicalValue::Array(items))
+    }
+
+    fn parse_object(
+        &mut self,
+        depth: u64,
+        nodes: &mut u64,
+        limits: &FormatLimits,
+    ) -> Result<CanonicalValue, CanonicalEncodeError> {
+        self.expect(b'{')?;
+        let mut map = std::collections::BTreeMap::new();
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'}') {
+                self.pos += 1;
+                break;
+            }
+            if !map.is_empty() {
+                self.expect(b',')?;
+            }
+            self.skip_ws();
+            let key = self.read_json_string()?;
+            if key.contains('\0') {
+                return Err(CanonicalEncodeError::TextContainsNul);
+            }
+            let len = key.len() as u64;
+            if len > limits.max_string_bytes() {
+                return Err(CanonicalEncodeError::StringTooLong {
+                    max: limits.max_string_bytes(),
+                    actual: len,
+                });
+            }
+            // Duplicate key detection: BTreeMap::entry returns Occupied if key exists
+            use std::collections::btree_map::Entry;
+            match map.entry(key) {
+                Entry::Occupied(e) => {
+                    return Err(CanonicalEncodeError::JsonSyntax(format!(
+                        "duplicate textual key: {:?}",
+                        e.key()
+                    )));
+                }
+                Entry::Vacant(e) => {
+                    self.skip_ws();
+                    self.expect(b':')?;
+                    let val = self.parse_value(depth + 1, nodes, limits)?;
+                    e.insert(val);
+                }
+            }
+        }
+        Ok(CanonicalValue::Map(map))
+    }
+
+    /// Read a JSON string (between quotes) and return the decoded content.
+    fn read_json_string(&mut self) -> Result<String, CanonicalEncodeError> {
+        self.expect(b'"')?;
+        let mut buf = String::new();
+        loop {
+            let b = self.advance()?;
+            match b {
+                b'"' => return Ok(buf),
+                b'\\' => {
+                    let esc = self.advance()?;
+                    match esc {
+                        b'"' => buf.push('"'),
+                        b'\\' => buf.push('\\'),
+                        b'/' => buf.push('/'),
+                        b'b' => buf.push('\u{0008}'),
+                        b'f' => buf.push('\u{000c}'),
+                        b'n' => buf.push('\n'),
+                        b'r' => buf.push('\r'),
+                        b't' => buf.push('\t'),
+                        b'u' => {
+                            let hex = self.read_hex4()?;
+                            let c = char::from_u32(hex).ok_or_else(|| {
+                                CanonicalEncodeError::JsonSyntax(format!(
+                                    "invalid unicode escape: u{hex:04x}"
+                                ))
+                            })?;
+                            buf.push(c);
+                        }
+                        _ => {
+                            return Err(CanonicalEncodeError::JsonSyntax(format!(
+                                "invalid escape character: {esc:#04x}"
+                            )));
+                        }
+                    }
+                }
+                0x20..=0x7e | 0x80..=0xff => buf.push(b as char),
+                c => {
+                    return Err(CanonicalEncodeError::JsonSyntax(format!(
+                        "invalid byte in string: {c:#04x}"
+                    )));
+                }
+            }
+        }
+    }
+
+    fn read_hex4(&mut self) -> Result<u32, CanonicalEncodeError> {
+        let mut val = 0u32;
+        for _ in 0..4 {
+            let b = self.advance()?;
+            val <<= 4;
+            val += match b {
+                b'0'..=b'9' => (b - b'0') as u32,
+                b'a'..=b'f' => (b - b'a' + 10) as u32,
+                b'A'..=b'F' => (b - b'A' + 10) as u32,
+                _ => {
+                    return Err(CanonicalEncodeError::JsonSyntax(format!(
+                        "invalid hex digit: {b:#04x}"
+                    )));
+                }
+            };
+        }
+        Ok(val)
     }
 }
 
@@ -2014,7 +2441,7 @@ mod tests {
         assert_eq!(
             result,
             Err(CanonicalEncodeError::NodeCountExceeded {
-                max: limits.max_nodes
+                max: FormatLimits::ABSOLUTE_MAX_NODES
             })
         );
     }
@@ -2028,7 +2455,7 @@ mod tests {
         assert_eq!(
             result,
             Err(CanonicalEncodeError::StringTooLong {
-                max: limits.max_string_bytes,
+                max: FormatLimits::ABSOLUTE_MAX_STRING_BYTES,
                 actual: 1_048_577
             })
         );
@@ -2069,7 +2496,7 @@ mod tests {
         assert_eq!(
             result,
             Err(CanonicalEncodeError::StringTooLong {
-                max: limits.max_string_bytes,
+                max: FormatLimits::ABSOLUTE_MAX_STRING_BYTES,
                 actual: 1_048_577
             })
         );
@@ -2091,13 +2518,82 @@ mod tests {
     fn json_rejects_long_string() {
         let s = "x".repeat(1_048_577);
         let result: Result<CanonicalValue, _> = serde_json::Value::String(s).try_into();
-        let limits = FormatLimits::default();
         assert_eq!(
             result,
             Err(CanonicalEncodeError::StringTooLong {
-                max: limits.max_string_bytes,
+                max: FormatLimits::ABSOLUTE_MAX_STRING_BYTES,
                 actual: 1_048_577
             })
         );
+    }
+
+    #[test]
+    fn json_slice_basic() {
+        let cv = canonical_value_from_json_slice(b"{\"a\":1,\"b\":2}", &FormatLimits::default())
+            .unwrap();
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert("a".to_string(), CanonicalValue::I64(1));
+        expected.insert("b".to_string(), CanonicalValue::I64(2));
+        assert_eq!(cv, CanonicalValue::Map(expected));
+    }
+
+    #[test]
+    fn json_slice_rejects_duplicate_keys() {
+        let result =
+            canonical_value_from_json_slice(b"{\"a\":1,\"a\":2}", &FormatLimits::default());
+        assert!(matches!(result, Err(CanonicalEncodeError::JsonSyntax(_))));
+    }
+
+    #[test]
+    fn json_slice_rejects_nested_duplicate_keys() {
+        let result =
+            canonical_value_from_json_slice(b"{\"x\":{\"a\":1,\"a\":2}}", &FormatLimits::default());
+        assert!(matches!(result, Err(CanonicalEncodeError::JsonSyntax(_))));
+    }
+
+    #[test]
+    fn json_slice_rejects_float() {
+        let result = canonical_value_from_json_slice(b"1.5", &FormatLimits::default());
+        assert_eq!(result, Err(CanonicalEncodeError::FloatUnsupported));
+    }
+
+    #[test]
+    fn json_slice_rejects_nul() {
+        let result = canonical_value_from_json_slice(
+            b"\"hello\\u0000world\"", // JSON escape for NUL
+            &FormatLimits::default(),
+        );
+        assert_eq!(result, Err(CanonicalEncodeError::TextContainsNul));
+    }
+
+    #[test]
+    fn json_slice_node_limit() {
+        // A flat array of 10 nodes with a custom limit of 5 should fail
+        let limits = FormatLimits::new(64, 5, 1_048_576).unwrap();
+        let result = canonical_value_from_json_slice(b"[1,2,3,4,5,6,7,8,9,10]", &limits);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::NodeCountExceeded { max: 5 })
+        );
+    }
+
+    #[test]
+    fn format_limits_rejects_excessive_depth() {
+        let result = FormatLimits::new(65, 1_000_000, 1_048_576);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
+                field: "max_depth",
+                requested: 65,
+                absolute_max: 64
+            })
+        );
+    }
+
+    #[test]
+    fn format_limits_with_max_depth_rejects_increase() {
+        let limits = FormatLimits::new(32, 1_000_000, 1_048_576).unwrap();
+        let result = limits.with_max_depth(33);
+        assert!(result.is_err());
     }
 }

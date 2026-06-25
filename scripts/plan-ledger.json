@@ -89,7 +89,7 @@
         },
         {
           "id": "P1.6",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "P1.5"
           ]
@@ -102,35 +102,35 @@
       "tasks": [
         {
           "id": "F2.1",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "P1.6"
           ]
         },
         {
           "id": "F2.2",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.1"
           ]
         },
         {
           "id": "F2.3",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.1"
           ]
         },
         {
           "id": "F2.4",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.3"
           ]
         },
         {
           "id": "F2.5",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.3",
             "F2.4"
@@ -138,7 +138,7 @@
         },
         {
           "id": "F2.6",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.5"
           ]

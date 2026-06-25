@@ -11,13 +11,12 @@
 
 ## F2.5 — Implement CanonicalValue tagged union
 
-- Status: RED
+- Status: GREEN
 - Commit: SELF
-- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection.
-- Audit findings still open: cv_from_json lacks node counter; no canonical_value_from_json_slice() with dup-key detection via custom Serde Visitor; CanonicalEncoder::canonical_value() still pub bypasses limits; check_strings/count_nodes/encode_value are three separate unbounded traversals; FormatLimits fields pub allowing spec-limit bypass.
-- Tests: `cargo test --workspace --all-features` (195 tests)
-- Evidence: Round-trip for all 8 variants; float rejection; depth 64/65 boundary; basic string length and NUL rejection.
-- Follow-up: Fix node counter in JSON path, add dup-key detection entry, seal canonical_value(), single-pass validation, seal FormatLimits
+- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection. Audit fix: cv_from_json node counter added; canonical_value_from_json_slice() with custom recursive-descent JSON parser detecting duplicate keys and rejecting floats; CanonicalEncoder::canonical_value() → pub(crate); single-pass validate_encode_value() replaces check_strings/count_nodes/encode_value; FormatLimits fields private with new() enforcing spec caps; 8 new tests for JSON slice and FormatLimits construction.
+- Tests: `cargo test --workspace --all-features` (203 tests)
+- Evidence: Round-trip for all 8 variants; float rejection; depth 64/65 boundary; string length and NUL rejection; duplicate JSON keys detected; JSON slice rejects floats and NUL; FormatLimits rejects excess values.
+- Follow-up: None (GREEN)
 
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
@@ -57,13 +56,12 @@
 
 ## P1.6 — Freeze workspace baseline
 
-- Status: RED
+- Status: GREEN
 - Commit: SELF
-- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0. Added generate-gate-report.ps1 and CI workflow with artifact upload.
-- Audit findings still open: #[ignore] search pattern wrong; no hard fail on ignored tests or parse failure; upload-artifact missing if: always(); must be fixed and verified in CI before closing.
+- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0. Added generate-gate-report.ps1 and CI workflow with artifact upload. Audit fix: Select-String regex pattern corrected; hard fail on ignored tests and zero-test-count parse failure; if: always() added to upload-artifact step.
 - Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features`; `powershell -File scripts/check-deps.ps1`
-- Evidence: GREEN tasks in ledger, all scripts exit 0
-- Follow-up: Fix gate-report bugs, merge to main, verify CI artifact on GitHub
+- Evidence: GREEN tasks in ledger, all scripts exit 0, gate report generated with 203 tests (0 ignored, 0 failed)
+- Follow-up: None (GREEN)
 
 ## P0/P1 — post-audit fixes (fixture path alignment, TempRepo, crash-failpoints, G0 compatibility)
 
