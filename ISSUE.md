@@ -102,7 +102,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -110,14 +110,14 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: PENDING — custom JsonParser rejected in audit; must be replaced with serde_json::Deserializer + custom Visitor. Specific findings:
-  1. CRITICAL: read_json_string() casts raw UTF-8 bytes 0x80..=0xff to char individually, mangling multi-byte UTF-8 and accepting invalid UTF-8
-  2. CRITICAL: \uXXXX surrogates not handled; valid surrogate pairs like \uD83D\uDE00 rejected
-  3. HIGH: Accepts vertical tab / form feed which are not valid JSON whitespace
-  4. HIGH: String length checked after full allocation instead of during accumulation
-  5. HIGH: JsonSyntax(String) is stringly-typed error (violates PLAN.md)
-  6. HIGH: FormatLimits does not reject zero values; lacks FORMAT §20 metadata 16 MiB total limit
-  7. Tests missing: raw UTF-8, escaped Unicode, mixed dup Unicode keys, surrogate pairs, invalid bytes, illegal whitespace
+- Resolution: RESOLVED — custom JsonParser deleted; replaced with serde_json::Deserializer + custom CanonicalValueVisitor implementing de::Visitor. Specific findings addressed:
+   1. CRITICAL (UTF-8): JsonParser deleted; serde_json's parser handles UTF-8 correctly, multi-byte sequences and raw UTF-8 bytes pass
+   2. CRITICAL (surrogates): serde_json correctly decodes \uD83D\uDE00 → 😀; isolated surrogates rejected
+   3. HIGH (whitespace): serde_json rejects vertical tab/form feed as invalid JSON whitespace
+   4. HIGH (allocation): string length checked in check_string() during visitor accumulation, before full allocation in MapKeyVisitor
+   5. HIGH (stringly-typed error): JsonSyntax(String) replaced with JsonSyntax { message, line, column } + DuplicateTextKey, TrailingData, InputTooLarge structured variants
+   6. HIGH (FormatLimits zero values): not preempting F2.7 per user instruction; 16 MiB total input limit added as MAX_RAW_INPUT in canonical_value_from_json_slice
+   7. All required tests added: raw_utf8, escaped_unicode, dup_unicode_key, surrogate_pair, isolated_surrogate, illegal_whitespace, max_string (1 MiB), oversized_string (1 MiB + 1)
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 

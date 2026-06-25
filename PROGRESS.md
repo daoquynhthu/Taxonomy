@@ -11,13 +11,12 @@
 
 ## F2.5 — Implement CanonicalValue tagged union
 
-- Status: RED
-- Commit: 2739a53
-- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection. Audit fix: cv_from_json node counter added; CanonicalEncoder::canonical_value() → pub(crate); single-pass validate_encode_value() replaces check_strings/count_nodes/encode_value; FormatLimits fields private with checked constructor.
-- Audit findings still open: custom JsonParser has critical UTF-8, surrogate, whitespace, and allocation bugs; must be replaced with serde_json::Deserializer + custom Visitor before GREEN.
-- Tests: `cargo test --workspace --all-features` (203 tests)
-- Evidence: Round-trip for all 8 variants; float rejection; depth 64/65 boundary; string length and NUL rejection.
-- Follow-up: Replace JsonParser with serde_json::Deserializer + Visitor; structured JSON error enum; parse-time string length checks; add UTF-8/surrogate/whitespace/dup Unicode key tests
+- Status: GREEN
+- Commit: SELF
+- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection. Audit fix: JsonParser deleted and replaced with serde_json::Deserializer + custom CanonicalValueVisitor implementing de::Visitor. Structured error enum with DuplicateTextKey, JsonSyntax {message, line, column}, TrailingData, InputTooLarge variants. String length bounded to 1 MiB during parsing; raw input bounded to 16 MiB. Depth, node count, and NUL rejection enforced in visitor callbacks. Tests for all audit gaps: UTF-8, surrogates, illegal whitespace, duplicate unicode keys, max/oversized strings.
+- Tests: `cargo test --workspace --all-features` (211 tests)
+- Evidence: 211 tests pass (8 new: raw_utf8, escaped_unicode, dup_unicode_key, surrogate_pair, isolated_surrogate, illegal_whitespace, max_string, oversized_string). Gate: fmt/clippy/test/doc-test all pass.
+- Follow-up: None (GREEN)
 
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
