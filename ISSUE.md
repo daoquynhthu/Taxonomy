@@ -50,7 +50,7 @@
 
 ## ISSUE-0005 — F2.6 implementation incomplete (missing types + encapsulation holes)
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/ids.rs, FORMAT.md §6, F2.6
@@ -58,7 +58,7 @@
 - Violated invariant: All FORMAT.md §6 constrained text types must exist with checked construction.
 - Required decision: Add missing types; make RefPattern fields private via struct+inner enum; matches() take &RefName; reject bare prefixes.
 - Work stopped: F2.6
-- Resolution: PENDING (missing types added and bare prefix rejection added, but RefPattern pub enum variants still allow direct construction bypassing new())
+- Resolution: RESOLVED (RefPattern changed from pub enum to struct + private RefPatternKind; Display/FromStr updated to use self.kind; DataType, RelationType, CommitMessage, KeySlotLabel added previously)
 
 ## ISSUE-0006 — BoundedLength::new_unchecked is pub allowing bypass of max check
 
@@ -86,7 +86,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -94,22 +94,22 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: PENDING (float rejection works but node/string/depth limits missing; duplicate-key check is unreachable; writer lacks bounds)
+- Resolution: RESOLVED (encode_canonical_value() added with FormatLimits; TryFrom<serde_json::Value> enforces depth/node/string/NUL limits; JsonDuplicateKey/JsonFloatUnsupported/JsonDepthExceeded/JsonNumberOutOfRange removed from DecodeError; 12 new tests)
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: PROGRESS.md
 - Evidence: Entries record "Commit: PENDING" then update to commit hash in same commit, creating circular reference. Also duplicate entries per task (original + audit correction), not newest-first.
 - Required decision: Replace "Commit: PENDING" pattern with "Commit: SELF". Merge audit corrections into original entries. Sort newest-first.
 - Work stopped: none
-- Resolution: PENDING (some PENDING → SELF done, but duplicate entries remain and one PENDING still exists)
+- Resolution: RESOLVED (all PENDING replaced with SELF; audit corrections merged into original entries; entries sorted newest-first; no duplicates remain)
 
 ## ISSUE-0010 — CanonicalSortedMap API completeness: stringly-typed error + public insert_u64
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Code review 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.3
@@ -117,4 +117,4 @@
 - Violated invariant: PLAN.md prohibits stringly-typed format errors; encoder helpers must not expose raw pre-encoded paths.
 - Required decision: Add structured `CanonicalEncodeError`. Make `finish()` return `Result<(), CanonicalEncodeError>`. Make `insert_u64` and `CanonicalSortedMap` pub(crate). Document that F3 record encoders call through controlled field encoding.
 - Work stopped: F2.3
-- Resolution: PENDING
+- Resolution: RESOLVED (CanonicalSortedMap made pub(crate); insert_u64 made pub(crate); finish() returns Result<(), CanonicalEncodeError>; CanonicalEncodeError enum with DuplicateMapKey variant)

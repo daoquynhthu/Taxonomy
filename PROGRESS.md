@@ -1,112 +1,67 @@
 # Progress
 
-## F2.2 — audit correction: DomainHash returns Result
+## F2.6 — Implement constrained names
 
 - Status: GREEN
 - Commit: SELF
-- Completed: domain_hash(tag, payload) now returns Result<[u8; 32], DomainHashError> instead of infallible [u8; 32]. Tags exceeding u16::MAX are rejected with TagTooLong error. New error type DomainHashError with Display and Error impls.
-- Tests: `cargo test --workspace --all-features` (151 tests)
-- Evidence: All 13 golden vectors still match; long tag (65535) succeeds; 65536-byte tag correctly rejected; large payloads still work.
-- Follow-up: F2.3 audit correction (CanonicalSortedMap dedup check)
-
-## F2.4 — audit correction: checked usize conversions in CBOR decoder
-
-- Status: GREEN
-- Commit: SELF
-- Completed: All unchecked `len as usize` casts in decoder replaced with `self.usize_from_u64()` helper that returns `ValueTooLarge` on overflow. Covers byte/text lengths, array capacity, map count, CanonicalValue array/map capacity. No `as usize` casts remain in canonical.rs.
-- Tests: `cargo test --workspace --all-features` (151 tests)
-- Evidence: Decoder now rejects lengths exceeding usize::MAX (32-bit safety); all existing tests pass.
-- Follow-up: F2.5 audit correction (JSON conversion adapter)
-
-## F2.5 — audit correction: JSON conversion adapter for CanonicalValue
-
-- Status: GREEN
-- Commit: SELF
-- Completed: TryFrom<serde_json::Value> for CanonicalValue with I64/U64 distinction, float rejection, depth limit (32), duplicate-key detection. 10 new tests covering null, bool, integer (positive/negative/max/u64), string, array, object, float rejection, nested float, depth exceeded, round-trip.
-- Tests: `cargo test --workspace --all-features` (161 tests)
-- Evidence: JSON null→Null, bool→Bool, integer→I64/U64, string→Text, array→Array, object→Map (sorted keys). Floats rejected with JsonFloatUnsupported.
-- Follow-up: F2.6 audit correction (missing types, encapsulation, matches signature)
-
-## F2.6 — audit correction: missing types, encapsulation, matches signature
-
-- Status: GREEN
-- Commit: SELF
-- Completed: Added DataType (1..256), RelationType (1..256), KeySlotLabel (1..128), CommitMessage (0..1_048_576). RefPattern::matches() now takes &RefName. RefPattern::as_exact()/as_namespace() accessors added. Bare ref prefix rejected. validate_simple_text helper for constrained text types. 22 new tests (bare prefix, DataType, RelationType, KeySlotLabel, CommitMessage, accessors).
-- Tests: `cargo test --workspace --all-features` (183 tests)
-- Evidence: All FORMAT.md §6.4 types exist with correct bounds; RefPattern constructed by new() cannot be bypassed; matches() uses typed RefName; bare refs/heads/ is rejected.
-- Follow-up: F2.7 (normative limits)
-
-## F2.3 — audit correction: CanonicalSortedMap dedup + insert_raw visibility
-
-- Status: GREEN
-- Commit: SELF
-- Completed: CanonicalSortedMap::finish() now returns Result<(), &'static str> with duplicate-key detection. insert_raw changed to pub(crate). Fmt check, clippy pass, 151 tests.
-- Tests: `cargo test --workspace --all-features` (151 tests)
-- Evidence: Duplicate encoded keys are detected and rejected; existing tests pass unchanged.
-- Follow-up: F2.4 audit correction (checked usize conversions in decoder)
-
-## F2.1 — audit correction: BoundedLength::new_unchecked visibility
-
-- Status: GREEN
-- Commit: 99c3ea5
-- Completed: BoundedLength::new_unchecked changed from pub to pub(crate) per audit HIGH 2. Added dead_code allow for future internal use.
-- Tests: `cargo test --workspace --all-features` (150 tests)
-- Evidence: No external access to unchecked construction; internal future use preserved.
-- Follow-up: F2.2 audit correction (DomainHash Result return type)
-
-## F2.6 — Implement constrained names (original)
-
-- Status: GREEN
-- Commit: 2c40ade
-- Completed: ObjectId, RefName, RefPattern types in ids.rs with full format validation. NameError enum for all rejection modes. Longest-prefix specificity comparison with deterministic tests.
-- Tests: `cargo test --workspace --all-features` (150 tests)
-- Evidence: ObjectId rejects empty/too-long/leading-slash/trailing-slash/empty-segment/dot/dotdot/control/invalid-char; RefName rejects invalid-prefix/lock-suffix/double-slash/at-brace/backslash/non-ascii/dotdot/control/too-long; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering exact > longer-prefix > shorter-prefix.
-- Follow-up: F2.7 (normative limits)
+- Completed: ObjectId, RefName, RefPattern types in ids.rs with full format validation and NameError enum. DataType (1..256), RelationType (1..256), KeySlotLabel (1..128), CommitMessage (0..1_048_576) added. Longest-prefix specificity comparison. Audit fix: RefPattern changed from pub enum to struct + private RefPatternKind; fields no longer bypassable via direct construction; Display/FromStr updated to use self.kind; matches() takes &RefName; bare ref prefix rejected; validate_simple_text helper for constrained types.
+- Tests: `cargo test --workspace --all-features` (195 tests)
+- Evidence: ObjectId rejects all invalid forms; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering correct; bare `refs/heads/` rejected; all constrained types enforce bounds.
+- Follow-up: None (GREEN)
 
 ## F2.5 — Implement CanonicalValue tagged union
 
 - Status: GREEN
-- Commit: PENDING
-- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. Depth/nesting limits enforced.
-- Tests: `cargo test --workspace --all-features` (114 tests)
-- Evidence: Round-trip for all 8 variants; nested Array/Map round-trip; rejects discriminant out of range, non-array outer, wrong payload types, non-text map key, duplicate/unsorted text keys, float in payload, depth exceeded, node count exceeded, trailing data.
-- Follow-up: F2.6 (constrained names)
+- Commit: SELF
+- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection and spec-compliant limits. Audit fix: added pub fn encode_canonical_value() with FormatLimits enforcing depth ≤64, nodes ≤1M, string ≤1M, NUL rejection. TryFrom<serde_json::Value> now uses CanonicalEncodeError and enforces all limits. JsonDuplicateKey/JsonFloatUnsupported/JsonDepthExceeded/JsonNumberOutOfRange removed from DecodeError.
+- Tests: `cargo test --workspace --all-features` (195 tests)
+- Evidence: Round-trip for all 8 variants; float rejection; depth 64 accepted/65 rejected; node count limit; string length limit; NUL in text/key rejected; JSON round-trip.
+- Follow-up: None (GREEN)
 
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
 - Status: GREEN
 - Commit: SELF
-- Completed: CanonicalDecoder with depth-bounded recursive descent, checked allocation, and rejection of all non-canonical forms. Value enum with reencode(). All FORMAT.md §4 rejection criteria implemented.
-- Tests: `cargo test --workspace --all-features` (89 tests)
+- Completed: CanonicalDecoder with depth-bounded recursive descent, checked allocation, and rejection of all non-canonical forms. Value enum with reencode(). Audit fix: all unchecked `as usize` casts replaced with `usize_from_u64()` helper returning ValueTooLarge on overflow.
+- Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: Golden vector re-encodes identically; rejects non-shortest integers, indefinite items, floats, tag, undefined, invalid UTF-8, duplicate/unsorted map keys, depth exceeded, oversized string, trailing data.
-- Follow-up: F2.5 (CanonicalValue)
+- Follow-up: None (GREEN)
 
 ## F2.3 — Implement deterministic CBOR encoder
 
 - Status: GREEN
 - Commit: SELF
-- Completed: CanonicalEncoder with shortest integer/string-length encoding, SortedMap helper; matches FORMAT.md §21.1 golden vector exactly. No indefinite-length, float, or tag APIs exposed.
-- Tests: `cargo test --workspace --all-features` (57 tests)
-- Evidence: Golden vector match; shortest u64/i64 at every boundary; empty/24-byte string length encoding; map key sorting; nested array; determinism.
-- Follow-up: F2.4 (bounded CBOR decoder)
+- Completed: CanonicalEncoder with shortest integer/string-length encoding, CanonicalSortedMap helper. Audit fix: CanonicalSortedMap made pub(crate); insert_u64 made pub(crate); finish() returns Result<(), CanonicalEncodeError> with duplicate-key detection; stringly-typed error replaced with structured CanonicalEncodeError enum.
+- Tests: `cargo test --workspace --all-features` (195 tests)
+- Evidence: Golden vector match; shortest u64/i64 at every boundary; empty/24-byte string length encoding; map key sorting; duplicate keys rejected; determinism.
+- Follow-up: None (GREEN)
 
 ## F2.2 — Implement DomainHash
 
 - Status: GREEN
 - Commit: SELF
-- Completed: domain_hash(tag, payload) implementing the exact length-prefixed SHA-256 construction from FORMAT.md §5.1 using u16::to_le_bytes() and u64::to_le_bytes() (no usize in preimage).
-- Tests: `cargo test --workspace --all-features` (43 tests)
-- Evidence: 13 empty-payload domain vectors match FORMAT.md §21.2 byte-for-byte; different tag/payload changes result; long tag (65535 bytes) and large payload (100k) handled correctly.
-- Follow-up: F2.3 (deterministic CBOR encoder)
+- Completed: domain_hash(tag, payload) implementing exact length-prefixed SHA-256 construction from FORMAT.md §5.1 using u16::to_le_bytes() and u64::to_le_bytes(). Audit fix: returns Result<[u8;32], DomainHashError> instead of infallible; tags exceeding u16::MAX rejected with TagTooLong error; Display + Error impls for DomainHashError.
+- Tests: `cargo test --workspace --all-features` (195 tests)
+- Evidence: 13 empty-payload domain vectors match FORMAT.md §21.2 byte-for-byte; long tag (65535) succeeds; 65536-byte tag rejected; large payload handled.
+- Follow-up: None (GREEN)
 
 ## F2.1 — Implement primitive fixed-width types
 
 - Status: GREEN
 - Commit: SELF
-- Completed: Private-field wrappers for UUID (16 bytes), 14 hash-id types (32 bytes each), Signature (64 bytes), PublicKey (32 bytes), Timestamp (i64), and BoundedLength (u64 with max bound).
-- Tests: `cargo test --workspace --all-features` (23 tests)
-- Evidence: Round-trip bytes and display/parse for each type; malformed length rejection for UUID, RecordId, Signature, PublicKey; bound rejection for BoundedLength; distinct-type compile check.
-- Follow-up: F2.2 (DomainHash)
+- Completed: Private-field wrappers for UUID (16 bytes), 14 hash-id types (32 bytes each), Signature (64 bytes), PublicKey (32 bytes), Timestamp (i64), and BoundedLength (u64 with max bound). All hash IDs via hash_id! macro. Audit fix: BoundedLength::new_unchecked changed from pub to pub(crate) to prevent bypass of max bound.
+- Tests: `cargo test --workspace --all-features` (195 tests)
+- Evidence: Round-trip bytes and display/parse; malformed length rejection; bound rejection; distinct-type compile check; no external access to unchecked construction.
+- Follow-up: None (GREEN)
+
+## P1.6 — Freeze workspace baseline
+
+- Status: GREEN
+- Commit: SELF
+- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0
+- Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features`; `powershell -File scripts/check-deps.ps1`
+- Evidence: GREEN tasks in ledger, all scripts exit 0
+- Follow-up: begin F2 canonical format primitives
 
 ## P0/P1 — post-audit fixes (fixture path alignment, TempRepo, crash-failpoints, G0 compatibility)
 
@@ -115,15 +70,6 @@
 - Completed: Audit revealed 5 gaps — fixtures not in tests/vectors/format-v1/; G0 command path mismatch; missing TempRepo helper; missing crash-failpoints CI job; check-deps untested. All fixed and verified.
 - Tests: Full G0 gate + G1 gate + check-deps edge-failure test
 - Evidence: All gates pass; check-deps correctly returns non-zero on bad edge
-
-## P1.6 — Freeze workspace baseline
-
-- Status: GREEN
-- Commit: SELF
-- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0
-- Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features`; `powershell -File scripts/check-deps.ps1`
-- Evidence: 11 GREEN tasks in ledger, all scripts exit 0
-- Follow-up: begin F2 canonical format primitives
 
 ## P1.5 — Establish CI jobs
 
