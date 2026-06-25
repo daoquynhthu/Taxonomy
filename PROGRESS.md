@@ -1,5 +1,14 @@
 # Progress
 
+## F2.3 — Implement deterministic CBOR encoder
+
+- Status: GREEN
+- Commit: c1b0877
+- Completed: CanonicalEncoder with shortest integer/string-length encoding, SortedMap helper; matches FORMAT.md §21.1 golden vector exactly. No indefinite-length, float, or tag APIs exposed.
+- Tests: `cargo test --workspace --all-features` (57 tests)
+- Evidence: Golden vector match; shortest u64/i64 at every boundary; empty/24-byte string length encoding; map key sorting; nested array; determinism.
+- Follow-up: F2.4 (bounded CBOR decoder)
+
 ## F2.2 — Implement DomainHash
 
 - Status: GREEN
