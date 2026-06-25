@@ -781,14 +781,17 @@ impl TryFrom<String> for RefName {
 
 /// A policy ref pattern: either an exact ref name or a namespace prefix.
 ///
-/// Construct via [`RefPattern::new`]. The variant fields are `pub(crate)` so
-/// external code must use `new()` and the provided accessor methods.
+/// Construct via [`RefPattern::new`]. The inner representation is private:
+/// external code cannot construct a `RefPattern` directly.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RefPattern {
-    /// An exact ref name match.
+pub struct RefPattern {
+    kind: RefPatternKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RefPatternKind {
     Exact(RefName),
-    /// A namespace prefix ending in `/**`.
-    Namespace { prefix: String },
+    Namespace(String),
 }
 
 impl RefPattern {
@@ -796,26 +799,28 @@ impl RefPattern {
     pub fn new(s: &str) -> Result<Self, NameError> {
         validate_ref_pattern(s)?;
         if let Some(prefix) = s.strip_suffix("/**") {
-            Ok(RefPattern::Namespace {
-                prefix: prefix.to_string(),
+            Ok(RefPattern {
+                kind: RefPatternKind::Namespace(prefix.to_string()),
             })
         } else {
-            Ok(RefPattern::Exact(RefName::new(s)?))
+            Ok(RefPattern {
+                kind: RefPatternKind::Exact(RefName::new(s)?),
+            })
         }
     }
 
     /// If this is an exact pattern, return the ref name.
     pub fn as_exact(&self) -> Option<&RefName> {
-        match self {
-            RefPattern::Exact(r) => Some(r),
+        match &self.kind {
+            RefPatternKind::Exact(r) => Some(r),
             _ => None,
         }
     }
 
     /// If this is a namespace pattern, return the prefix (without `/**`).
     pub fn as_namespace(&self) -> Option<&str> {
-        match self {
-            RefPattern::Namespace { prefix } => Some(prefix),
+        match &self.kind {
+            RefPatternKind::Namespace(prefix) => Some(prefix),
             _ => None,
         }
     }
@@ -825,9 +830,9 @@ impl RefPattern {
     /// Exact patterns match by equality. Namespace patterns match when the
     /// ref name begins with the prefix followed by `/` or is the prefix itself.
     pub fn matches(&self, name: &RefName) -> bool {
-        match self {
-            RefPattern::Exact(ref_name) => ref_name == name,
-            RefPattern::Namespace { prefix } => {
+        match &self.kind {
+            RefPatternKind::Exact(ref_name) => ref_name == name,
+            RefPatternKind::Namespace(prefix) => {
                 let name_str = name.as_str();
                 if name_str.starts_with(prefix) {
                     name_str.len() == prefix.len()
@@ -844,15 +849,15 @@ impl RefPattern {
     /// Exact patterns have maximum specificity. Namespace patterns have
     /// specificity equal to their prefix length.
     pub fn specificity(&self) -> usize {
-        match self {
-            RefPattern::Exact(_) => usize::MAX,
-            RefPattern::Namespace { prefix } => prefix.len(),
+        match &self.kind {
+            RefPatternKind::Exact(_) => usize::MAX,
+            RefPatternKind::Namespace(prefix) => prefix.len(),
         }
     }
 
     /// Returns `true` if this is an exact pattern.
     pub fn is_exact(&self) -> bool {
-        matches!(self, RefPattern::Exact(_))
+        matches!(&self.kind, RefPatternKind::Exact(_))
     }
 }
 
@@ -917,9 +922,9 @@ fn validate_ref_pattern_prefix(prefix: &str) -> Result<(), NameError> {
 
 impl fmt::Display for RefPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RefPattern::Exact(rn) => write!(f, "{rn}"),
-            RefPattern::Namespace { prefix } => write!(f, "{prefix}/**"),
+        match &self.kind {
+            RefPatternKind::Exact(rn) => write!(f, "{rn}"),
+            RefPatternKind::Namespace(prefix) => write!(f, "{prefix}/**"),
         }
     }
 }
