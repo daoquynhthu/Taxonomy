@@ -1,3 +1,9 @@
+---
+> **NOTE**: This mission statement remains the conceptual north star.
+> The implementation has moved to `docs/ARCHITECTURE.md` (v4 Rust rewrite).
+> The v3 Python prototype is archived in `prototype/`.
+---
+
 # Seed 计划：人类文明火种保存协议
 
 ## 1. 愿景 (Vision)

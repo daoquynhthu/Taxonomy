@@ -1,3 +1,9 @@
+---
+> **NOTE**: This classification system remains valid for content organization.
+> The engine implementation has moved to `docs/ARCHITECTURE.md` (v4 Rust rewrite).
+> The v3 Python prototype is archived in `prototype/`.
+---
+
 # Seed 计划：文明分类体系 (Taxonomy v2)
 
 为了应对海量知识的存储与检索，Seed 计划采用了基于 **层级路径 (Hierarchical Path)** 的分类体系。每一条目都必须归属于一个明确的路径，路径使用点号 `.` 分隔。

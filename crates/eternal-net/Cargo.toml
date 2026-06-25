@@ -1,0 +1,19 @@
+[package]
+name = "eternal-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Sync protocol, remote adapters, and transport for EternalCore"
+
+[dependencies]
+eternal-core = { path = "../eternal-core" }
+eternal-format = { path = "../eternal-format" }
+eternal-crypto = { path = "../eternal-crypto" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"

@@ -5,7 +5,21 @@ objects/
 metadata/seed_index.db
 metadata/*.journal
 config.json.template
-# tests/
+
+# Archived prototype (build artifacts)
+prototype/test_repo/
+prototype/__pycache__/
+prototype/*.egg-info/
+prototype/dist/
+prototype/build/
+
+# Rust build artifacts
+/target/
+crates/*/target/
+
+# Fuzz artifacts
+fuzz/corpus/
+fuzz/artifacts/
 
 # Python build artifacts
 *.egg-info/

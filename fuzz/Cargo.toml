@@ -1,0 +1,25 @@
+[package]
+name = "eternal-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+eternal-format = { path = "../crates/eternal-format" }
+eternal-store = { path = "../crates/eternal-store" }
+
+[[bin]]
+name = "packfile"
+path = "targets/packfile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "segment"
+path = "targets/segment.rs"
+test = false
+doc = false

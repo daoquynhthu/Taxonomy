@@ -1,3 +1,9 @@
+---
+> **DEPRECATED**: This document describes the v3 Python prototype (`prototype/`).
+> The v4 Rust rewrite (`docs/ARCHITECTURE.md`) has a completely different CLI.
+> Retained only as historical reference for the prototype.
+---
+
 # EternalCore 指令使用文档 (EternalCore CLI Documentation)
 
 EternalCore 是一个分布式、去中心化的数字资产持久化引擎，支持全网格同步、版本控制、加密压缩及元数据扩展。

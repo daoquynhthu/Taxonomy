@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/eternal-format",
+    "crates/eternal-store",
+    "crates/eternal-core",
+    "crates/eternal-crypto",
+    "crates/eternal-net",
+    "crates/eternal-cli",
+]
+
+[workspace.package]
+version = "4.0.0-dev"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/daoquynhthu/Taxonomy"
+homepage = "https://github.com/daoquynhthu/Taxonomy"
