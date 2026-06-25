@@ -368,6 +368,15 @@ impl<'a> CanonicalDecoder<'a> {
         }
     }
 
+    /// Convert a `u64` to `usize` with overflow checking.
+    /// Returns `ValueTooLarge` on 32-bit platforms if the value exceeds `usize::MAX`.
+    fn usize_from_u64(&self, val: u64) -> Result<usize, DecodeError> {
+        usize::try_from(val).map_err(|_| DecodeError::ValueTooLarge {
+            requested: val,
+            max: usize::MAX as u64,
+        })
+    }
+
     /// Decode a single CBOR data item.
     ///
     /// Returns an error if:
@@ -420,7 +429,7 @@ impl<'a> CanonicalDecoder<'a> {
                         max: self.max_string_bytes,
                     });
                 }
-                let bytes = self.read_bytes(len as usize)?;
+                let bytes = self.read_bytes(self.usize_from_u64(len)?)?;
                 Ok(Value::Bytes(bytes.to_vec()))
             }
             3 => {
@@ -431,7 +440,7 @@ impl<'a> CanonicalDecoder<'a> {
                         max: self.max_string_bytes,
                     });
                 }
-                let raw = self.read_bytes(len as usize)?;
+                let raw = self.read_bytes(self.usize_from_u64(len)?)?;
                 let s = std::str::from_utf8(raw).map_err(|_| DecodeError::InvalidUtf8)?;
                 Ok(Value::Text(s.to_string()))
             }
@@ -443,7 +452,7 @@ impl<'a> CanonicalDecoder<'a> {
                         max: self.max_item_count,
                     });
                 }
-                let mut items = Vec::with_capacity(len.min(1024) as usize);
+                let mut items = Vec::with_capacity(self.usize_from_u64(len.min(1024))?);
                 for _ in 0..len {
                     items.push(self.decode_value(depth + 1)?);
                 }
@@ -457,7 +466,7 @@ impl<'a> CanonicalDecoder<'a> {
                         max: self.max_item_count,
                     });
                 }
-                let count = len as usize;
+                let count = self.usize_from_u64(len)?;
                 let mut pairs = Vec::with_capacity(count.min(1024));
                 let mut prev_key: Option<Vec<u8>> = None;
                 for _ in 0..count {
@@ -729,7 +738,7 @@ impl<'a> CanonicalDecoder<'a> {
                         max: self.max_item_count,
                     });
                 }
-                let mut items = Vec::with_capacity(item_count.min(1024) as usize);
+                let mut items = Vec::with_capacity(self.usize_from_u64(item_count.min(1024))?);
                 for _ in 0..item_count {
                     items.push(self.decode_cv_inner(depth + 1, node_count)?);
                 }
@@ -757,7 +766,7 @@ impl<'a> CanonicalDecoder<'a> {
                 }
 
                 let mut entries: Vec<(String, CanonicalValue)> =
-                    Vec::with_capacity(pair_count.min(1024) as usize);
+                    Vec::with_capacity(self.usize_from_u64(pair_count.min(1024))?);
                 let mut prev_key: Option<String> = None;
 
                 for _ in 0..pair_count {

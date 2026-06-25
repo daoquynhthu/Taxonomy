@@ -7,7 +7,16 @@
 - Completed: domain_hash(tag, payload) now returns Result<[u8; 32], DomainHashError> instead of infallible [u8; 32]. Tags exceeding u16::MAX are rejected with TagTooLong error. New error type DomainHashError with Display and Error impls.
 - Tests: `cargo test --workspace --all-features` (151 tests)
 - Evidence: All 13 golden vectors still match; long tag (65535) succeeds; 65536-byte tag correctly rejected; large payloads still work.
-- Follow-up: F2.4 audit correction (checked usize conversions in decoder)
+- Follow-up: F2.3 audit correction (CanonicalSortedMap dedup check)
+
+## F2.4 — audit correction: checked usize conversions in CBOR decoder
+
+- Status: GREEN
+- Commit: SELF
+- Completed: All unchecked `len as usize` casts in decoder replaced with `self.usize_from_u64()` helper that returns `ValueTooLarge` on overflow. Covers byte/text lengths, array capacity, map count, CanonicalValue array/map capacity. No `as usize` casts remain in canonical.rs.
+- Tests: `cargo test --workspace --all-features` (151 tests)
+- Evidence: Decoder now rejects lengths exceeding usize::MAX (32-bit safety); all existing tests pass.
+- Follow-up: F2.5 audit correction (JSON conversion adapter)
 
 ## F2.3 — audit correction: CanonicalSortedMap dedup + insert_raw visibility
 
