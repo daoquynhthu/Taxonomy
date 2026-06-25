@@ -1,5 +1,14 @@
 # Progress
 
+## F2.6 — Implement constrained names
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: ObjectId, RefName, RefPattern types in ids.rs with full format validation. NameError enum for all rejection modes. Longest-prefix specificity comparison with deterministic tests.
+- Tests: `cargo test --workspace --all-features` (150 tests)
+- Evidence: ObjectId rejects empty/too-long/leading-slash/trailing-slash/empty-segment/dot/dotdot/control/invalid-char; RefName rejects invalid-prefix/lock-suffix/double-slash/at-brace/backslash/non-ascii/dotdot/control/too-long; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering exact > longer-prefix > shorter-prefix.
+- Follow-up: F2.7 (normative limits)
+
 ## F2.5 — Implement CanonicalValue tagged union
 
 - Status: GREEN

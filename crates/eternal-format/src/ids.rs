@@ -492,12 +492,429 @@ impl fmt::Debug for BoundedLength {
 }
 
 // ---------------------------------------------------------------------------
+// Constrained name types (FORMAT.md §6)
+// ---------------------------------------------------------------------------
+
+/// Errors for constrained name validation (FORMAT.md §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameError {
+    EmptyName,
+    TooLong { max: usize, actual: usize },
+    ControlCharacter { position: usize },
+    InvalidCharacter { position: usize },
+    LeadingSlash,
+    TrailingSlash,
+    EmptySegment,
+    DotSegment,
+    DotDotSegment,
+    InvalidRefPrefix,
+    EndsWithLock,
+    DoubleSlash,
+    AtBrace,
+    Backslash,
+    EmptyNamespace,
+    NotAscii,
+}
+
+impl fmt::Display for NameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "name is empty"),
+            Self::TooLong { max, actual } => {
+                write!(f, "name length {actual} exceeds maximum {max}")
+            }
+            Self::ControlCharacter { position } => {
+                write!(f, "control character at position {position}")
+            }
+            Self::InvalidCharacter { position } => {
+                write!(f, "invalid character at position {position}")
+            }
+            Self::LeadingSlash => write!(f, "name begins with '/'"),
+            Self::TrailingSlash => write!(f, "name ends with '/'"),
+            Self::EmptySegment => write!(f, "name contains an empty path segment"),
+            Self::DotSegment => write!(f, "name contains a '.' segment"),
+            Self::DotDotSegment => write!(f, "name contains a '..' segment"),
+            Self::InvalidRefPrefix => write!(f, "ref name does not begin with a valid prefix"),
+            Self::EndsWithLock => write!(f, "ref name ends with '.lock'"),
+            Self::DoubleSlash => write!(f, "ref name contains '//'"),
+            Self::AtBrace => write!(f, "ref name contains '@{{'"),
+            Self::Backslash => write!(f, "ref name contains backslash"),
+            Self::EmptyNamespace => write!(f, "namespace prefix is empty"),
+            Self::NotAscii => write!(f, "ref name contains non-ASCII bytes"),
+        }
+    }
+}
+
+impl std::error::Error for NameError {}
+
+// ---------------------------------------------------------------------------
+// Path segment validation (shared by ObjectId, RefName suffix)
+// ---------------------------------------------------------------------------
+
+/// Validate path segment rules: no empty segments, no `.` or `..`, no
+/// control characters, and (for v4) only ASCII letters/digits/`_`/`-`/`.`/`/`.
+fn validate_path_segments(s: &str, allow_chars: bool) -> Result<(), NameError> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    if bytes[0] == b'/' {
+        return Err(NameError::LeadingSlash);
+    }
+    if bytes[bytes.len() - 1] == b'/' {
+        return Err(NameError::TrailingSlash);
+    }
+    for (i, &b) in bytes.iter().enumerate() {
+        if b <= 0x1f || b == 0x7f {
+            return Err(NameError::ControlCharacter { position: i });
+        }
+        if allow_chars {
+            let is_v4 =
+                matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/');
+            if !is_v4 {
+                return Err(NameError::InvalidCharacter { position: i });
+            }
+        }
+    }
+    for segment in s.split('/') {
+        if segment.is_empty() {
+            return Err(NameError::EmptySegment);
+        }
+        if segment == "." {
+            return Err(NameError::DotSegment);
+        }
+        if segment == ".." {
+            return Err(NameError::DotDotSegment);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ObjectId (FORMAT.md §6.1)
+// ---------------------------------------------------------------------------
+
+/// An object identifier: 1–1024 ASCII bytes, v4 character set, no leading
+/// or trailing `/`, no empty/dot/dotdot path segments.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObjectId(String);
+
+impl ObjectId {
+    /// Validate and construct an `ObjectId`.
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        validate_object_id(s)?;
+        Ok(ObjectId(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+/// Validate an ObjectId per FORMAT.md §6.1.
+pub fn validate_object_id(s: &str) -> Result<(), NameError> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return Err(NameError::EmptyName);
+    }
+    if bytes.len() > 1024 {
+        return Err(NameError::TooLong {
+            max: 1024,
+            actual: bytes.len(),
+        });
+    }
+    validate_path_segments(s, true)
+}
+
+impl fmt::Display for ObjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for ObjectId {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for ObjectId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ObjectId {
+    type Error = NameError;
+    fn try_from(s: String) -> Result<Self, NameError> {
+        validate_object_id(&s)?;
+        Ok(ObjectId(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefName (FORMAT.md §6.2)
+// ---------------------------------------------------------------------------
+
+/// A ref name: 1–1024 ASCII bytes, begins with a valid prefix, suffix
+/// follows ObjectId path-segment rules, no `.lock`/`//`/`@{`/backslash.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RefName(String);
+
+impl RefName {
+    /// Validate and construct a `RefName`.
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        validate_ref_name(s)?;
+        Ok(RefName(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+/// Validate a ref name per FORMAT.md §6.2.
+pub fn validate_ref_name(s: &str) -> Result<(), NameError> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return Err(NameError::EmptyName);
+    }
+    if bytes.len() > 1024 {
+        return Err(NameError::TooLong {
+            max: 1024,
+            actual: bytes.len(),
+        });
+    }
+    // All ASCII
+    if bytes.iter().any(|&b| b > 0x7f) {
+        return Err(NameError::NotAscii);
+    }
+    // Must begin with a valid prefix
+    let has_prefix = bytes.starts_with(b"refs/heads/")
+        || bytes.starts_with(b"refs/tags/")
+        || bytes.starts_with(b"refs/pins/")
+        || bytes.starts_with(b"refs/merge-requests/");
+    if !has_prefix {
+        return Err(NameError::InvalidRefPrefix);
+    }
+    // Must not end in .lock
+    if s.ends_with(".lock") {
+        return Err(NameError::EndsWithLock);
+    }
+    // Must not contain //
+    if bytes.windows(2).any(|w| w == b"//") {
+        return Err(NameError::DoubleSlash);
+    }
+    // Must not contain @{
+    if s.contains("@{") {
+        return Err(NameError::AtBrace);
+    }
+    // Must not contain backslash
+    if bytes.contains(&b'\\') {
+        return Err(NameError::Backslash);
+    }
+    // Control characters
+    for (i, &b) in bytes.iter().enumerate() {
+        if b <= 0x1f || b == 0x7f {
+            return Err(NameError::ControlCharacter { position: i });
+        }
+    }
+    // Suffix follows ObjectId path-segment rules
+    const PREFIXES: &[&str] = &[
+        "refs/heads/",
+        "refs/tags/",
+        "refs/pins/",
+        "refs/merge-requests/",
+    ];
+    for prefix in PREFIXES {
+        if let Some(suffix) = s.strip_prefix(prefix) {
+            if !suffix.is_empty() {
+                validate_path_segments(suffix, true)?;
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+
+impl fmt::Display for RefName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for RefName {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for RefName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RefName {
+    type Error = NameError;
+    fn try_from(s: String) -> Result<Self, NameError> {
+        validate_ref_name(&s)?;
+        Ok(RefName(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefPattern (FORMAT.md §6.3)
+// ---------------------------------------------------------------------------
+
+/// A policy ref pattern: either an exact ref name or a namespace prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RefPattern {
+    /// An exact ref name match.
+    Exact(RefName),
+    /// A namespace prefix ending in `/**`.
+    Namespace { prefix: String },
+}
+
+impl RefPattern {
+    /// Validate and construct a `RefPattern`.
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        validate_ref_pattern(s)?;
+        if let Some(prefix) = s.strip_suffix("/**") {
+            Ok(RefPattern::Namespace {
+                prefix: prefix.to_string(),
+            })
+        } else {
+            Ok(RefPattern::Exact(RefName::new(s)?))
+        }
+    }
+
+    /// Returns `true` if this pattern matches the given ref name.
+    ///
+    /// Exact patterns match by equality. Namespace patterns match when the
+    /// ref name begins with the prefix followed by `/` or is the prefix itself.
+    pub fn matches(&self, name: &str) -> bool {
+        match self {
+            RefPattern::Exact(ref_name) => ref_name.as_str() == name,
+            RefPattern::Namespace { prefix } => {
+                if name.starts_with(prefix) {
+                    name.len() == prefix.len() || name.as_bytes().get(prefix.len()) == Some(&b'/')
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Returns the specificity of this pattern for longest-prefix ordering.
+    ///
+    /// Exact patterns have maximum specificity. Namespace patterns have
+    /// specificity equal to their prefix length.
+    pub fn specificity(&self) -> usize {
+        match self {
+            RefPattern::Exact(_) => usize::MAX,
+            RefPattern::Namespace { prefix } => prefix.len(),
+        }
+    }
+
+    /// Returns `true` if this is an exact pattern.
+    pub fn is_exact(&self) -> bool {
+        matches!(self, RefPattern::Exact(_))
+    }
+}
+
+/// Validate a ref pattern per FORMAT.md §6.3.
+pub fn validate_ref_pattern(s: &str) -> Result<(), NameError> {
+    if let Some(prefix) = s.strip_suffix("/**") {
+        if prefix.is_empty() {
+            return Err(NameError::EmptyNamespace);
+        }
+        validate_ref_pattern_prefix(prefix)?;
+        Ok(())
+    } else {
+        validate_ref_name(s)
+    }
+}
+
+fn validate_ref_pattern_prefix(prefix: &str) -> Result<(), NameError> {
+    let bytes = prefix.as_bytes();
+    if bytes.is_empty() {
+        return Err(NameError::EmptyName);
+    }
+    if bytes.len() > 1024 {
+        return Err(NameError::TooLong {
+            max: 1024,
+            actual: bytes.len(),
+        });
+    }
+    // All ASCII
+    if bytes.iter().any(|&b| b > 0x7f) {
+        return Err(NameError::NotAscii);
+    }
+    // Control characters
+    for (i, &b) in bytes.iter().enumerate() {
+        if b <= 0x1f || b == 0x7f {
+            return Err(NameError::ControlCharacter { position: i });
+        }
+    }
+    // Must begin with a valid ref prefix (with or without trailing component)
+    let starts_ok = bytes.starts_with(b"refs/heads/")
+        || bytes.starts_with(b"refs/tags/")
+        || bytes.starts_with(b"refs/pins/")
+        || bytes.starts_with(b"refs/merge-requests/")
+        || prefix == "refs/heads"
+        || prefix == "refs/tags"
+        || prefix == "refs/pins"
+        || prefix == "refs/merge-requests";
+    if !starts_ok {
+        return Err(NameError::InvalidRefPrefix);
+    }
+    // Path segment validation for the path part after the prefix component
+    if let Some(suffix) = prefix
+        .strip_prefix("refs/heads/")
+        .or_else(|| prefix.strip_prefix("refs/tags/"))
+        .or_else(|| prefix.strip_prefix("refs/pins/"))
+        .or_else(|| prefix.strip_prefix("refs/merge-requests/"))
+        .filter(|s| !s.is_empty())
+    {
+        validate_path_segments(suffix, true)?;
+    }
+    Ok(())
+}
+
+impl fmt::Display for RefPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RefPattern::Exact(rn) => write!(f, "{rn}"),
+            RefPattern::Namespace { prefix } => write!(f, "{prefix}/**"),
+        }
+    }
+}
+
+impl std::str::FromStr for RefPattern {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     // --- UUID ---
@@ -718,5 +1135,298 @@ mod tests {
     fn bounded_length_zero() {
         let len = BoundedLength::new(0, 100).expect("zero within bound");
         assert_eq!(len.get(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Constrained names (F2.6)
+    // -----------------------------------------------------------------------
+
+    // --- ObjectId ---
+
+    #[test]
+    fn object_id_accepts_valid() {
+        let cases = &[
+            "a",
+            "foo",
+            "foo/bar",
+            "foo/bar/baz",
+            "a.b",
+            "a-b",
+            "a_b",
+            "a/b",
+            "123",
+            "a/1/b/2",
+        ];
+        for &s in cases {
+            ObjectId::new(s).unwrap();
+        }
+    }
+
+    #[test]
+    fn object_id_round_trip_display_parse() {
+        let id = ObjectId::new("some/path/to/object").unwrap();
+        let s = id.to_string();
+        let parsed: ObjectId = s.parse().unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn object_id_as_str() {
+        let id = ObjectId::new("hello/world").unwrap();
+        assert_eq!(id.as_str(), "hello/world");
+        assert_eq!(id.as_ref() as &str, "hello/world");
+    }
+
+    #[test]
+    fn object_id_from_string() {
+        let id = ObjectId::try_from("valid/path".to_string()).unwrap();
+        assert_eq!(id.as_str(), "valid/path");
+    }
+
+    #[test]
+    fn object_id_rejects_empty() {
+        assert_eq!(ObjectId::new(""), Err(NameError::EmptyName));
+    }
+
+    #[test]
+    fn object_id_rejects_too_long() {
+        let s = "a".repeat(1025);
+        assert_eq!(
+            ObjectId::new(&s),
+            Err(NameError::TooLong {
+                max: 1024,
+                actual: 1025
+            })
+        );
+    }
+
+    #[test]
+    fn object_id_rejects_max_length() {
+        let s = "a".repeat(1024);
+        ObjectId::new(&s).expect("1024 bytes should be valid");
+    }
+
+    #[test]
+    fn object_id_rejects_leading_slash() {
+        assert_eq!(ObjectId::new("/foo"), Err(NameError::LeadingSlash));
+    }
+
+    #[test]
+    fn object_id_rejects_trailing_slash() {
+        assert_eq!(ObjectId::new("foo/"), Err(NameError::TrailingSlash));
+    }
+
+    #[test]
+    fn object_id_rejects_empty_segment() {
+        assert_eq!(ObjectId::new("foo//bar"), Err(NameError::EmptySegment));
+    }
+
+    #[test]
+    fn object_id_rejects_dot_segment() {
+        assert_eq!(ObjectId::new("foo/./bar"), Err(NameError::DotSegment));
+    }
+
+    #[test]
+    fn object_id_rejects_dotdot_segment() {
+        assert_eq!(ObjectId::new("foo/../bar"), Err(NameError::DotDotSegment));
+    }
+
+    #[test]
+    fn object_id_rejects_control_char() {
+        assert_eq!(
+            ObjectId::new("foo\x00bar"),
+            Err(NameError::ControlCharacter { position: 3 })
+        );
+        assert_eq!(
+            ObjectId::new("foo\x1fbar"),
+            Err(NameError::ControlCharacter { position: 3 })
+        );
+        assert_eq!(
+            ObjectId::new("foo\x7fbar"),
+            Err(NameError::ControlCharacter { position: 3 })
+        );
+    }
+
+    #[test]
+    fn object_id_rejects_invalid_char() {
+        assert_eq!(
+            ObjectId::new("foo!bar"),
+            Err(NameError::InvalidCharacter { position: 3 })
+        );
+        assert_eq!(
+            ObjectId::new("foo@bar"),
+            Err(NameError::InvalidCharacter { position: 3 })
+        );
+        assert_eq!(
+            ObjectId::new("foo bar"),
+            Err(NameError::InvalidCharacter { position: 3 })
+        );
+        assert_eq!(
+            ObjectId::new("foo#bar"),
+            Err(NameError::InvalidCharacter { position: 3 })
+        );
+    }
+
+    // --- RefName ---
+
+    #[test]
+    fn ref_name_accepts_heads() {
+        RefName::new("refs/heads/main").expect("valid heads ref");
+        RefName::new("refs/heads/feature/my-feature").expect("valid heads ref");
+        RefName::new("refs/heads/1.0.x").expect("valid heads ref");
+    }
+
+    #[test]
+    fn ref_name_accepts_tags() {
+        RefName::new("refs/tags/v1.0.0").expect("valid tag ref");
+    }
+
+    #[test]
+    fn ref_name_accepts_pins() {
+        RefName::new("refs/pins/abc123").expect("valid pin ref");
+    }
+
+    #[test]
+    fn ref_name_accepts_merge_requests() {
+        RefName::new("refs/merge-requests/42").expect("valid MR ref");
+    }
+
+    #[test]
+    fn ref_name_rejects_empty() {
+        assert_eq!(RefName::new(""), Err(NameError::EmptyName));
+    }
+
+    #[test]
+    fn ref_name_rejects_invalid_prefix() {
+        assert_eq!(
+            RefName::new("refs/other/main"),
+            Err(NameError::InvalidRefPrefix)
+        );
+        assert_eq!(RefName::new("heads/main"), Err(NameError::InvalidRefPrefix));
+        assert_eq!(RefName::new("main"), Err(NameError::InvalidRefPrefix));
+    }
+
+    #[test]
+    fn ref_name_rejects_lock_suffix() {
+        assert_eq!(
+            RefName::new("refs/heads/main.lock"),
+            Err(NameError::EndsWithLock)
+        );
+    }
+
+    #[test]
+    fn ref_name_rejects_double_slash() {
+        assert_eq!(
+            RefName::new("refs/heads//main"),
+            Err(NameError::DoubleSlash)
+        );
+    }
+
+    #[test]
+    fn ref_name_rejects_at_brace() {
+        assert_eq!(RefName::new("refs/heads/@{main}"), Err(NameError::AtBrace));
+    }
+
+    #[test]
+    fn ref_name_rejects_backslash() {
+        assert_eq!(
+            RefName::new("refs/heads/foo\\bar"),
+            Err(NameError::Backslash)
+        );
+    }
+
+    #[test]
+    fn ref_name_rejects_non_ascii() {
+        assert_eq!(RefName::new("refs/heads/café"), Err(NameError::NotAscii));
+    }
+
+    #[test]
+    fn ref_name_rejects_dotdot() {
+        assert_eq!(
+            RefName::new("refs/heads/foo/../bar"),
+            Err(NameError::DotDotSegment)
+        );
+    }
+
+    #[test]
+    fn ref_name_rejects_control() {
+        assert_eq!(
+            RefName::new("refs/heads/foo\x00bar"),
+            Err(NameError::ControlCharacter { position: 14 })
+        );
+    }
+
+    #[test]
+    fn ref_name_too_long() {
+        let s = format!("refs/heads/{}", "a".repeat(1014));
+        assert!(s.len() > 1024);
+        assert_eq!(
+            RefName::new(&s),
+            Err(NameError::TooLong {
+                max: 1024,
+                actual: s.len()
+            })
+        );
+    }
+
+    #[test]
+    fn ref_name_round_trip_display_parse() {
+        let rn = RefName::new("refs/heads/main").unwrap();
+        let s = rn.to_string();
+        let parsed: RefName = s.parse().unwrap();
+        assert_eq!(parsed, rn);
+    }
+
+    // --- RefPattern ---
+
+    #[test]
+    fn ref_pattern_exact() {
+        let pat = RefPattern::new("refs/heads/main").unwrap();
+        assert!(pat.is_exact());
+    }
+
+    #[test]
+    fn ref_pattern_namespace() {
+        let pat = RefPattern::new("refs/heads/contributors/**").unwrap();
+        assert!(!pat.is_exact());
+    }
+
+    #[test]
+    fn ref_pattern_rejects_empty_namespace() {
+        assert_eq!(RefPattern::new("/**"), Err(NameError::EmptyNamespace));
+    }
+
+    #[test]
+    fn ref_pattern_rejects_invalid_exact() {
+        assert_eq!(RefPattern::new("invalid"), Err(NameError::InvalidRefPrefix));
+    }
+
+    #[test]
+    fn ref_pattern_matches_exact() {
+        let pat = RefPattern::new("refs/heads/main").unwrap();
+        assert!(pat.matches("refs/heads/main"));
+        assert!(!pat.matches("refs/heads/other"));
+        assert!(!pat.matches("refs/heads/main/extra"));
+    }
+
+    #[test]
+    fn ref_pattern_matches_namespace() {
+        let pat = RefPattern::new("refs/heads/team/**").unwrap();
+        assert!(pat.matches("refs/heads/team/feature"));
+        assert!(pat.matches("refs/heads/team/feature/sub"));
+        assert!(!pat.matches("refs/heads/other"));
+        assert!(!pat.matches("refs/heads/teams"));
+    }
+
+    #[test]
+    fn ref_pattern_longest_prefix_deterministic() {
+        let narrow = RefPattern::new("refs/heads/team/alpha/**").unwrap();
+        let wide = RefPattern::new("refs/heads/team/**").unwrap();
+        // More specific (longer prefix) pattern has higher specificity
+        assert!(narrow.specificity() > wide.specificity());
+        // Exact has highest specificity
+        let exact = RefPattern::new("refs/heads/main").unwrap();
+        assert!(exact.specificity() > narrow.specificity());
+        assert_eq!(exact.specificity(), usize::MAX);
     }
 }
