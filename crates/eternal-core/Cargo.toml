@@ -7,6 +7,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "Repository logic, transactions, SMT, commits, merge, and GC for EternalCore"
 
+[lints]
+workspace = true
+
 [dependencies]
 eternal-format = { path = "../eternal-format" }
 eternal-store = { path = "../eternal-store" }

@@ -19,11 +19,11 @@
       "name": "Workspace and CI baseline",
       "tasks": [
         { "id": "P1.1", "status": "GREEN", "depends_on": ["P0.5"] },
-        { "id": "P1.2", "status": "RED", "depends_on": ["P1.1"] },
-        { "id": "P1.3", "status": "RED", "depends_on": ["P1.1"] },
-        { "id": "P1.4", "status": "RED", "depends_on": ["P1.1"] },
-        { "id": "P1.5", "status": "RED", "depends_on": ["P1.2", "P1.3", "P1.4"] },
-        { "id": "P1.6", "status": "RED", "depends_on": ["P1.5"] }
+        { "id": "P1.2", "status": "GREEN", "depends_on": ["P1.1"] },
+        { "id": "P1.3", "status": "GREEN", "depends_on": ["P1.1"] },
+        { "id": "P1.4", "status": "GREEN", "depends_on": ["P1.1"] },
+        { "id": "P1.5", "status": "GREEN", "depends_on": ["P1.2", "P1.3", "P1.4"] },
+        { "id": "P1.6", "status": "GREEN", "depends_on": ["P1.5"] }
       ]
     },
     {

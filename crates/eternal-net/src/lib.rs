@@ -14,8 +14,8 @@
 //! - [`transport`] — TCP/QUIC transport layer
 //! - [`auth`] — Challenge-response Ed25519 authentication
 
-pub mod protocol;
 pub mod adapter;
-pub mod local_fs;
-pub mod transport;
 pub mod auth;
+pub mod local_fs;
+pub mod protocol;
+pub mod transport;

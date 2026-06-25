@@ -7,6 +7,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "EternalCore command-line interface"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "eternal"
 path = "src/main.rs"
@@ -14,8 +17,6 @@ path = "src/main.rs"
 [dependencies]
 eternal-core = { path = "../eternal-core" }
 eternal-net = { path = "../eternal-net" }
-eternal-format = { path = "../eternal-format" }
-eternal-crypto = { path = "../eternal-crypto" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -23,15 +23,15 @@
 //! - [`verify`] — Metadata, storage, and content audit
 //! - [`gc`] — Garbage collection and compaction
 
-pub mod repository;
-pub mod transaction;
-pub mod object;
-pub mod content;
-pub mod smt;
 pub mod commit;
-pub mod refs;
-pub mod merge;
-pub mod policy;
-pub mod keyring;
-pub mod verify;
+pub mod content;
 pub mod gc;
+pub mod keyring;
+pub mod merge;
+pub mod object;
+pub mod policy;
+pub mod refs;
+pub mod repository;
+pub mod smt;
+pub mod transaction;
+pub mod verify;

@@ -9,6 +9,14 @@ members = [
     "crates/eternal-cli",
 ]
 
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
 [workspace.package]
 version = "4.0.0-dev"
 edition = "2024"

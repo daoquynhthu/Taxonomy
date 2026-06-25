@@ -7,6 +7,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "Ed25519 signing, XChaCha20-Poly1305 encryption, key slots for EternalCore"
 
+[lints]
+workspace = true
+
 [dependencies]
 eternal-format = { path = "../eternal-format" }
 ed25519-dalek = "2"

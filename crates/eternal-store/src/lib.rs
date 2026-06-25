@@ -17,10 +17,10 @@
 //! - [`recovery`] — Crash recovery and segment truncation
 //! - [`cache`] — Rebuildable redb-backed location cache
 
-pub mod segment;
+pub mod cache;
+pub mod lock;
 pub mod pack;
 pub mod pack_index;
-pub mod store_manifest;
-pub mod lock;
 pub mod recovery;
-pub mod cache;
+pub mod segment;
+pub mod store_manifest;

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --workspace --all-features
+      - run: cargo test --doc --workspace --all-features
+
+  spec-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check specification documents
+        run: pwsh -File scripts/check-specs.ps1
+      - name: Verify fixture checksums
+        run: pwsh -File scripts/check-fixtures.ps1
+      - name: Validate task ledger
+        run: pwsh -File scripts/check-plan-ledger.ps1
+
+  dep-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check dependency directions
+        run: pwsh -File scripts/check-deps.ps1

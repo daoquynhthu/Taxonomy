@@ -13,7 +13,7 @@
 //! - [`key_slots`] — Password and X25519 recipient key slots
 //! - [`password`] — Argon2id key derivation and calibration
 
-pub mod signing;
 pub mod encryption;
 pub mod key_slots;
 pub mod password;
+pub mod signing;

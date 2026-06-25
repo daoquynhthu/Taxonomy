@@ -7,6 +7,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "Active segment, sealed packs, store manifest, and crash recovery for EternalCore"
 
+[lints]
+workspace = true
+
 [dependencies]
 eternal-format = { path = "../eternal-format" }
 sha2 = "0.10"

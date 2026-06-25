@@ -1,9 +1,58 @@
 # Progress
 
-## P0.5 — Freeze Phase 0
+## P1.6 — Freeze workspace baseline
 
 - Status: GREEN
 - Commit: PENDING
+- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0
+- Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features`; `powershell -File scripts/check-deps.ps1`
+- Evidence: 11 GREEN tasks in ledger, all scripts exit 0
+- Follow-up: begin F2 canonical format primitives
+
+## P1.5 — Establish CI jobs
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: GitHub Actions workflows for PR checks (lint, test, spec-checks, dep-check) and scheduled jobs (fuzz, cross-platform, benchmarks)
+- Tests: `.github/workflows/ci.yml`; `.github/workflows/scheduled.yml`
+- Evidence: Jobs defined for Linux stable, PWsh spec/fixture/dep checks
+
+## P1.4 — Establish shared test support
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: eternal-format/src/testing.rs with fixture loading, SHA-256 helpers, byte mutation; smoke test loads and checksum-verifies all fixtures
+- Tests: `cargo test -p eternal-format -- testing::tests::smoke_fixture_checksum`
+- Evidence: 1 test passes verifying all 5 fixture file checksums
+
+## P1.3 — Establish lint and formatting policy
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: Workspace lint config (deny warnings, unwrap_used, expect_used, panic); rustfmt.toml; all crates have [lints] workspace = true and #![forbid(unsafe_code)]
+- Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- Evidence: Both pass
+
+## P1.2 — Enforce dependency direction
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: scripts/check-deps.ps1 validates approved dependency edges; forbidden edges removed (eternal-net → eternal-crypto; eternal-cli → eternal-format/crypto)
+- Tests: `powershell -File scripts/check-deps.ps1`
+- Evidence: All 6 crates match allowed edges
+
+## P1.1 — Create the workspace skeleton
+
+- Status: GREEN
+- Commit: 178f838
+- Completed: 6 crate stubs with empty public surface and `#![forbid(unsafe_code)]`
+- Tests: `cargo check --workspace`
+- Evidence: Workspace compiles
+
+## P0.5 — Freeze Phase 0
+
+- Status: GREEN
+- Commit: 9892076
 - Completed: G0 hard gate passes — specs verified, fixture checksums match, task ledger validated, no conflicts
 - Tests: `powershell -File scripts/check-specs.ps1`; `powershell -File scripts/check-fixtures.ps1`; `powershell -File scripts/check-plan-ledger.ps1`
 - Evidence: All three scripts exit 0

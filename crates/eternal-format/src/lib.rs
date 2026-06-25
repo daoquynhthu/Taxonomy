@@ -17,5 +17,8 @@
 pub mod canonical;
 pub mod domain;
 pub mod ids;
-pub mod record;
 pub mod limits;
+pub mod record;
+
+#[cfg(test)]
+mod testing;

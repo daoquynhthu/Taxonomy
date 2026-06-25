@@ -396,8 +396,6 @@ dependencies = [
  "anyhow",
  "clap",
  "eternal-core",
- "eternal-crypto",
- "eternal-format",
  "eternal-net",
  "indicatif",
  "serde",
@@ -452,7 +450,6 @@ version = "4.0.0-dev"
 dependencies = [
  "async-trait",
  "eternal-core",
- "eternal-crypto",
  "eternal-format",
  "serde",
  "serde_json",
