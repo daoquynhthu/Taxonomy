@@ -30,7 +30,7 @@
       "id": "F2",
       "name": "Canonical format primitives",
       "tasks": [
-        { "id": "F2.1", "status": "RED", "depends_on": ["P1.6"] },
+        { "id": "F2.1", "status": "GREEN", "depends_on": ["P1.6"] },
         { "id": "F2.2", "status": "RED", "depends_on": ["F2.1"] },
         { "id": "F2.3", "status": "RED", "depends_on": ["F2.1"] },
         { "id": "F2.4", "status": "RED", "depends_on": ["F2.3"] },

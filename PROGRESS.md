@@ -1,5 +1,14 @@
 # Progress
 
+## F2.1 — Implement primitive fixed-width types
+
+- Status: GREEN
+- Commit: cae61d5
+- Completed: Private-field wrappers for UUID (16 bytes), 14 hash-id types (32 bytes each), Signature (64 bytes), PublicKey (32 bytes), Timestamp (i64), and BoundedLength (u64 with max bound).
+- Tests: `cargo test --workspace --all-features` (23 tests)
+- Evidence: Round-trip bytes and display/parse for each type; malformed length rejection for UUID, RecordId, Signature, PublicKey; bound rejection for BoundedLength; distinct-type compile check.
+- Follow-up: F2.2 (DomainHash)
+
 ## P0/P1 — post-audit fixes (fixture path alignment, TempRepo, crash-failpoints, G0 compatibility)
 
 - Status: GREEN
