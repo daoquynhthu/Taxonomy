@@ -1,17 +1,22 @@
 <#
 .SYNOPSIS
   Verify fixture files match their recorded SHA-256 checksums.
+  Usage: scripts/check-fixtures [[-ManifestPath] <string>]
+  Default: tests/vectors/format-v1/manifest.json
 #>
 
 param(
-    [string]$ManifestPath
+    [string]$ManifestPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
 
 if (-not $ManifestPath) {
-    $root = Split-Path -Parent $PSScriptRoot
-    $ManifestPath = Join-Path $root "tests/vectors/manifest.json"
+    $ManifestPath = Join-Path $root "tests/vectors/format-v1/manifest.json"
+}
+elseif (-not [System.IO.Path]::IsPathRooted($ManifestPath)) {
+    $ManifestPath = Join-Path $root $ManifestPath
 }
 
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
@@ -25,6 +30,7 @@ $fixtureDir = Split-Path -Parent $ManifestPath
 $exitCode = 0
 
 Write-Host "=== Fixture checksum verification ==="
+Write-Host "  Manifest: $ManifestPath"
 
 foreach ($entry in $manifest.fixtures) {
     $fixturePath = Join-Path $fixtureDir $entry.filename

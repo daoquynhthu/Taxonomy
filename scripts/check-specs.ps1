@@ -89,12 +89,12 @@ foreach ($doc in $authDocs) {
 
 Write-Host "=== Checking fixture paths ==="
 $fixturePaths = @(
-    "tests/vectors/manifest.json",
-    "tests/vectors/format-v1.json",
-    "tests/vectors/segment-header-v1.bin",
-    "tests/vectors/pack-v1.pack",
-    "tests/vectors/pack-v1.idx",
-    "tests/vectors/store-manifest-v1.cbor"
+    "tests/vectors/format-v1/manifest.json",
+    "tests/vectors/format-v1/format-v1.json",
+    "tests/vectors/format-v1/segment-header-v1.bin",
+    "tests/vectors/format-v1/pack-v1.pack",
+    "tests/vectors/format-v1/pack-v1.idx",
+    "tests/vectors/format-v1/store-manifest-v1.cbor"
 )
 foreach ($fp in $fixturePaths) {
     $full = Join-Path $root $fp

@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -15,6 +15,7 @@ pub fn vectors_dir() -> PathBuf {
     let mut path = workspace_root();
     path.push("tests");
     path.push("vectors");
+    path.push("format-v1");
     path
 }
 
@@ -55,6 +56,30 @@ pub fn mutate_byte(data: &mut [u8]) {
     }
 }
 
+/// Create a temporary directory that is automatically cleaned up on drop.
+pub struct TempRepo {
+    path: PathBuf,
+}
+
+impl TempRepo {
+    pub fn new(prefix: &str) -> Self {
+        let mut path = std::env::temp_dir();
+        path.push(format!("{}-{}", prefix, std::process::id()));
+        fs::create_dir_all(&path).expect("create temp repo dir");
+        TempRepo { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempRepo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +97,14 @@ mod tests {
             let actual = sha256_hex(&data);
             assert_eq!(actual, expected, "SHA-256 mismatch for {filename}");
         }
+    }
+
+    #[test]
+    fn temp_repo_creates_and_cleans_up() {
+        let repo = TempRepo::new("test-eternal");
+        assert!(repo.path().exists());
+        let p = repo.path().to_owned();
+        drop(repo);
+        assert!(!p.exists());
     }
 }

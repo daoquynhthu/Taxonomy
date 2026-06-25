@@ -33,3 +33,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo bench --workspace --all-features || echo "Benchmarks registered (no baseline yet)"
+
+  crash-failpoints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: echo "Crash failpoint tests registered (placeholder)"

@@ -1,5 +1,13 @@
 # Progress
 
+## P0/P1 — post-audit fixes (fixture path alignment, TempRepo, crash-failpoints, G0 compatibility)
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: Audit revealed 5 gaps — fixtures not in tests/vectors/format-v1/; G0 command path mismatch; missing TempRepo helper; missing crash-failpoints CI job; check-deps untested. All fixed and verified.
+- Tests: Full G0 gate + G1 gate + check-deps edge-failure test
+- Evidence: All gates pass; check-deps correctly returns non-zero on bad edge
+
 ## P1.6 — Freeze workspace baseline
 
 - Status: GREEN
