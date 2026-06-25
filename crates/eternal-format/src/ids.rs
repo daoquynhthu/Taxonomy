@@ -470,7 +470,8 @@ impl BoundedLength {
         Ok(Self(value))
     }
 
-    pub const fn new_unchecked(value: u64) -> Self {
+    #[allow(dead_code)]
+    pub(crate) const fn new_unchecked(value: u64) -> Self {
         Self(value)
     }
 
