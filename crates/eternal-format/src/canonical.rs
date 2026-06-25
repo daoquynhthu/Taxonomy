@@ -193,7 +193,8 @@ impl CanonicalSortedMap {
     }
 
     /// Insert a key-value pair. Both key and value are pre-encoded CBOR bytes.
-    pub fn insert_raw(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    #[allow(dead_code)]
+    pub(crate) fn insert_raw(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.entries.push((key, value));
     }
 
@@ -206,14 +207,21 @@ impl CanonicalSortedMap {
     }
 
     /// Finalize the map: sort entries by encoded key, then write to `encoder`.
-    pub fn finish(self, encoder: &mut CanonicalEncoder) {
+    /// Returns an error if duplicate keys are detected.
+    pub fn finish(self, encoder: &mut CanonicalEncoder) -> Result<(), &'static str> {
         let mut entries = self.entries;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for pair in entries.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err("duplicate map key");
+            }
+        }
         encoder.begin_map(entries.len() as u64);
         for (key, value) in entries {
             encoder.buf.extend_from_slice(&key);
             encoder.buf.extend_from_slice(&value);
         }
+        Ok(())
     }
 }
 
@@ -986,7 +994,7 @@ mod tests {
         map.insert_u64(2, ev.into_bytes());
 
         let mut enc = CanonicalEncoder::new();
-        map.finish(&mut enc);
+        map.finish(&mut enc).unwrap();
         let bytes = enc.into_bytes();
 
         // Expected: sorted by key encoding: 0x01 (key 1), 0x02 (key 2), 0x03 (key 3)

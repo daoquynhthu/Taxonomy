@@ -2,7 +2,7 @@
 
 ## ISSUE-0001 — Ledger checker does not verify PLAN.md task completeness
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: scripts/check-plan-ledger.ps1, plan-ledger.json, P0.4, P0.5, P1.x, F2.x
@@ -10,7 +10,7 @@
 - Violated invariant: P0.4 gate "ledger validation passes" requires complete PLAN.md ↔ ledger alignment.
 - Required decision: Expand checker to parse PLAN.md headings and verify exact task ID match.
 - Work stopped: P0.4, P0.5, P1.x, F2.x
-- Resolution: PENDING
+- Resolution: RESOLVED (checker rewritten to parse PLAN.md headings and verify exact task ID match)
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
@@ -26,7 +26,7 @@
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: CRITICAL
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/domain.rs, FORMAT.md §5.1, F2.2
@@ -34,11 +34,11 @@
 - Violated invariant: Tag length MUST fit in u16.
 - Required decision: domain_hash must return Result and reject tag > 65535, payload > u64::MAX.
 - Work stopped: F2.2
-- Resolution: PENDING
+- Resolution: RESOLVED (domain_hash returns Result, rejects tag > 65535)
 
 ## ISSUE-0004 — CanonicalSortedMap can emit duplicate encoded keys
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: CRITICAL
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, FORMAT.md §4, F2.3
@@ -46,7 +46,7 @@
 - Violated invariant: Encoded CBOR maps must have unique keys.
 - Required decision: Make insert_raw pub(crate), finish() return Result, reject duplicate keys after sort.
 - Work stopped: F2.3
-- Resolution: PENDING
+- Resolution: RESOLVED (finish() returns Result with duplicate-key detection)
 
 ## ISSUE-0005 — F2.6 implementation incomplete (missing types + encapsulation holes)
 
@@ -62,7 +62,7 @@
 
 ## ISSUE-0006 — BoundedLength::new_unchecked is pub allowing bypass of max check
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/ids.rs, F2.1
@@ -70,7 +70,7 @@
 - Violated invariant: BoundedLength must enforce its maximum.
 - Required decision: Change to pub(crate).
 - Work stopped: F2.1
-- Resolution: PENDING
+- Resolution: RESOLVED (new_unchecked changed to pub(crate))
 
 ## ISSUE-0007 — CBOR decoder uses unchecked u64→usize casts
 
@@ -98,11 +98,11 @@
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: PROGRESS.md
 - Evidence: Entries record "Commit: PENDING" then update to commit hash in same commit, creating circular reference.
 - Required decision: Replace "Commit: PENDING" pattern with "Commit: SELF" (commit identity is implicit in git history).
 - Work stopped: none
-- Resolution: PENDING
+- Resolution: RESOLVED (PENDING replaced with SELF in PROGRESS.md)

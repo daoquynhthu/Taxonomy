@@ -7,7 +7,16 @@
 - Completed: domain_hash(tag, payload) now returns Result<[u8; 32], DomainHashError> instead of infallible [u8; 32]. Tags exceeding u16::MAX are rejected with TagTooLong error. New error type DomainHashError with Display and Error impls.
 - Tests: `cargo test --workspace --all-features` (151 tests)
 - Evidence: All 13 golden vectors still match; long tag (65535) succeeds; 65536-byte tag correctly rejected; large payloads still work.
-- Follow-up: F2.3 audit correction (CanonicalSortedMap dedup check)
+- Follow-up: F2.4 audit correction (checked usize conversions in decoder)
+
+## F2.3 — audit correction: CanonicalSortedMap dedup + insert_raw visibility
+
+- Status: GREEN
+- Commit: SELF
+- Completed: CanonicalSortedMap::finish() now returns Result<(), &'static str> with duplicate-key detection. insert_raw changed to pub(crate). Fmt check, clippy pass, 151 tests.
+- Tests: `cargo test --workspace --all-features` (151 tests)
+- Evidence: Duplicate encoded keys are detected and rejected; existing tests pass unchanged.
+- Follow-up: F2.4 audit correction (checked usize conversions in decoder)
 
 ## F2.1 — audit correction: BoundedLength::new_unchecked visibility
 
