@@ -14,7 +14,7 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: CI workflows, G1
@@ -22,7 +22,7 @@
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: PENDING
+- Resolution: RESOLVED (scripts/generate-gate-report.ps1 created; .github/workflows/ci.yml updated with gate-report job that generates and uploads gate-report.json via actions/upload-artifact@v4; report includes commit SHA, rustc version, OS/arch, all step exit codes+output, test counts, fixture manifest SHA-256, ignored test list)
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 

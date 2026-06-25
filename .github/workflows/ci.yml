@@ -47,3 +47,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check dependency directions
         run: pwsh -File scripts/check-deps.ps1
+
+  gate-report:
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Generate gate report
+        run: pwsh -File scripts/generate-gate-report.ps1 -OutputDir .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-report
+          path: gate-report.json
