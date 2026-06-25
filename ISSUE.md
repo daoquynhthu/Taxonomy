@@ -1,5 +1,17 @@
 # Issues
 
+## ISSUE-0011 — Multi-task commit violates Agent.md single-task discipline
+
+- Status: OPEN
+- Severity: HIGH
+- Discovered in: Audit 2026-06-26
+- Affected scope: Agent.md, commit 2739a53
+- Evidence: Commit 2739a53 titled "F2.5+P1.6: audit fixes..." combines two numbered tasks into one commit. Agent.md §7 requires one numbered task per commit.
+- Violated invariant: Agent.md §2.5 / §7 — one reviewable commit per numbered task.
+- Required decision: Do not re-write history, but flag as process deviation and enforce single-task commits going forward.
+- Work stopped: none
+- Resolution: PENDING (process deviation recorded; from next commit onward, single-task discipline restored)
+
 ## ISSUE-0001 — Ledger checker does not verify PLAN.md task completeness
 
 - Status: RESOLVED
@@ -14,7 +26,7 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: RESOLVED
+- Status: OPEN
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: CI workflows, G1
@@ -22,7 +34,11 @@
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: RESOLVED (Select-String regex pattern corrected by removing -SimpleMatch; hard fail on ignored tests with exit 1; hard fail on zero-test-count parse failure with exit 1; if: always() added to upload-artifact step; gate runs locally: 203 tests, 0 ignored, all OK)
+- Resolution: PENDING — partial fixes applied but still open:
+  1. Script uses source scan ($ignoredTests) instead of cargo's own $totalIgnored for the hard fail; must use `$totalIgnored -eq 0` directly
+  2. Missing fixture checksum is logged as null but does not cause hard fail
+  3. CI artifact not yet generated and verified on GitHub
+  4. Source scan only covers crates/**/*.rs, may miss workspace-root tests
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
@@ -86,7 +102,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: RESOLVED
+- Status: OPEN
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -94,7 +110,14 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: RESOLVED (cv_from_json added &mut u64 nodes with checked_add; canonical_value_from_json_slice() with custom recursive-descent JSON parser detecting duplicate keys, rejecting floats, enforcing all limits; CanonicalEncoder::canonical_value() changed to pub(crate); single-pass validate_encode_value() replaces three separate traversals; FormatLimits fields private with new() enforcing FORMAT absolute caps and builder methods only allowing reductions; Debug+Clone+PartialEq+Eq derives added)
+- Resolution: PENDING — custom JsonParser rejected in audit; must be replaced with serde_json::Deserializer + custom Visitor. Specific findings:
+  1. CRITICAL: read_json_string() casts raw UTF-8 bytes 0x80..=0xff to char individually, mangling multi-byte UTF-8 and accepting invalid UTF-8
+  2. CRITICAL: \uXXXX surrogates not handled; valid surrogate pairs like \uD83D\uDE00 rejected
+  3. HIGH: Accepts vertical tab / form feed which are not valid JSON whitespace
+  4. HIGH: String length checked after full allocation instead of during accumulation
+  5. HIGH: JsonSyntax(String) is stringly-typed error (violates PLAN.md)
+  6. HIGH: FormatLimits does not reject zero values; lacks FORMAT §20 metadata 16 MiB total limit
+  7. Tests missing: raw UTF-8, escaped Unicode, mixed dup Unicode keys, surrogate pairs, invalid bytes, illegal whitespace
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 
