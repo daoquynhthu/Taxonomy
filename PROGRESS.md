@@ -11,12 +11,13 @@
 
 ## F2.5 — Implement CanonicalValue tagged union
 
-- Status: GREEN
+- Status: RED
 - Commit: SELF
-- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection and spec-compliant limits. Audit fix: added pub fn encode_canonical_value() with FormatLimits enforcing depth ≤64, nodes ≤1M, string ≤1M, NUL rejection. TryFrom<serde_json::Value> now uses CanonicalEncodeError and enforces all limits. JsonDuplicateKey/JsonFloatUnsupported/JsonDepthExceeded/JsonNumberOutOfRange removed from DecodeError.
+- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection.
+- Audit findings still open: cv_from_json lacks node counter; no canonical_value_from_json_slice() with dup-key detection via custom Serde Visitor; CanonicalEncoder::canonical_value() still pub bypasses limits; check_strings/count_nodes/encode_value are three separate unbounded traversals; FormatLimits fields pub allowing spec-limit bypass.
 - Tests: `cargo test --workspace --all-features` (195 tests)
-- Evidence: Round-trip for all 8 variants; float rejection; depth 64 accepted/65 rejected; node count limit; string length limit; NUL in text/key rejected; JSON round-trip.
-- Follow-up: None (GREEN)
+- Evidence: Round-trip for all 8 variants; float rejection; depth 64/65 boundary; basic string length and NUL rejection.
+- Follow-up: Fix node counter in JSON path, add dup-key detection entry, seal canonical_value(), single-pass validation, seal FormatLimits
 
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
@@ -56,12 +57,13 @@
 
 ## P1.6 — Freeze workspace baseline
 
-- Status: GREEN
+- Status: RED
 - Commit: SELF
-- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0
+- Completed: G1 hard gate passes — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0. Added generate-gate-report.ps1 and CI workflow with artifact upload.
+- Audit findings still open: #[ignore] search pattern wrong; no hard fail on ignored tests or parse failure; upload-artifact missing if: always(); must be fixed and verified in CI before closing.
 - Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features`; `powershell -File scripts/check-deps.ps1`
 - Evidence: GREEN tasks in ledger, all scripts exit 0
-- Follow-up: begin F2 canonical format primitives
+- Follow-up: Fix gate-report bugs, merge to main, verify CI artifact on GitHub
 
 ## P0/P1 — post-audit fixes (fixture path alignment, TempRepo, crash-failpoints, G0 compatibility)
 

@@ -14,7 +14,7 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: RESOLVED
+- Status: OPEN
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: CI workflows, G1
@@ -22,7 +22,7 @@
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: RESOLVED (scripts/generate-gate-report.ps1 created; .github/workflows/ci.yml updated with gate-report job that generates and uploads gate-report.json via actions/upload-artifact@v4; report includes commit SHA, rustc version, OS/arch, all step exit codes+output, test counts, fixture manifest SHA-256, ignored test list)
+- Resolution: PENDING (initial script created but has bugs: #[ignore] search pattern wrong, no hard fail on ignored tests or parse failure, upload-artifact missing if: always(); must be fixed and verified in CI before closing)
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
@@ -86,7 +86,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: RESOLVED
+- Status: OPEN
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -94,7 +94,7 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: RESOLVED (encode_canonical_value() added with FormatLimits; TryFrom<serde_json::Value> enforces depth/node/string/NUL limits; JsonDuplicateKey/JsonFloatUnsupported/JsonDepthExceeded/JsonNumberOutOfRange removed from DecodeError; 12 new tests)
+- Resolution: PENDING (cv_from_json lacks node counter; no canonical_value_from_json_slice() with dup-key detection; CanonicalEncoder::canonical_value() still pub bypasses limits; check_strings/count_nodes/encode_value are three separate unbounded traversals; FormatLimits fields pub allowing spec-limit bypass)
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 

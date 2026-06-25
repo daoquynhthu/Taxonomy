@@ -46,7 +46,7 @@ Keep one entry per completed task, newest first:
 ## <task-id> — <short title>
 
 - Status: GREEN
-- Commit: <commit hash or PENDING before commit>
+- Commit: <commit hash or SELF for current commit>
 - Completed: <one-sentence summary of observable output>
 - Tests: `<command>`; `<command>`
 - Evidence: <fixture, failpoint, CI artifact, or test file references>
