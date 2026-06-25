@@ -114,6 +114,59 @@ impl CanonicalEncoder {
     pub fn null(&mut self) {
         self.buf.push(0xf6);
     }
+
+    /// Encode a `CanonicalValue` in the tagged-array format (FORMAT.md §4.5).
+    pub fn canonical_value(&mut self, value: &CanonicalValue) {
+        match value {
+            CanonicalValue::Null => {
+                self.begin_array(1);
+                self.u64(0);
+            }
+            CanonicalValue::Bool(v) => {
+                self.begin_array(2);
+                self.u64(1);
+                self.boolean(*v);
+            }
+            CanonicalValue::I64(v) => {
+                self.begin_array(2);
+                self.u64(2);
+                self.i64(*v);
+            }
+            CanonicalValue::U64(v) => {
+                self.begin_array(2);
+                self.u64(3);
+                self.u64(*v);
+            }
+            CanonicalValue::Text(v) => {
+                self.begin_array(2);
+                self.u64(4);
+                self.text(v);
+            }
+            CanonicalValue::Bytes(v) => {
+                self.begin_array(2);
+                self.u64(5);
+                self.bytes(v);
+            }
+            CanonicalValue::Array(items) => {
+                self.begin_array(2);
+                self.u64(6);
+                self.begin_array(items.len() as u64);
+                for item in items {
+                    self.canonical_value(item);
+                }
+            }
+            CanonicalValue::Map(entries) => {
+                self.begin_array(2);
+                self.u64(7);
+                self.begin_array(entries.len() as u64);
+                for (key, value) in entries {
+                    self.begin_array(2);
+                    self.text(key);
+                    self.canonical_value(value);
+                }
+            }
+        }
+    }
 }
 
 impl Default for CanonicalEncoder {
@@ -226,6 +279,26 @@ impl Value {
 }
 
 // ---------------------------------------------------------------------------
+// CanonicalValue — tagged union for user metadata
+// ---------------------------------------------------------------------------
+
+/// The explicitly tagged union for user metadata (FORMAT.md §4.5).
+///
+/// Positive `I64` and `U64` values remain distinguishable. Map keys are
+/// always text strings; maps are stored sorted by raw UTF-8 key bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CanonicalValue {
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    Text(String),
+    Bytes(Vec<u8>),
+    Array(Vec<CanonicalValue>),
+    Map(std::collections::BTreeMap<String, CanonicalValue>),
+}
+
+// ---------------------------------------------------------------------------
 // Decode error types
 // ---------------------------------------------------------------------------
 
@@ -241,10 +314,19 @@ pub enum DecodeError {
     SimpleValueUnsupported(u8),
     InvalidUtf8,
     DepthExceeded,
-    ValueTooLarge { requested: u64, max: u64 },
+    ValueTooLarge {
+        requested: u64,
+        max: u64,
+    },
     DuplicateMapKey,
     UnsortedMapKey,
     TrailingData,
+    /// The CBOR value is not a valid CanonicalValue wrapper array.
+    InvalidCanonicalValueStructure,
+    /// A CanonicalValue discriminant is out of the valid 0..=7 range.
+    InvalidCanonicalValueDiscriminant(u64),
+    /// A CanonicalValue::Map key is not a CBOR text string.
+    CanonicalMapKeyNotText,
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +575,227 @@ impl<'a> CanonicalDecoder<'a> {
         Ok(u64::from_be_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+
+    // -----------------------------------------------------------------------
+    // CanonicalValue decoder (FORMAT.md §4.5)
+    // -----------------------------------------------------------------------
+
+    /// Decode a single `CanonicalValue` from the input.
+    ///
+    /// Checks for trailing data after the top-level value.
+    /// Uses `max_depth` for CanonicalValue nesting and a 1,000,000 node
+    /// count limit per FORMAT.md §20.
+    pub fn decode_canonical_value(&mut self) -> Result<CanonicalValue, DecodeError> {
+        let mut node_count = 0u64;
+        let result = self.decode_cv_inner(0, &mut node_count)?;
+        if self.pos != self.input.len() {
+            return Err(DecodeError::TrailingData);
+        }
+        Ok(result)
+    }
+
+    fn decode_cv_inner(
+        &mut self,
+        depth: usize,
+        node_count: &mut u64,
+    ) -> Result<CanonicalValue, DecodeError> {
+        if depth > self.max_depth {
+            return Err(DecodeError::DepthExceeded);
+        }
+        *node_count += 1;
+        if *node_count > 1_000_000 {
+            return Err(DecodeError::ValueTooLarge {
+                requested: *node_count,
+                max: 1_000_000,
+            });
+        }
+
+        // The outer structure is always a CBOR array
+        let byte = self.read_byte()?;
+        let major = byte >> 5;
+        let addl = byte & 0x1f;
+        if addl == 31 {
+            return Err(DecodeError::IndefiniteLengthUnsupported);
+        }
+        if major != 4 {
+            return Err(DecodeError::InvalidCanonicalValueStructure);
+        }
+        let outer_len = self.decode_head(byte)?;
+        if outer_len == 0 || outer_len > 2 {
+            return Err(DecodeError::InvalidCanonicalValueStructure);
+        }
+        let has_payload = outer_len == 2;
+
+        // Decode discriminant (first element of outer array)
+        let disc_byte = self.read_byte()?;
+        let disc_major = disc_byte >> 5;
+        let disc_addl = disc_byte & 0x1f;
+        if disc_addl == 31 {
+            return Err(DecodeError::IndefiniteLengthUnsupported);
+        }
+        if disc_major != 0 {
+            return Err(DecodeError::InvalidCanonicalValueStructure);
+        }
+        let disc = self.decode_head(disc_byte)?;
+        if disc > 7 {
+            return Err(DecodeError::InvalidCanonicalValueDiscriminant(disc));
+        }
+
+        match disc {
+            0 => {
+                if has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                Ok(CanonicalValue::Null)
+            }
+            1 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let inner = self.decode_value(depth)?;
+                match inner {
+                    Value::Boolean(v) => Ok(CanonicalValue::Bool(v)),
+                    _ => Err(DecodeError::InvalidCanonicalValueStructure),
+                }
+            }
+            2 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let inner = self.decode_value(depth)?;
+                match inner {
+                    Value::I64(v) => Ok(CanonicalValue::I64(v)),
+                    // Positive i64 values encode as CBOR unsigned (major 0)
+                    Value::U64(v) if v <= i64::MAX as u64 => Ok(CanonicalValue::I64(v as i64)),
+                    _ => Err(DecodeError::InvalidCanonicalValueStructure),
+                }
+            }
+            3 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let inner = self.decode_value(depth)?;
+                match inner {
+                    Value::U64(v) => Ok(CanonicalValue::U64(v)),
+                    _ => Err(DecodeError::InvalidCanonicalValueStructure),
+                }
+            }
+            4 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let inner = self.decode_value(depth)?;
+                match inner {
+                    Value::Text(v) => Ok(CanonicalValue::Text(v)),
+                    _ => Err(DecodeError::InvalidCanonicalValueStructure),
+                }
+            }
+            5 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let inner = self.decode_value(depth)?;
+                match inner {
+                    Value::Bytes(v) => Ok(CanonicalValue::Bytes(v)),
+                    _ => Err(DecodeError::InvalidCanonicalValueStructure),
+                }
+            }
+            6 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let arr_byte = self.read_byte()?;
+                let arr_major = arr_byte >> 5;
+                let arr_addl = arr_byte & 0x1f;
+                if arr_addl == 31 {
+                    return Err(DecodeError::IndefiniteLengthUnsupported);
+                }
+                if arr_major != 4 {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let item_count = self.decode_head(arr_byte)?;
+                if item_count > self.max_item_count {
+                    return Err(DecodeError::ValueTooLarge {
+                        requested: item_count,
+                        max: self.max_item_count,
+                    });
+                }
+                let mut items = Vec::with_capacity(item_count.min(1024) as usize);
+                for _ in 0..item_count {
+                    items.push(self.decode_cv_inner(depth + 1, node_count)?);
+                }
+                Ok(CanonicalValue::Array(items))
+            }
+            7 => {
+                if !has_payload {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let arr_byte = self.read_byte()?;
+                let arr_major = arr_byte >> 5;
+                let arr_addl = arr_byte & 0x1f;
+                if arr_addl == 31 {
+                    return Err(DecodeError::IndefiniteLengthUnsupported);
+                }
+                if arr_major != 4 {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let pair_count = self.decode_head(arr_byte)?;
+                if pair_count > self.max_item_count {
+                    return Err(DecodeError::ValueTooLarge {
+                        requested: pair_count,
+                        max: self.max_item_count,
+                    });
+                }
+
+                let mut entries: Vec<(String, CanonicalValue)> =
+                    Vec::with_capacity(pair_count.min(1024) as usize);
+                let mut prev_key: Option<String> = None;
+
+                for _ in 0..pair_count {
+                    let pair_byte = self.read_byte()?;
+                    let pair_major = pair_byte >> 5;
+                    let pair_addl = pair_byte & 0x1f;
+                    if pair_addl == 31 {
+                        return Err(DecodeError::IndefiniteLengthUnsupported);
+                    }
+                    if pair_major != 4 {
+                        return Err(DecodeError::InvalidCanonicalValueStructure);
+                    }
+                    let pair_len = self.decode_head(pair_byte)?;
+                    if pair_len != 2 {
+                        return Err(DecodeError::InvalidCanonicalValueStructure);
+                    }
+
+                    // Key must be text
+                    let key_inner = self.decode_value(depth)?;
+                    let key = match key_inner {
+                        Value::Text(s) => s,
+                        _ => return Err(DecodeError::CanonicalMapKeyNotText),
+                    };
+
+                    // Check sorted order and duplicates
+                    if let Some(ref prev) = prev_key {
+                        match prev.as_str().cmp(&key) {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => {
+                                return Err(DecodeError::DuplicateMapKey);
+                            }
+                            std::cmp::Ordering::Greater => {
+                                return Err(DecodeError::UnsortedMapKey);
+                            }
+                        }
+                    }
+                    prev_key = Some(key.clone());
+
+                    let value = self.decode_cv_inner(depth + 1, node_count)?;
+                    entries.push((key, value));
+                }
+
+                Ok(CanonicalValue::Map(entries.into_iter().collect()))
+            }
+            _ => Err(DecodeError::InvalidCanonicalValueDiscriminant(disc)),
+        }
     }
 }
 
@@ -1019,5 +1322,270 @@ mod tests {
         let val = decode_ok(&bytes);
         let re = val.reencode();
         assert_eq!(re, bytes);
+    }
+
+    // -----------------------------------------------------------------------
+    // CanonicalValue tests
+    // -----------------------------------------------------------------------
+
+    fn cv_ok(input: &[u8]) -> CanonicalValue {
+        let mut dec = CanonicalDecoder::new(input, 64, 1_000_000, 1_048_576);
+        dec.decode_canonical_value()
+            .expect("cv decode should succeed")
+    }
+
+    fn cv_err(input: &[u8]) -> DecodeError {
+        let mut dec = CanonicalDecoder::new(input, 64, 1_000_000, 1_048_576);
+        dec.decode_canonical_value()
+            .expect_err("cv decode should fail")
+    }
+
+    fn cv_roundtrip(v: &CanonicalValue) {
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(v);
+        let bytes = enc.into_bytes();
+        let decoded = cv_ok(&bytes);
+        assert_eq!(&decoded, v, "cv roundtrip failed for {v:?}");
+    }
+
+    #[test]
+    fn cv_null_roundtrip() {
+        cv_roundtrip(&CanonicalValue::Null);
+    }
+
+    #[test]
+    fn cv_bool_roundtrip() {
+        cv_roundtrip(&CanonicalValue::Bool(true));
+        cv_roundtrip(&CanonicalValue::Bool(false));
+    }
+
+    #[test]
+    fn cv_i64_roundtrip() {
+        cv_roundtrip(&CanonicalValue::I64(0));
+        cv_roundtrip(&CanonicalValue::I64(-1));
+        cv_roundtrip(&CanonicalValue::I64(i64::MIN));
+        cv_roundtrip(&CanonicalValue::I64(i64::MAX));
+    }
+
+    #[test]
+    fn cv_u64_roundtrip() {
+        cv_roundtrip(&CanonicalValue::U64(0));
+        cv_roundtrip(&CanonicalValue::U64(u64::MAX));
+    }
+
+    #[test]
+    fn cv_text_roundtrip() {
+        cv_roundtrip(&CanonicalValue::Text("".into()));
+        cv_roundtrip(&CanonicalValue::Text("hello".into()));
+        cv_roundtrip(&CanonicalValue::Text("héllo wörld ⚡".into()));
+    }
+
+    #[test]
+    fn cv_bytes_roundtrip() {
+        cv_roundtrip(&CanonicalValue::Bytes(vec![]));
+        cv_roundtrip(&CanonicalValue::Bytes(vec![0x00, 0xff]));
+    }
+
+    #[test]
+    fn cv_array_roundtrip() {
+        cv_roundtrip(&CanonicalValue::Array(vec![]));
+        cv_roundtrip(&CanonicalValue::Array(vec![
+            CanonicalValue::Null,
+            CanonicalValue::Bool(true),
+        ]));
+        cv_roundtrip(&CanonicalValue::Array(vec![
+            CanonicalValue::I64(42),
+            CanonicalValue::U64(100),
+            CanonicalValue::Text("x".into()),
+            CanonicalValue::Bytes(vec![0xab]),
+        ]));
+    }
+
+    #[test]
+    fn cv_map_roundtrip() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("a".into(), CanonicalValue::U64(1));
+        m.insert("b".into(), CanonicalValue::Text("two".into()));
+        cv_roundtrip(&CanonicalValue::Map(m));
+    }
+
+    #[test]
+    fn cv_nested_array_map_roundtrip() {
+        use std::collections::BTreeMap;
+        let mut inner = BTreeMap::new();
+        inner.insert(
+            "key".into(),
+            CanonicalValue::Array(vec![CanonicalValue::U64(1), CanonicalValue::U64(2)]),
+        );
+        let outer = CanonicalValue::Array(vec![CanonicalValue::Null, CanonicalValue::Map(inner)]);
+        cv_roundtrip(&outer);
+    }
+
+    #[test]
+    fn cv_rejects_non_array_outer() {
+        // Just a bare u64 0 — not an array wrapper
+        assert_eq!(cv_err(&[0x00]), DecodeError::InvalidCanonicalValueStructure);
+    }
+
+    #[test]
+    fn cv_rejects_wrong_array_length() {
+        // Empty array instead of [0] for Null
+        assert_eq!(cv_err(&[0x80]), DecodeError::InvalidCanonicalValueStructure);
+        // Array of length 3
+        assert_eq!(
+            cv_err(&[0x83, 0x00, 0x00, 0x00]),
+            DecodeError::InvalidCanonicalValueStructure
+        );
+    }
+
+    #[test]
+    fn cv_rejects_discriminant_not_uint() {
+        // Array [null, ...] — null is not a uint discriminant
+        assert_eq!(
+            cv_err(&[0x82, 0xf6, 0x00]),
+            DecodeError::InvalidCanonicalValueStructure
+        );
+    }
+
+    #[test]
+    fn cv_rejects_discriminant_out_of_range() {
+        // Array [8, ...] — discriminant 8 > 7
+        assert_eq!(
+            cv_err(&[0x82, 0x08, 0x00]),
+            DecodeError::InvalidCanonicalValueDiscriminant(8)
+        );
+    }
+
+    #[test]
+    fn cv_rejects_wrong_bool_payload() {
+        // [1, 42] — discriminant 1 (Bool) but payload is u64 42, not boolean
+        let bytes = vec![0x82, 0x01, 0x18, 0x2a];
+        assert_eq!(cv_err(&bytes), DecodeError::InvalidCanonicalValueStructure);
+    }
+
+    #[test]
+    fn cv_rejects_wrong_i64_payload() {
+        // [2, "hello"] — discriminant 2 (I64) but payload is text
+        let bytes = vec![0x82, 0x02, 0x65, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
+        assert_eq!(cv_err(&bytes), DecodeError::InvalidCanonicalValueStructure);
+    }
+
+    #[test]
+    fn cv_rejects_wrong_u64_payload() {
+        // [3, true] — discriminant 3 (U64) but payload is boolean
+        let bytes = vec![0x82, 0x03, 0xf5];
+        assert_eq!(cv_err(&bytes), DecodeError::InvalidCanonicalValueStructure);
+    }
+
+    #[test]
+    fn cv_rejects_wrong_text_payload() {
+        // [4, null] — discriminant 4 (Text) but payload is null
+        let bytes = vec![0x82, 0x04, 0xf6];
+        assert_eq!(cv_err(&bytes), DecodeError::InvalidCanonicalValueStructure);
+    }
+
+    #[test]
+    fn cv_rejects_wrong_bytes_payload() {
+        // [5, []] — discriminant 5 (Bytes) but payload is array
+        let bytes = vec![0x82, 0x05, 0x80];
+        assert_eq!(cv_err(&bytes), DecodeError::InvalidCanonicalValueStructure);
+    }
+
+    #[test]
+    fn cv_rejects_non_text_map_key() {
+        // [7, [[0, null]]] — key is u64 0, not text
+        let bytes = vec![
+            0x82, 0x07, // outer [7, ...]
+            0x81, // inner array of 1 pair
+            0x82, 0x00, 0xf6, // pair [0, null] — key 0 is u64, not text
+        ];
+        assert_eq!(cv_err(&bytes), DecodeError::CanonicalMapKeyNotText);
+    }
+
+    #[test]
+    fn cv_rejects_duplicate_map_keys() {
+        // [7, [["a", null], ["a", null]]] — duplicate key "a"
+        // Encode directly (BTreeMap silently deduplicates)
+        let mut enc = CanonicalEncoder::new();
+        enc.begin_array(2);
+        enc.u64(7);
+        enc.begin_array(2);
+        enc.begin_array(2);
+        enc.text("a");
+        enc.canonical_value(&CanonicalValue::Null);
+        enc.begin_array(2);
+        enc.text("a");
+        enc.canonical_value(&CanonicalValue::Null);
+        let bytes = enc.into_bytes();
+        assert_eq!(cv_err(&bytes), DecodeError::DuplicateMapKey);
+    }
+
+    #[test]
+    fn cv_rejects_unsorted_map_keys() {
+        // Encode map with keys "b", "a" (unsorted)
+        let mut enc = CanonicalEncoder::new();
+        enc.begin_array(2);
+        enc.u64(7);
+        enc.begin_array(2);
+        // pair ["b", null]
+        enc.begin_array(2);
+        enc.text("b");
+        enc.canonical_value(&CanonicalValue::Null);
+        // pair ["a", null]
+        enc.begin_array(2);
+        enc.text("a");
+        enc.canonical_value(&CanonicalValue::Null);
+        let bytes = enc.into_bytes();
+        assert_eq!(cv_err(&bytes), DecodeError::UnsortedMapKey);
+    }
+
+    #[test]
+    fn cv_rejects_float_in_payload() {
+        // [2, 1.5] — discriminant 2 (I64) but payload is float
+        let bytes = vec![
+            0x82, 0x02, // outer [2, ...]
+            0xf9, 0x3e, 0x00, // half-precision 1.5
+        ];
+        assert_eq!(cv_err(&bytes), DecodeError::FloatUnsupported);
+    }
+
+    #[test]
+    fn cv_rejects_trailing_data() {
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(&CanonicalValue::Null);
+        let mut bytes = enc.into_bytes();
+        bytes.push(0x00);
+        assert_eq!(cv_err(&bytes), DecodeError::TrailingData);
+    }
+
+    #[test]
+    fn cv_rejects_depth_exceeded() {
+        // Build deeply nested Array: Array(Array(Array(...(Null)...)))
+        // Depth 65, max_depth is 64
+        let mut inner = CanonicalValue::Null;
+        for _ in 0..65 {
+            inner = CanonicalValue::Array(vec![inner]);
+        }
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(&inner);
+        let bytes = enc.into_bytes();
+        assert_eq!(cv_err(&bytes), DecodeError::DepthExceeded);
+    }
+
+    #[test]
+    fn cv_rejects_node_count_exceeded() {
+        // Array with 1_000_001 nulls exceeds 1_000_000 node limit
+        let cv = CanonicalValue::Array(vec![CanonicalValue::Null; 1_000_001]);
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(&cv);
+        let bytes = enc.into_bytes();
+        assert_eq!(
+            cv_err(&bytes),
+            DecodeError::ValueTooLarge {
+                requested: 1_000_001, // outer Array counts as 1st node, then 1_000_000 Nulls fit, 1_000_001st Null exceeds
+                max: 1_000_000,
+            }
+        );
     }
 }

@@ -1,5 +1,14 @@
 # Progress
 
+## F2.5 — Implement CanonicalValue tagged union
+
+- Status: GREEN
+- Commit: PENDING
+- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. Depth/nesting limits enforced.
+- Tests: `cargo test --workspace --all-features` (114 tests)
+- Evidence: Round-trip for all 8 variants; nested Array/Map round-trip; rejects discriminant out of range, non-array outer, wrong payload types, non-text map key, duplicate/unsorted text keys, float in payload, depth exceeded, node count exceeded, trailing data.
+- Follow-up: F2.6 (constrained names)
+
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
 - Status: GREEN

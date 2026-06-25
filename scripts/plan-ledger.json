@@ -34,7 +34,7 @@
         { "id": "F2.2", "status": "GREEN", "depends_on": ["F2.1"] },
         { "id": "F2.3", "status": "GREEN", "depends_on": ["F2.1"] },
         { "id": "F2.4", "status": "GREEN", "depends_on": ["F2.3"] },
-        { "id": "F2.5", "status": "RED", "depends_on": ["F2.3", "F2.4"] },
+        { "id": "F2.5", "status": "GREEN", "depends_on": ["F2.3", "F2.4"] },
         { "id": "F2.6", "status": "RED", "depends_on": ["F2.5"] },
         { "id": "F2.7", "status": "RED", "depends_on": ["F2.5"] },
         { "id": "F2.8", "status": "RED", "depends_on": ["F2.4", "F2.6"] },
