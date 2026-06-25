@@ -307,6 +307,66 @@ pub enum CanonicalValue {
 }
 
 // ---------------------------------------------------------------------------
+// JSON conversion
+// ---------------------------------------------------------------------------
+
+impl TryFrom<serde_json::Value> for CanonicalValue {
+    type Error = DecodeError;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        const MAX_DEPTH: usize = 32;
+        cv_from_json(&value, 0, MAX_DEPTH)
+    }
+}
+
+fn cv_from_json(
+    value: &serde_json::Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<CanonicalValue, DecodeError> {
+    if depth > max_depth {
+        return Err(DecodeError::JsonDepthExceeded);
+    }
+    match value {
+        serde_json::Value::Null => Ok(CanonicalValue::Null),
+        serde_json::Value::Bool(b) => Ok(CanonicalValue::Bool(*b)),
+        serde_json::Value::Number(n) => {
+            if n.is_f64() {
+                return Err(DecodeError::JsonFloatUnsupported);
+            }
+            // Try signed first so i64::MAX maps to I64 not U64
+            if let Some(v) = n.as_i64() {
+                return Ok(CanonicalValue::I64(v));
+            }
+            if let Some(v) = n.as_u64() {
+                return Ok(CanonicalValue::U64(v));
+            }
+            Err(DecodeError::JsonNumberOutOfRange)
+        }
+        serde_json::Value::String(s) => Ok(CanonicalValue::Text(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let mut items = Vec::with_capacity(arr.len());
+            for item in arr {
+                items.push(cv_from_json(item, depth + 1, max_depth)?);
+            }
+            Ok(CanonicalValue::Array(items))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut keys: Vec<&String> = obj.keys().collect();
+            keys.sort();
+            let mut map = std::collections::BTreeMap::new();
+            for k in keys {
+                let val = cv_from_json(&obj[k], depth + 1, max_depth)?;
+                if map.insert(k.clone(), val).is_some() {
+                    return Err(DecodeError::JsonDuplicateKey);
+                }
+            }
+            Ok(CanonicalValue::Map(map))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Decode error types
 // ---------------------------------------------------------------------------
 
@@ -335,6 +395,14 @@ pub enum DecodeError {
     InvalidCanonicalValueDiscriminant(u64),
     /// A CanonicalValue::Map key is not a CBOR text string.
     CanonicalMapKeyNotText,
+    /// A JSON float value is not representable in CanonicalValue.
+    JsonFloatUnsupported,
+    /// A JSON value exceeds the CanonicalValue nesting limit.
+    JsonDepthExceeded,
+    /// A JSON number is too large to represent as i64 or u64.
+    JsonNumberOutOfRange,
+    /// A JSON object had duplicate keys after sorting.
+    JsonDuplicateKey,
 }
 
 // ---------------------------------------------------------------------------
@@ -1604,5 +1672,104 @@ mod tests {
                 max: 1_000_000,
             }
         );
+    }
+
+    // --- JSON conversion ---
+
+    #[test]
+    fn json_null() {
+        let cv: CanonicalValue = serde_json::json!(null).try_into().unwrap();
+        assert_eq!(cv, CanonicalValue::Null);
+    }
+
+    #[test]
+    fn json_bool() {
+        let t: CanonicalValue = serde_json::json!(true).try_into().unwrap();
+        assert_eq!(t, CanonicalValue::Bool(true));
+        let f: CanonicalValue = serde_json::json!(false).try_into().unwrap();
+        assert_eq!(f, CanonicalValue::Bool(false));
+    }
+
+    #[test]
+    fn json_integer() {
+        let cv: CanonicalValue = serde_json::json!(42).try_into().unwrap();
+        assert_eq!(cv, CanonicalValue::I64(42));
+        let cv: CanonicalValue = serde_json::json!(-1).try_into().unwrap();
+        assert_eq!(cv, CanonicalValue::I64(-1));
+        let cv: CanonicalValue = serde_json::json!(i64::MAX).try_into().unwrap();
+        assert_eq!(cv, CanonicalValue::I64(i64::MAX));
+        // u64::MAX is too large for i64, so it maps to U64
+        let cv: CanonicalValue = serde_json::json!(u64::MAX).try_into().unwrap();
+        assert_eq!(cv, CanonicalValue::U64(u64::MAX));
+    }
+
+    #[test]
+    fn json_string() {
+        let cv: CanonicalValue = serde_json::json!("hello").try_into().unwrap();
+        assert_eq!(cv, CanonicalValue::Text("hello".to_string()));
+    }
+
+    #[test]
+    fn json_array() {
+        let cv: CanonicalValue = serde_json::json!([1, "two", null]).try_into().unwrap();
+        assert_eq!(
+            cv,
+            CanonicalValue::Array(vec![
+                CanonicalValue::I64(1),
+                CanonicalValue::Text("two".to_string()),
+                CanonicalValue::Null,
+            ])
+        );
+    }
+
+    #[test]
+    fn json_object() {
+        let cv: CanonicalValue = serde_json::json!({"b": 2, "a": 1}).try_into().unwrap();
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert("a".to_string(), CanonicalValue::I64(1));
+        expected.insert("b".to_string(), CanonicalValue::I64(2));
+        assert_eq!(cv, CanonicalValue::Map(expected));
+    }
+
+    #[test]
+    fn json_rejects_float() {
+        let result: Result<CanonicalValue, _> = serde_json::json!(1.5).try_into();
+        assert_eq!(result, Err(DecodeError::JsonFloatUnsupported));
+    }
+
+    #[test]
+    fn json_rejects_nested_float() {
+        let result: Result<CanonicalValue, _> = serde_json::json!({"a": [1, 2.5]}).try_into();
+        assert_eq!(result, Err(DecodeError::JsonFloatUnsupported));
+    }
+
+    #[test]
+    fn json_rejects_depth_exceeded() {
+        // Build a JSON array nested 33 levels deep (default max is 32)
+        let mut val: serde_json::Value = serde_json::json!(null);
+        for _ in 0..33 {
+            val = serde_json::json!([val]);
+        }
+        let result: Result<CanonicalValue, _> = val.try_into();
+        assert_eq!(result, Err(DecodeError::JsonDepthExceeded));
+    }
+
+    #[test]
+    fn json_round_trip() {
+        let json_val = serde_json::json!({
+            "name": "test",
+            "count": 100,
+            "active": true,
+            "tags": ["a", "b"],
+            "meta": {"x": null},
+        });
+        let cv: CanonicalValue = json_val.try_into().unwrap();
+        // Re-encode to CBOR and back
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(&cv);
+        let bytes = enc.into_bytes();
+        let mut dec = CanonicalDecoder::new(&bytes, 32, 1_000_000, 1_048_576);
+        let decoded = dec.decode_canonical_value().unwrap();
+        assert_eq!(cv, decoded);
     }
 }

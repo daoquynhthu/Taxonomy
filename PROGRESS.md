@@ -18,6 +18,15 @@
 - Evidence: Decoder now rejects lengths exceeding usize::MAX (32-bit safety); all existing tests pass.
 - Follow-up: F2.5 audit correction (JSON conversion adapter)
 
+## F2.5 — audit correction: JSON conversion adapter for CanonicalValue
+
+- Status: GREEN
+- Commit: SELF
+- Completed: TryFrom<serde_json::Value> for CanonicalValue with I64/U64 distinction, float rejection, depth limit (32), duplicate-key detection. 10 new tests covering null, bool, integer (positive/negative/max/u64), string, array, object, float rejection, nested float, depth exceeded, round-trip.
+- Tests: `cargo test --workspace --all-features` (161 tests)
+- Evidence: JSON null→Null, bool→Bool, integer→I64/U64, string→Text, array→Array, object→Map (sorted keys). Floats rejected with JsonFloatUnsupported.
+- Follow-up: F2.6 audit correction (missing types + encapsulation holes)
+
 ## F2.3 — audit correction: CanonicalSortedMap dedup + insert_raw visibility
 
 - Status: GREEN
