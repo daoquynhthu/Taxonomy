@@ -28,7 +28,7 @@
         },
         {
           "id": "P0.4",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "P0.1",
             "P0.2",
@@ -109,7 +109,7 @@
         },
         {
           "id": "F2.2",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.1"
           ]

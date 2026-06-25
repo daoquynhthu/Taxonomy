@@ -1,5 +1,23 @@
 # Progress
 
+## F2.2 — audit correction: DomainHash returns Result
+
+- Status: GREEN
+- Commit: SELF
+- Completed: domain_hash(tag, payload) now returns Result<[u8; 32], DomainHashError> instead of infallible [u8; 32]. Tags exceeding u16::MAX are rejected with TagTooLong error. New error type DomainHashError with Display and Error impls.
+- Tests: `cargo test --workspace --all-features` (151 tests)
+- Evidence: All 13 golden vectors still match; long tag (65535) succeeds; 65536-byte tag correctly rejected; large payloads still work.
+- Follow-up: F2.3 audit correction (CanonicalSortedMap dedup check)
+
+## F2.1 — audit correction: BoundedLength::new_unchecked visibility
+
+- Status: GREEN
+- Commit: 99c3ea5
+- Completed: BoundedLength::new_unchecked changed from pub to pub(crate) per audit HIGH 2. Added dead_code allow for future internal use.
+- Tests: `cargo test --workspace --all-features` (150 tests)
+- Evidence: No external access to unchecked construction; internal future use preserved.
+- Follow-up: F2.2 audit correction (DomainHash Result return type)
+
 ## F2.6 — Implement constrained names
 
 - Status: GREEN

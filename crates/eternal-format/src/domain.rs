@@ -1,4 +1,24 @@
+use core::fmt;
 use sha2::{Digest, Sha256};
+
+/// Error returned by [`domain_hash`] when the tag is too long.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomainHashError {
+    /// The tag byte-length exceeds `u16::MAX` (65535).
+    TagTooLong { actual: usize },
+}
+
+impl fmt::Display for DomainHashError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TagTooLong { actual } => {
+                write!(f, "tag length {actual} exceeds u16 maximum 65535")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DomainHashError {}
 
 /// Compute DomainHash(tag, payload) per FORMAT.md §5.1.
 ///
@@ -11,8 +31,11 @@ use sha2::{Digest, Sha256};
 ///
 /// The tag length MUST fit in `u16`; all v1 tags do.
 /// The payload length MUST fit in `u64`.
-pub fn domain_hash(tag: &str, payload: &[u8]) -> [u8; 32] {
+pub fn domain_hash(tag: &str, payload: &[u8]) -> Result<[u8; 32], DomainHashError> {
     let tag_len = tag.len();
+    if tag_len > u16::MAX as usize {
+        return Err(DomainHashError::TagTooLong { actual: tag_len });
+    }
     let tag_bytes = tag.as_bytes();
     let payload_len = payload.len();
 
@@ -21,7 +44,7 @@ pub fn domain_hash(tag: &str, payload: &[u8]) -> [u8; 32] {
     h.update(tag_bytes);
     h.update((payload_len as u64).to_le_bytes());
     h.update(payload);
-    h.finalize().into()
+    Ok(h.finalize().into())
 }
 
 // ---------------------------------------------------------------------------
@@ -30,6 +53,7 @@ pub fn domain_hash(tag: &str, payload: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn hex_of(bytes: &[u8]) -> String {
@@ -40,7 +64,7 @@ mod tests {
 
     #[test]
     fn domain_hash_repository_genesis_empty() {
-        let result = domain_hash("EternalCore:RepositoryGenesis:v1", &[]);
+        let result = domain_hash("EternalCore:RepositoryGenesis:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "7ee4e846cb224f3a0a2bcde4052467bd28e5eeb736aeefd7ff1696feeb6253ae"
@@ -49,7 +73,7 @@ mod tests {
 
     #[test]
     fn domain_hash_policy_record_empty() {
-        let result = domain_hash("EternalCore:PolicyRecord:v1", &[]);
+        let result = domain_hash("EternalCore:PolicyRecord:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "cdb782e077d59dcddf69b990da0e5a90e4074100452456029f73d3bc7b05dff3"
@@ -58,7 +82,7 @@ mod tests {
 
     #[test]
     fn domain_hash_keyring_record_empty() {
-        let result = domain_hash("EternalCore:KeyringRecord:v1", &[]);
+        let result = domain_hash("EternalCore:KeyringRecord:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "c08f39bc9cf3eafbfa2e5bd43d2800c1c177df16cf24143af8173fa315b3c010"
@@ -67,7 +91,7 @@ mod tests {
 
     #[test]
     fn domain_hash_key_fingerprint_empty() {
-        let result = domain_hash("EternalCore:KeyFingerprint:v1", &[]);
+        let result = domain_hash("EternalCore:KeyFingerprint:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "320c73031d0a4ed6dc5db85ba0becd6691f66fdbdf16d89adab4244c82f6d5d4"
@@ -76,7 +100,7 @@ mod tests {
 
     #[test]
     fn domain_hash_public_chunk_empty() {
-        let result = domain_hash("EternalCore:PublicChunk:v1", &[]);
+        let result = domain_hash("EternalCore:PublicChunk:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "a02b8ade69ee6ea88ffc2c3ccb22917d7fc40fbf47dd8998fd04fc2232705fa9"
@@ -85,7 +109,7 @@ mod tests {
 
     #[test]
     fn domain_hash_private_chunk_empty() {
-        let result = domain_hash("EternalCore:PrivateChunk:v1", &[]);
+        let result = domain_hash("EternalCore:PrivateChunk:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "3c6b278475bf2d7287494ba733c83c30269b9486b999ede1942c9b3fab9d38bf"
@@ -94,7 +118,7 @@ mod tests {
 
     #[test]
     fn domain_hash_content_manifest_empty() {
-        let result = domain_hash("EternalCore:ContentManifest:v1", &[]);
+        let result = domain_hash("EternalCore:ContentManifest:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "f8f4cd8f263a7b39e9cabe8afc9b85e16ba7c9a4e51b5bf414e1f9459dee742f"
@@ -103,7 +127,7 @@ mod tests {
 
     #[test]
     fn domain_hash_object_version_empty() {
-        let result = domain_hash("EternalCore:ObjectVersion:v1", &[]);
+        let result = domain_hash("EternalCore:ObjectVersion:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "29bd73bb42756738301485d9139dafde5082a6cfaa20d3d3fa0fb6ff950c0786"
@@ -112,7 +136,7 @@ mod tests {
 
     #[test]
     fn domain_hash_commit_empty() {
-        let result = domain_hash("EternalCore:RepoCommit:v1", &[]);
+        let result = domain_hash("EternalCore:RepoCommit:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "68f03768f1c2b756f9e7cecdea0b07e3a25f138f20d3d761842c6abdb356dc80"
@@ -121,7 +145,7 @@ mod tests {
 
     #[test]
     fn domain_hash_ref_update_empty() {
-        let result = domain_hash("EternalCore:RefUpdate:v1", &[]);
+        let result = domain_hash("EternalCore:RefUpdate:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "f85ba7cd4e917be5b190d70883447660de6bff164f083fb56bc6ce8dc60171ea"
@@ -130,7 +154,7 @@ mod tests {
 
     #[test]
     fn domain_hash_smt_empty_leaf_empty() {
-        let result = domain_hash("EternalCore:SMTEmptyLeaf:v1", &[]);
+        let result = domain_hash("EternalCore:SMTEmptyLeaf:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "3730f3604e9a92b7ec14886c12aebac2aa4435f02d56356469c94daf1e16c36d"
@@ -139,7 +163,7 @@ mod tests {
 
     #[test]
     fn domain_hash_pack_empty() {
-        let result = domain_hash("EternalCore:Pack:v1", &[]);
+        let result = domain_hash("EternalCore:Pack:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "7b7eef24532e168e73b02ba4bce15dee50f5ee8866c5f3d8d620c0e46ab0f312"
@@ -148,7 +172,7 @@ mod tests {
 
     #[test]
     fn domain_hash_store_manifest_empty() {
-        let result = domain_hash("EternalCore:StoreManifest:v1", &[]);
+        let result = domain_hash("EternalCore:StoreManifest:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "b0d3980926a29eb26a2042236832ed90ee9ec6c575024fb724197ceab39816df"
@@ -157,7 +181,7 @@ mod tests {
 
     #[test]
     fn domain_hash_object_key_empty() {
-        let result = domain_hash("EternalCore:ObjectKey:v1", &[]);
+        let result = domain_hash("EternalCore:ObjectKey:v1", &[]).unwrap();
         assert_eq!(
             hex_of(&result),
             "cf6d21316d5e84ba0dd82f2f0dcba3e2cf484ef801ed10524d89947c7c57e644"
@@ -168,15 +192,15 @@ mod tests {
 
     #[test]
     fn different_tag_different_hash() {
-        let a = domain_hash("EternalCore:Pack:v1", &[]);
-        let b = domain_hash("EternalCore:PackIndex:v1", &[]);
+        let a = domain_hash("EternalCore:Pack:v1", &[]).unwrap();
+        let b = domain_hash("EternalCore:PackIndex:v1", &[]).unwrap();
         assert_ne!(a, b);
     }
 
     #[test]
     fn different_payload_different_hash() {
-        let a = domain_hash("EternalCore:Test:v1", &[]);
-        let b = domain_hash("EternalCore:Test:v1", &[0x01]);
+        let a = domain_hash("EternalCore:Test:v1", &[]).unwrap();
+        let b = domain_hash("EternalCore:Test:v1", &[0x01]).unwrap();
         assert_ne!(a, b);
     }
 
@@ -184,10 +208,9 @@ mod tests {
 
     #[test]
     fn domain_hash_with_payload() {
-        let result = domain_hash("EternalCore:Test:v1", b"hello world");
-        // Just verify it produces a 32-byte result and is deterministic
+        let result = domain_hash("EternalCore:Test:v1", b"hello world").unwrap();
         assert_eq!(result.len(), 32);
-        let second = domain_hash("EternalCore:Test:v1", b"hello world");
+        let second = domain_hash("EternalCore:Test:v1", b"hello world").unwrap();
         assert_eq!(result, second);
     }
 
@@ -196,8 +219,17 @@ mod tests {
     #[test]
     fn domain_hash_long_tag() {
         let tag = "x".repeat(65535);
-        let result = domain_hash(&tag, &[]);
+        let result = domain_hash(&tag, &[]).unwrap();
         assert_eq!(result.len(), 32);
+    }
+
+    // Tag exceeding u16::MAX is rejected
+
+    #[test]
+    fn domain_hash_tag_too_long() {
+        let tag = "x".repeat(65536);
+        let result = domain_hash(&tag, &[]);
+        assert!(result.is_err());
     }
 
     // --- Large payload ---
@@ -205,9 +237,9 @@ mod tests {
     #[test]
     fn domain_hash_large_payload() {
         let payload = vec![0xABu8; 100_000];
-        let result = domain_hash("EternalCore:Test:v1", &payload);
+        let result = domain_hash("EternalCore:Test:v1", &payload).unwrap();
         assert_eq!(result.len(), 32);
-        let second = domain_hash("EternalCore:Test:v1", &payload);
+        let second = domain_hash("EternalCore:Test:v1", &payload).unwrap();
         assert_eq!(result, second);
     }
 
@@ -218,7 +250,7 @@ mod tests {
     fn domain_hash_no_usize_in_preimage() {
         // Use a payload longer than 65535 bytes to confirm u64 length encoding
         let payload = vec![0xFFu8; 70_000];
-        let result = domain_hash("EternalCore:Test:v1", &payload);
+        let result = domain_hash("EternalCore:Test:v1", &payload).unwrap();
         assert_eq!(result.len(), 32);
     }
 }
