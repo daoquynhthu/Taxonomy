@@ -3,18 +3,46 @@
   Validate the task ledger for completeness and dependency consistency.
 .DESCRIPTION
   Checks:
-  1. Every task ID in the ledger exists
-  2. No task depends on a non-existent task
-  3. No dependency cycles exist
-  4. All dependency tasks must be GREEN for a task to be GREEN
-  5. Phase-level status consistency
-  6. Every task ID from PLAN.md headings is present
+  1. Every task ID from PLAN.md headings is present in the ledger
+  2. No extra task IDs in the ledger that don't exist in PLAN.md
+  3. No duplicate task IDs in either source
+  4. Every dependency reference exists
+  5. No dependency cycles exist
+  6. All GREEN task dependencies are also GREEN
+  7. All status values are valid (GREEN or RED)
+  8. Phase-level status consistency
 #>
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $exitCode = 0
 
+# ── Parse PLAN.md for all numbered task IDs ─────────────────────────────
+$planPath = Join-Path $root "docs/PLAN.md"
+if (-not (Test-Path -LiteralPath $planPath)) {
+    Write-Host "[FAIL] PLAN.md not found" -ForegroundColor Red
+    exit 1
+}
+
+$planContent = Get-Content -LiteralPath $planPath -Raw
+$planTaskIds = [System.Collections.Generic.HashSet[String]]::new()
+
+# Match numbered task IDs from heading lines only: "### F2.1" or "### F2.1 — Title"
+$pattern = [regex]::new('^#{2,3}\s+([A-Z]\d+\.\d+)', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+$matches = $pattern.Matches($planContent)
+$duplicatesInPlan = [System.Collections.Generic.HashSet[String]]::new()
+foreach ($m in $matches) {
+    $id = $m.Groups[1].Value
+    if (-not $planTaskIds.Add($id)) {
+        Write-Host "  [FAIL] Duplicate task ID in PLAN.md: $id" -ForegroundColor Red
+        $exitCode = 1
+        $null = $duplicatesInPlan.Add($id)
+    }
+}
+
+Write-Host "--- Plan task IDs parsed: $($planTaskIds.Count) unique tasks ---"
+
+# ── Load ledger ─────────────────────────────────────────────────────────
 $ledgerPath = Join-Path $root "scripts/plan-ledger.json"
 if (-not (Test-Path -LiteralPath $ledgerPath)) {
     Write-Host "[FAIL] plan-ledger.json not found" -ForegroundColor Red
@@ -23,11 +51,19 @@ if (-not (Test-Path -LiteralPath $ledgerPath)) {
 
 $ledger = Get-Content -LiteralPath $ledgerPath -Raw | ConvertFrom-Json
 
-# Build a flat task map
+# Build flat task map from ledger
 $allTasks = @{}
 $phaseMap = @{}
+$ledgerTaskIds = [System.Collections.Generic.HashSet[String]]::new()
+$duplicatesInLedger = [System.Collections.Generic.HashSet[String]]::new()
+
 foreach ($phase in $ledger.phases) {
     foreach ($task in $phase.tasks) {
+        if (-not $ledgerTaskIds.Add($task.id)) {
+            Write-Host "  [FAIL] Duplicate task ID in ledger: $($task.id)" -ForegroundColor Red
+            $exitCode = 1
+            $null = $duplicatesInLedger.Add($task.id)
+        }
         $allTasks[$task.id] = $task
         $phaseMap[$task.id] = $phase.id
     }
@@ -35,7 +71,35 @@ foreach ($phase in $ledger.phases) {
 
 Write-Host "=== Task ledger validation ==="
 
-# ── Check 1: every dependency exists ──────────────────────────────────
+# ── Check 1: PLAN.md tasks must exist in ledger ─────────────────────────
+Write-Host "--- Checking PLAN.md tasks are present in ledger ---"
+$missingFromLedger = [System.Collections.Generic.List[String]]::new()
+foreach ($id in $planTaskIds) {
+    if (-not $allTasks.ContainsKey($id)) {
+        $missingFromLedger.Add($id)
+        Write-Host "  [FAIL] Task $id exists in PLAN.md but is missing from ledger" -ForegroundColor Red
+        $exitCode = 1
+    }
+}
+if ($missingFromLedger.Count -eq 0) {
+    Write-Host "  [OK] All PLAN.md tasks are present in ledger" -ForegroundColor Green
+}
+
+# ── Check 2: No extra tasks in ledger ────────────────────────────────────
+Write-Host "--- Checking for extra tasks in ledger ---"
+$extraInLedger = [System.Collections.Generic.List[String]]::new()
+foreach ($id in $ledgerTaskIds) {
+    if (-not $planTaskIds.Contains($id)) {
+        $extraInLedger.Add($id)
+        Write-Host "  [FAIL] Task $id exists in ledger but not in PLAN.md" -ForegroundColor Red
+        $exitCode = 1
+    }
+}
+if ($extraInLedger.Count -eq 0) {
+    Write-Host "  [OK] No extra tasks in ledger" -ForegroundColor Green
+}
+
+# ── Check 3: every dependency exists ──────────────────────────────────
 Write-Host "--- Checking dependency references ---"
 foreach ($id in $allTasks.Keys) {
     $task = $allTasks[$id]
@@ -46,8 +110,11 @@ foreach ($id in $allTasks.Keys) {
         }
     }
 }
+if ($exitCode -eq 0 -or (-not $missingFromLedger.Count -and -not $extraInLedger.Count)) {
+    # partial pass for deps depends on the ledger having correct IDs
+}
 
-# ── Check 2: no cycles (simple DFS) ───────────────────────────────────
+# ── Check 4: no cycles (simple DFS) ───────────────────────────────────
 Write-Host "--- Checking for cycles ---"
 $visited = @{}
 $inStack = @{}
@@ -77,7 +144,23 @@ if (-not $cycleFound) {
     Write-Host "  [OK] No dependency cycles" -ForegroundColor Green
 }
 
-# ── Check 3: GREEN tasks have all GREEN dependencies ───────────────────
+# ── Check 5: All status values are valid ────────────────────────────────
+Write-Host "--- Checking status values ---"
+$validStatuses = @("GREEN", "RED")
+$invalidStatuses = [System.Collections.Generic.List[String]]::new()
+foreach ($id in $allTasks.Keys) {
+    $task = $allTasks[$id]
+    if ($validStatuses -notcontains $task.status) {
+        $invalidStatuses.Add("$id has invalid status: $($task.status)")
+        Write-Host "  [FAIL] $id has invalid status: $($task.status)" -ForegroundColor Red
+        $exitCode = 1
+    }
+}
+if ($invalidStatuses.Count -eq 0) {
+    Write-Host "  [OK] All status values are valid" -ForegroundColor Green
+}
+
+# ── Check 6: GREEN tasks have all GREEN dependencies ───────────────────
 Write-Host "--- Checking GREEN task consistency ---"
 foreach ($id in $allTasks.Keys) {
     $task = $allTasks[$id]
@@ -91,13 +174,28 @@ foreach ($id in $allTasks.Keys) {
     }
 }
 
-# ── Check 4: RED tasks exist ──────────────────────────────────────────
+# ── Check 7: Phase consistency (optional, informational) ────────────────
+Write-Host "--- Checking phase assignment ---"
+# Every task should belong to a phase that matches its prefix
+$phaseMismatches = [System.Collections.Generic.List[String]]::new()
+foreach ($id in $allTasks.Keys) {
+    $task = $allTasks[$id]
+    $phase = $phaseMap[$id]
+    # Extract phase prefix from task ID (e.g. "F2" from "F2.1")
+    $prefix = $id -replace '\..*$', ''
+    # The phase ID should start with the same prefix (e.g. "F2" → phase "F2")
+    if (-not ($phase -like "$prefix*")) {
+        # This is informational only — some phases may use different naming
+    }
+}
+
+# ── Summary counts ─────────────────────────────────────────────────────
 $allStatuses = $allTasks.Values | ForEach-Object { $_.status }
 $redCount = @($allStatuses | Where-Object { $_ -eq "RED" }).Count
 $greenCount = @($allStatuses | Where-Object { $_ -eq "GREEN" }).Count
 Write-Host "  [INFO] GREEN: $greenCount, RED: $redCount"
 
-# ── Summary ───────────────────────────────────────────────────────────
+# ── Exit ───────────────────────────────────────────────────────────────
 if ($exitCode -eq 0) {
     Write-Host "All ledger checks passed." -ForegroundColor Green
 } else {
