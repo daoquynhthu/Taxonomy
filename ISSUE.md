@@ -50,7 +50,7 @@
 
 ## ISSUE-0005 — F2.6 implementation incomplete (missing types + encapsulation holes)
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/ids.rs, FORMAT.md §6, F2.6
@@ -58,7 +58,7 @@
 - Violated invariant: All FORMAT.md §6 constrained text types must exist with checked construction.
 - Required decision: Add missing types; make RefPattern fields private; matches() take &RefName; reject bare prefixes.
 - Work stopped: F2.6
-- Resolution: PENDING
+- Resolution: RESOLVED (all missing types added; matches takes &RefName; bare prefix rejected; accessors added)
 
 ## ISSUE-0006 — BoundedLength::new_unchecked is pub allowing bypass of max check
 
@@ -74,7 +74,7 @@
 
 ## ISSUE-0007 — CBOR decoder uses unchecked u64→usize casts
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.4
@@ -82,11 +82,11 @@
 - Violated invariant: All untrusted lengths must be checked before allocation/slicing.
 - Required decision: Use usize::try_from and return structured error on overflow.
 - Work stopped: F2.4
-- Resolution: PENDING
+- Resolution: RESOLVED (all as usize casts replaced with usize_from_u64 helper)
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -94,7 +94,7 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection.
 - Required decision: Implement TryFrom<serde_json::Value> with float/number-range/depth/node-count checking.
 - Work stopped: F2.5
-- Resolution: PENDING
+- Resolution: RESOLVED (TryFrom<serde_json::Value> implemented with float rejection, depth limit, duplicate-key check)
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 

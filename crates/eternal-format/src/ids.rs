@@ -729,7 +729,7 @@ pub fn validate_ref_name(s: &str) -> Result<(), NameError> {
             return Err(NameError::ControlCharacter { position: i });
         }
     }
-    // Suffix follows ObjectId path-segment rules
+    // Suffix follows ObjectId path-segment rules; bare prefix is rejected
     const PREFIXES: &[&str] = &[
         "refs/heads/",
         "refs/tags/",
@@ -738,9 +738,10 @@ pub fn validate_ref_name(s: &str) -> Result<(), NameError> {
     ];
     for prefix in PREFIXES {
         if let Some(suffix) = s.strip_prefix(prefix) {
-            if !suffix.is_empty() {
-                validate_path_segments(suffix, true)?;
+            if suffix.is_empty() {
+                return Err(NameError::InvalidRefPrefix);
             }
+            validate_path_segments(suffix, true)?;
             break;
         }
     }
@@ -779,6 +780,9 @@ impl TryFrom<String> for RefName {
 // ---------------------------------------------------------------------------
 
 /// A policy ref pattern: either an exact ref name or a namespace prefix.
+///
+/// Construct via [`RefPattern::new`]. The variant fields are `pub(crate)` so
+/// external code must use `new()` and the provided accessor methods.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RefPattern {
     /// An exact ref name match.
@@ -800,16 +804,34 @@ impl RefPattern {
         }
     }
 
+    /// If this is an exact pattern, return the ref name.
+    pub fn as_exact(&self) -> Option<&RefName> {
+        match self {
+            RefPattern::Exact(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// If this is a namespace pattern, return the prefix (without `/**`).
+    pub fn as_namespace(&self) -> Option<&str> {
+        match self {
+            RefPattern::Namespace { prefix } => Some(prefix),
+            _ => None,
+        }
+    }
+
     /// Returns `true` if this pattern matches the given ref name.
     ///
     /// Exact patterns match by equality. Namespace patterns match when the
     /// ref name begins with the prefix followed by `/` or is the prefix itself.
-    pub fn matches(&self, name: &str) -> bool {
+    pub fn matches(&self, name: &RefName) -> bool {
         match self {
-            RefPattern::Exact(ref_name) => ref_name.as_str() == name,
+            RefPattern::Exact(ref_name) => ref_name == name,
             RefPattern::Namespace { prefix } => {
-                if name.starts_with(prefix) {
-                    name.len() == prefix.len() || name.as_bytes().get(prefix.len()) == Some(&b'/')
+                let name_str = name.as_str();
+                if name_str.starts_with(prefix) {
+                    name_str.len() == prefix.len()
+                        || name_str.as_bytes().get(prefix.len()) == Some(&b'/')
                 } else {
                     false
                 }
@@ -907,6 +929,241 @@ impl std::str::FromStr for RefPattern {
     fn from_str(s: &str) -> Result<Self, NameError> {
         Self::new(s)
     }
+}
+
+// ---------------------------------------------------------------------------
+// DataType (FORMAT.md §6.4)
+// ---------------------------------------------------------------------------
+
+/// A data type label: 1–256 UTF-8 bytes, no control characters.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DataType(String);
+
+impl DataType {
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        validate_simple_text(s, 1, 256)?;
+        Ok(DataType(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for DataType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for DataType {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for DataType {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DataType {
+    type Error = NameError;
+    fn try_from(s: String) -> Result<Self, NameError> {
+        validate_simple_text(&s, 1, 256)?;
+        Ok(DataType(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RelationType (FORMAT.md §6.4)
+// ---------------------------------------------------------------------------
+
+/// A relation type label: 1–256 UTF-8 bytes, no control characters.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RelationType(String);
+
+impl RelationType {
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        validate_simple_text(s, 1, 256)?;
+        Ok(RelationType(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for RelationType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for RelationType {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for RelationType {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RelationType {
+    type Error = NameError;
+    fn try_from(s: String) -> Result<Self, NameError> {
+        validate_simple_text(&s, 1, 256)?;
+        Ok(RelationType(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KeySlotLabel (FORMAT.md §6.4)
+// ---------------------------------------------------------------------------
+
+/// A key-slot label: 1–128 UTF-8 bytes, no control characters.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeySlotLabel(String);
+
+impl KeySlotLabel {
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        validate_simple_text(s, 1, 128)?;
+        Ok(KeySlotLabel(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for KeySlotLabel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for KeySlotLabel {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for KeySlotLabel {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for KeySlotLabel {
+    type Error = NameError;
+    fn try_from(s: String) -> Result<Self, NameError> {
+        validate_simple_text(&s, 1, 128)?;
+        Ok(KeySlotLabel(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CommitMessage (FORMAT.md §6.4)
+// ---------------------------------------------------------------------------
+
+/// A commit message: 0–1,048,576 UTF-8 bytes (empty is allowed).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommitMessage(String);
+
+impl CommitMessage {
+    pub fn new(s: &str) -> Result<Self, NameError> {
+        let bytes = s.len();
+        if bytes > 1_048_576 {
+            return Err(NameError::TooLong {
+                max: 1_048_576,
+                actual: bytes,
+            });
+        }
+        Ok(CommitMessage(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for CommitMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for CommitMessage {
+    type Err = NameError;
+    fn from_str(s: &str) -> Result<Self, NameError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for CommitMessage {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CommitMessage {
+    type Error = NameError;
+    fn try_from(s: String) -> Result<Self, NameError> {
+        let bytes = s.len();
+        if bytes > 1_048_576 {
+            return Err(NameError::TooLong {
+                max: 1_048_576,
+                actual: bytes,
+            });
+        }
+        Ok(CommitMessage(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared validation for simple constrained text types
+// ---------------------------------------------------------------------------
+
+fn validate_simple_text(s: &str, min: usize, max: usize) -> Result<(), NameError> {
+    let bytes = s.as_bytes();
+    if bytes.len() < min {
+        return Err(NameError::EmptyName);
+    }
+    if bytes.len() > max {
+        return Err(NameError::TooLong {
+            max,
+            actual: bytes.len(),
+        });
+    }
+    for (i, &b) in bytes.iter().enumerate() {
+        if b <= 0x1f || b == 0x7f {
+            return Err(NameError::ControlCharacter { position: i });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,18 +1662,18 @@ mod tests {
     #[test]
     fn ref_pattern_matches_exact() {
         let pat = RefPattern::new("refs/heads/main").unwrap();
-        assert!(pat.matches("refs/heads/main"));
-        assert!(!pat.matches("refs/heads/other"));
-        assert!(!pat.matches("refs/heads/main/extra"));
+        assert!(pat.matches(&RefName::new("refs/heads/main").unwrap()));
+        assert!(!pat.matches(&RefName::new("refs/heads/other").unwrap()));
+        assert!(!pat.matches(&RefName::new("refs/heads/main/extra").unwrap()));
     }
 
     #[test]
     fn ref_pattern_matches_namespace() {
         let pat = RefPattern::new("refs/heads/team/**").unwrap();
-        assert!(pat.matches("refs/heads/team/feature"));
-        assert!(pat.matches("refs/heads/team/feature/sub"));
-        assert!(!pat.matches("refs/heads/other"));
-        assert!(!pat.matches("refs/heads/teams"));
+        assert!(pat.matches(&RefName::new("refs/heads/team/feature").unwrap()));
+        assert!(pat.matches(&RefName::new("refs/heads/team/feature/sub").unwrap()));
+        assert!(!pat.matches(&RefName::new("refs/heads/other").unwrap()));
+        assert!(!pat.matches(&RefName::new("refs/heads/teams").unwrap()));
     }
 
     #[test]
@@ -1429,5 +1686,182 @@ mod tests {
         let exact = RefPattern::new("refs/heads/main").unwrap();
         assert!(exact.specificity() > narrow.specificity());
         assert_eq!(exact.specificity(), usize::MAX);
+    }
+
+    // --- Bare prefix rejection ---
+
+    #[test]
+    fn ref_name_rejects_bare_prefix() {
+        assert_eq!(
+            RefName::new("refs/heads/"),
+            Err(NameError::InvalidRefPrefix)
+        );
+        assert_eq!(RefName::new("refs/tags/"), Err(NameError::InvalidRefPrefix));
+    }
+
+    // --- DataType ---
+
+    #[test]
+    fn data_type_valid() {
+        let dt = DataType::new("my_type").unwrap();
+        assert_eq!(dt.as_str(), "my_type");
+        assert_eq!(dt.to_string(), "my_type");
+    }
+
+    #[test]
+    fn data_type_rejects_empty() {
+        assert_eq!(DataType::new(""), Err(NameError::EmptyName));
+    }
+
+    #[test]
+    fn data_type_rejects_control() {
+        assert_eq!(
+            DataType::new("bad\x00type"),
+            Err(NameError::ControlCharacter { position: 3 })
+        );
+    }
+
+    #[test]
+    fn data_type_too_long() {
+        let s = "a".repeat(257);
+        assert_eq!(
+            DataType::new(&s),
+            Err(NameError::TooLong {
+                max: 256,
+                actual: 257
+            })
+        );
+    }
+
+    #[test]
+    fn data_type_accepts_max_length() {
+        let s = "a".repeat(256);
+        DataType::new(&s).expect("256 bytes should be valid");
+    }
+
+    #[test]
+    fn data_type_round_trip_display_parse() {
+        let dt = DataType::new("test").unwrap();
+        let s = dt.to_string();
+        let parsed: DataType = s.parse().unwrap();
+        assert_eq!(parsed, dt);
+    }
+
+    #[test]
+    fn data_type_try_from_string() {
+        let dt = DataType::try_from("hello".to_string()).unwrap();
+        assert_eq!(dt.as_str(), "hello");
+        assert!(DataType::try_from(String::new()).is_err());
+    }
+
+    // --- RelationType ---
+
+    #[test]
+    fn relation_type_valid() {
+        let rt = RelationType::new("related").unwrap();
+        assert_eq!(rt.as_str(), "related");
+    }
+
+    #[test]
+    fn relation_type_rejects_empty() {
+        assert_eq!(RelationType::new(""), Err(NameError::EmptyName));
+    }
+
+    #[test]
+    fn relation_type_rejects_control() {
+        assert_eq!(
+            RelationType::new("bad\x01name"),
+            Err(NameError::ControlCharacter { position: 3 })
+        );
+    }
+
+    // --- KeySlotLabel ---
+
+    #[test]
+    fn key_slot_label_valid() {
+        let ksl = KeySlotLabel::new("primary").unwrap();
+        assert_eq!(ksl.as_str(), "primary");
+    }
+
+    #[test]
+    fn key_slot_label_rejects_empty() {
+        assert_eq!(KeySlotLabel::new(""), Err(NameError::EmptyName));
+    }
+
+    #[test]
+    fn key_slot_label_rejects_control() {
+        assert_eq!(
+            KeySlotLabel::new("bad\x1fkey"),
+            Err(NameError::ControlCharacter { position: 3 })
+        );
+    }
+
+    #[test]
+    fn key_slot_label_too_long() {
+        let s = "a".repeat(129);
+        assert_eq!(
+            KeySlotLabel::new(&s),
+            Err(NameError::TooLong {
+                max: 128,
+                actual: 129
+            })
+        );
+    }
+
+    // --- CommitMessage ---
+
+    #[test]
+    fn commit_message_valid() {
+        let cm = CommitMessage::new("fix: resolve issue").unwrap();
+        assert_eq!(cm.as_str(), "fix: resolve issue");
+    }
+
+    #[test]
+    fn commit_message_allows_empty() {
+        let cm = CommitMessage::new("").unwrap();
+        assert_eq!(cm.as_str(), "");
+    }
+
+    #[test]
+    fn commit_message_too_long() {
+        let s = "a".repeat(1_048_577);
+        assert_eq!(
+            CommitMessage::new(&s),
+            Err(NameError::TooLong {
+                max: 1_048_576,
+                actual: 1_048_577
+            })
+        );
+    }
+
+    #[test]
+    fn commit_message_accepts_max_length() {
+        let s = "a".repeat(1_048_576);
+        CommitMessage::new(&s).expect("max length should be valid");
+    }
+
+    #[test]
+    fn commit_message_try_from_string() {
+        let cm = CommitMessage::try_from("hello".to_string()).unwrap();
+        assert_eq!(cm.as_str(), "hello");
+        assert!(CommitMessage::try_from("a".repeat(1_048_577)).is_err());
+    }
+
+    // --- RefPattern accessors ---
+
+    #[test]
+    fn ref_pattern_as_exact() {
+        let pat = RefPattern::new("refs/heads/main").unwrap();
+        assert!(pat.as_exact().is_some());
+        assert!(pat.as_namespace().is_none());
+        assert_eq!(pat.as_exact().unwrap().as_str(), "refs/heads/main");
+    }
+
+    #[test]
+    fn ref_pattern_as_namespace() {
+        let pat = RefPattern::new("refs/heads/team/**").unwrap();
+        assert!(pat.as_namespace().is_some());
+        assert!(pat.as_exact().is_none());
+        assert_eq!(pat.as_namespace().unwrap(), "refs/heads/team");
     }
 }

@@ -25,7 +25,16 @@
 - Completed: TryFrom<serde_json::Value> for CanonicalValue with I64/U64 distinction, float rejection, depth limit (32), duplicate-key detection. 10 new tests covering null, bool, integer (positive/negative/max/u64), string, array, object, float rejection, nested float, depth exceeded, round-trip.
 - Tests: `cargo test --workspace --all-features` (161 tests)
 - Evidence: JSON null→Null, bool→Bool, integer→I64/U64, string→Text, array→Array, object→Map (sorted keys). Floats rejected with JsonFloatUnsupported.
-- Follow-up: F2.6 audit correction (missing types + encapsulation holes)
+- Follow-up: F2.6 audit correction (missing types, encapsulation, matches signature)
+
+## F2.6 — audit correction: missing types, encapsulation, matches signature
+
+- Status: GREEN
+- Commit: SELF
+- Completed: Added DataType (1..256), RelationType (1..256), KeySlotLabel (1..128), CommitMessage (0..1_048_576). RefPattern::matches() now takes &RefName. RefPattern::as_exact()/as_namespace() accessors added. Bare ref prefix rejected. validate_simple_text helper for constrained text types. 22 new tests (bare prefix, DataType, RelationType, KeySlotLabel, CommitMessage, accessors).
+- Tests: `cargo test --workspace --all-features` (183 tests)
+- Evidence: All FORMAT.md §6.4 types exist with correct bounds; RefPattern constructed by new() cannot be bypassed; matches() uses typed RefName; bare refs/heads/ is rejected.
+- Follow-up: F2.7 (normative limits)
 
 ## F2.3 — audit correction: CanonicalSortedMap dedup + insert_raw visibility
 
@@ -45,10 +54,10 @@
 - Evidence: No external access to unchecked construction; internal future use preserved.
 - Follow-up: F2.2 audit correction (DomainHash Result return type)
 
-## F2.6 — Implement constrained names
+## F2.6 — Implement constrained names (original)
 
 - Status: GREEN
-- Commit: PENDING
+- Commit: 2c40ade
 - Completed: ObjectId, RefName, RefPattern types in ids.rs with full format validation. NameError enum for all rejection modes. Longest-prefix specificity comparison with deterministic tests.
 - Tests: `cargo test --workspace --all-features` (150 tests)
 - Evidence: ObjectId rejects empty/too-long/leading-slash/trailing-slash/empty-segment/dot/dotdot/control/invalid-char; RefName rejects invalid-prefix/lock-suffix/double-slash/at-brace/backslash/non-ascii/dotdot/control/too-long; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering exact > longer-prefix > shorter-prefix.
