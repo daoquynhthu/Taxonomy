@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "filename": "format-v1.json",
+      "length": 6859,
+      "sha256": "1df73acc7573cd2d79c20bc235af94bd149ef43ad5153b4b3ddca9e86d1d3d31",
+      "description": "Complete hex-encoded fixture manifest with all test vectors"
+    },
+    {
+      "filename": "segment-header-v1.bin",
+      "length": 62,
+      "sha256": "62dc7d8245c63f69ddac709d8fc83f1c79334b364c1f2857be571c6b7edae7fe",
+      "description": "ETSEG segment header: magic, version, repo ID, segment ID, flags, record count, CRC"
+    },
+    {
+      "filename": "pack-v1.pack",
+      "length": 229,
+      "sha256": "057b2fc6c58f20bdb1a7b2cc169ed9d622dff4949bf1d890fcff6a6d964d0c3d",
+      "description": "ETPACK sealed pack: header, one EncodedChunk frame, trailer, checksum"
+    },
+    {
+      "filename": "pack-v1.idx",
+      "length": 2199,
+      "sha256": "8eb90e404a13d16deab0d1bcac69f7d15d755f897586e43bdb20774ecd060b65",
+      "description": "External pack index: fanout table, sorted RecordId entries, offsets, CRCs"
+    },
+    {
+      "filename": "store-manifest-v1.cbor",
+      "length": 408,
+      "sha256": "c08de01e7f148612da16333e954af647def5a2db65fdee572c67cf457d5fd53b",
+      "description": "CBOR-encoded StoreManifestPayload with segment and pack descriptors"
+    }
+  ]
+}
