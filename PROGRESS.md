@@ -1,5 +1,14 @@
 # Progress
 
+## F2.2 — Implement DomainHash
+
+- Status: GREEN
+- Commit: 5e69980
+- Completed: domain_hash(tag, payload) implementing the exact length-prefixed SHA-256 construction from FORMAT.md §5.1 using u16::to_le_bytes() and u64::to_le_bytes() (no usize in preimage).
+- Tests: `cargo test --workspace --all-features` (43 tests)
+- Evidence: 13 empty-payload domain vectors match FORMAT.md §21.2 byte-for-byte; different tag/payload changes result; long tag (65535 bytes) and large payload (100k) handled correctly.
+- Follow-up: F2.3 (deterministic CBOR encoder)
+
 ## F2.1 — Implement primitive fixed-width types
 
 - Status: GREEN
