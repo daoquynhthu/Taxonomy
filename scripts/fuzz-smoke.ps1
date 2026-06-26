@@ -67,11 +67,51 @@ if (-not $cargoFuzzCheck) {
     exit 0
 }
 
-# ── LLVM/ASan setup (Windows) ────────────────────────────────────────────
-$llvmLib = "C:\Program Files\LLVM\lib\clang\22\lib\windows"
-if (Test-Path -LiteralPath $llvmLib) {
-    $env:LIB = "$llvmLib;$env:LIB"
-    $env:PATH = "$llvmLib;$env:PATH"
+# ── LLVM/ASan path detection (Windows) ────────────────────────────────────
+# The ASan runtime library (clang_rt.asan_dynamic_runtime_thunk-x86_64.lib)
+# must be reachable via LIB (for the MSVC linker), and the corresponding DLL
+# must be reachable via PATH (for runtime loading).  Detection order:
+#   1. Already present in LIB (system/user env var).
+#   2. Probe PATH for a directory containing the ASan DLL.
+#   3. Crawl C:\Program Files\LLVM\lib\clang\*\lib\windows\ (auto-detect).
+if ($PSVersionTable.PSEdition -eq "Desktop" -or $IsWindows) {
+    $asanLib = "clang_rt.asan_dynamic_runtime_thunk-x86_64.lib"
+    $asanDll = "clang_rt.asan_dynamic-x86_64.dll"
+
+    # Check 1: already in LIB
+    $libFound = $env:LIB -split ";" | ForEach-Object { Test-Path (Join-Path $_ $asanLib) } | Where-Object { $_ } | Select-Object -First 1
+
+    # Check 2: probe PATH for DLL
+    if (-not $libFound) {
+        $dllDir = $env:PATH -split ";" | ForEach-Object { $_ } | Where-Object { Test-Path (Join-Path $_ $asanDll) } | Select-Object -First 1
+        if ($dllDir) {
+            $env:LIB = "$dllDir;$env:LIB"
+            $libFound = $true
+        }
+    }
+
+    # Check 3: auto-detect under LLVM install
+    if (-not $libFound) {
+        $llvmRoot = "C:\Program Files\LLVM"
+        if (Test-Path -LiteralPath $llvmRoot) {
+            $clangDirs = Get-ChildItem "$llvmRoot\lib\clang\*\lib\windows" -Directory -ErrorAction SilentlyContinue
+            # Sort by version descending — handle bare integer dir names like "22"
+            $clangDirs = $clangDirs | Sort-Object { try { [version]$_.Parent.Name } catch { [version]"0.0" } } -Descending
+            foreach ($dir in $clangDirs) {
+                if (Test-Path (Join-Path $dir.FullName $asanLib)) {
+                    $env:LIB = "$($dir.FullName);$env:LIB"
+                    $env:PATH = "$($dir.FullName);$env:PATH"
+                    $libFound = $true
+                    break
+                }
+            }
+        }
+    }
+
+    if (-not $libFound) {
+        Write-Host "WARNING: $asanLib not found.  Fuzz builds will fail on Windows if ASan is needed." -ForegroundColor Yellow
+        Write-Host "  Install LLVM (https://llvm.org) or add the ASan lib directory to LIB and PATH." -ForegroundColor Yellow
+    }
 }
 
 # ── Common fuzz arguments ────────────────────────────────────────────────
