@@ -8,7 +8,17 @@
 - Tests: 366 unit + 1 integration (`cargo test --workspace --all-features`); 18 new regression tests — 7 field_int direct (U64 zero/positive/i64::max/overflow/I64 negative/reject type/reject missing), 2 encode canonicalization (unsorted keys sorted, duplicate keys rejected), 9 CBOR roundtrip across 3 additional payload types (PolicyRecordPayload, RepositoryGenesisPayload, KeyringRecordPayload at created_at_ns = 0/42/-1) — CBOR byte roundtrip (created_at_ns = 0, 42, -1), key_slot_rejects_missing_password_kdf_key, signed_record_encode_rejects_non_map_payload; wrapped_secret negative tests expanded to 0/47/49 bytes.
 - Evidence: field-number tests for all 8 types; sorted-unique rejection for all 6 array fields; KeyId mismatch rejected; 3 negative wrapped_secret length tests; CBOR roundtrip catches field_int U64→i64 conversion; encode rejects non-map and duplicate payload keys; KeySlot rejects missing optional field.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
-- Follow-up: F3.3 Record-layer encode/decode
+- Follow-up: F3.4 Implement F3.2/F3.3 record integration (SMT indexing, mutable store, ref updates)
+
+## F3.3 — Implement content payload schemas
+
+- Status: GREEN
+- Commit: _pending_
+- Completed: All 6 content payload types — CodecDescriptor (§8.3), EncryptionDescriptor (§8.4), ChunkingDescriptor (§7.4), ContentManifestChunkEntry (§9.10), EncodedChunkPayload (§9.9, unsigned type 4), ContentManifestPayload (§9.12, unsigned type 5) — with `new()` constructors validating constraints per FORMAT.md, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with `reject_unknown_keys()` in every impl. `compute_content_root()` (§9.11) implements hash-tree construction (ContentLeaf/ContentNode/ContentEmpty domain tags). `EncodedChunkPayload::record_id()` and `ContentManifestPayload::record_id()` produce domain-hash record IDs.
+- Tests: 413 unit + 1 integration (`cargo test --workspace --all-features`); 47 new F3.3 tests — roundtrip × 6 (all types), field-number fixture × 6, `rejects_unknown_field` × 6, `rejects_not_a_map` × 3, validation rejection per-type (bad algorithm/version/level/profile/format_version/plaintext_length/encoded_bytes/total_size/content_root), `compute_content_root` (empty/single/multi leaf), `record_id` distinctness × 2. CodecDescriptor: algorithm 0 vs 1 field encoding; EncryptionDescriptor: algorithm=1 only, key_epoch>0, nonce[24], aad_profile=1; ChunkingDescriptor: `new_v1()` defaults; EncodedChunkPayload: plaintext_length 1..8388608, codec none+null encryption roundtrip; ContentManifestPayload: total_size validated vs chunk sum, content_root recomputed.
+- Evidence: All field-number tests confirm sorted 0..N encodes. CBOR `From<&T>`→`TryFrom<Value>` roundtrip byte fidelity. Validation rejections at exact boundaries. Content root: empty→ContentEmpty, single leaf matches ContentLeaf domain hash, two leaves produce ContentNode.
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
+- Follow-up: F3.4 Implement F3.2/F3.3 record integration (SMT indexing, mutable store, ref updates)
 
 ## F3.1 — Implement SignedRecord envelope
 

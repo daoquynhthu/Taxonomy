@@ -1,6 +1,8 @@
 use crate::canonical::{CanonicalDecoder, DecodeError, Value};
-use crate::domain::domain_hash;
-use crate::ids::{KeyId, KeySlotLabel, RecordId, RefPattern, Signature};
+use crate::domain::{DomainHashError, domain_hash};
+use crate::ids::{
+    ContentManifestId, EncodedChunkRecordId, KeyId, KeySlotLabel, RecordId, RefPattern, Signature,
+};
 use crate::limits::FormatLimits;
 
 // ---------------------------------------------------------------------------
@@ -1703,6 +1705,715 @@ impl SignedRecord<Value> {
             signer_key_id,
             signature,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CodecDescriptor (FORMAT.md §8.3)
+// ---------------------------------------------------------------------------
+
+/// Compression applied to chunk plaintext before optional encryption.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodecDescriptor {
+    algorithm: u64,
+    level: Option<i64>,
+    profile: Option<u64>,
+}
+
+impl CodecDescriptor {
+    pub fn new(
+        algorithm: u64,
+        level: Option<i64>,
+        profile: Option<u64>,
+    ) -> Result<Self, PayloadError> {
+        match algorithm {
+            0 => {
+                // No compression: only algorithm field, level and profile omitted
+                if level.is_some() {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 1,
+                        detail: "level must be absent for algorithm 0".into(),
+                    });
+                }
+                if profile.is_some() {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 2,
+                        detail: "profile must be absent for algorithm 0".into(),
+                    });
+                }
+            }
+            1 => {
+                // zstd: level and profile required
+                let lvl = level.ok_or(PayloadError::MissingField(1))?;
+                if !(-5..=22).contains(&lvl) {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 1,
+                        detail: format!("zstd level {lvl} out of range -5..22"),
+                    });
+                }
+                if profile != Some(1) {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 2,
+                        detail: "only profile 1 supported".into(),
+                    });
+                }
+            }
+            _ => {
+                return Err(PayloadError::UnsupportedValue {
+                    key: 0,
+                    detail: format!("unknown codec algorithm {algorithm}"),
+                });
+            }
+        }
+        Ok(Self {
+            algorithm,
+            level,
+            profile,
+        })
+    }
+
+    pub fn algorithm(&self) -> u64 {
+        self.algorithm
+    }
+    pub fn level(&self) -> Option<i64> {
+        self.level
+    }
+    pub fn profile(&self) -> Option<u64> {
+        self.profile
+    }
+}
+
+impl TryFrom<Value> for CodecDescriptor {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 3)?;
+        let fields = parse_fields(pairs, 3);
+        let algorithm = field_uint(&fields, 0)?;
+        let level = match algorithm {
+            0 => None,
+            _ => Some(field_int(&fields, 1)?),
+        };
+        let profile = match algorithm {
+            0 => None,
+            _ => Some(field_uint(&fields, 2)?),
+        };
+        Self::new(algorithm, level, profile)
+    }
+}
+
+impl From<&CodecDescriptor> for Value {
+    fn from(c: &CodecDescriptor) -> Self {
+        match c.algorithm {
+            0 => Value::Map(vec![(Value::U64(0), Value::U64(0))]),
+            _ => Value::Map(vec![
+                (Value::U64(0), Value::U64(c.algorithm)),
+                (Value::U64(1), Value::I64(c.level.unwrap_or(0))),
+                (Value::U64(2), Value::U64(c.profile.unwrap_or(0))),
+            ]),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EncryptionDescriptor (FORMAT.md §8.4)
+// ---------------------------------------------------------------------------
+
+/// Encryption applied to encoded chunk bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncryptionDescriptor {
+    algorithm: u64,
+    key_epoch: u64,
+    nonce: [u8; 24],
+    aad_profile: u64,
+}
+
+impl EncryptionDescriptor {
+    pub fn new(
+        algorithm: u64,
+        key_epoch: u64,
+        nonce: [u8; 24],
+        aad_profile: u64,
+    ) -> Result<Self, PayloadError> {
+        if algorithm != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unknown encryption algorithm {algorithm}"),
+            });
+        }
+        if key_epoch == 0 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 1,
+                detail: "key_epoch must be nonzero".into(),
+            });
+        }
+        if aad_profile != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: "only aad_profile 1 supported".into(),
+            });
+        }
+        Ok(Self {
+            algorithm,
+            key_epoch,
+            nonce,
+            aad_profile,
+        })
+    }
+
+    pub fn algorithm(&self) -> u64 {
+        self.algorithm
+    }
+    pub fn key_epoch(&self) -> u64 {
+        self.key_epoch
+    }
+    pub fn nonce(&self) -> &[u8; 24] {
+        &self.nonce
+    }
+    pub fn aad_profile(&self) -> u64 {
+        self.aad_profile
+    }
+}
+
+impl TryFrom<Value> for EncryptionDescriptor {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 4)?;
+        let fields = parse_fields(pairs, 4);
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_uint(&fields, 1)?,
+            field_bytes_exact::<24>(&fields, 2)?,
+            field_uint(&fields, 3)?,
+        )
+    }
+}
+
+impl From<&EncryptionDescriptor> for Value {
+    fn from(e: &EncryptionDescriptor) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(e.algorithm)),
+            (Value::U64(1), Value::U64(e.key_epoch)),
+            (Value::U64(2), Value::Bytes(e.nonce.to_vec())),
+            (Value::U64(3), Value::U64(e.aad_profile)),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChunkingDescriptor (FORMAT.md §7.4)
+// ---------------------------------------------------------------------------
+
+/// Fixed v1 chunking parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChunkingDescriptor {
+    algorithm: u64,
+    version: u64,
+    minimum_size: u64,
+    average_size: u64,
+    maximum_size: u64,
+    normalization: u64,
+    gear_table_id: [u8; 32],
+}
+
+impl ChunkingDescriptor {
+    pub fn new_v1(gear_table_id: [u8; 32]) -> Self {
+        Self {
+            algorithm: 1,
+            version: 1,
+            minimum_size: 1_048_576,
+            average_size: 4_194_304,
+            maximum_size: 8_388_608,
+            normalization: 2,
+            gear_table_id,
+        }
+    }
+
+    pub fn new(
+        algorithm: u64,
+        version: u64,
+        minimum_size: u64,
+        average_size: u64,
+        maximum_size: u64,
+        normalization: u64,
+        gear_table_id: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if algorithm != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unknown chunking algorithm {algorithm}"),
+            });
+        }
+        if version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 1,
+                detail: format!("unknown chunking version {version}"),
+            });
+        }
+        Ok(Self {
+            algorithm,
+            version,
+            minimum_size,
+            average_size,
+            maximum_size,
+            normalization,
+            gear_table_id,
+        })
+    }
+
+    pub fn algorithm(&self) -> u64 {
+        self.algorithm
+    }
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    pub fn minimum_size(&self) -> u64 {
+        self.minimum_size
+    }
+    pub fn average_size(&self) -> u64 {
+        self.average_size
+    }
+    pub fn maximum_size(&self) -> u64 {
+        self.maximum_size
+    }
+    pub fn normalization(&self) -> u64 {
+        self.normalization
+    }
+    pub fn gear_table_id(&self) -> &[u8; 32] {
+        &self.gear_table_id
+    }
+}
+
+impl TryFrom<Value> for ChunkingDescriptor {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 7)?;
+        let fields = parse_fields(pairs, 7);
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_uint(&fields, 1)?,
+            field_uint(&fields, 2)?,
+            field_uint(&fields, 3)?,
+            field_uint(&fields, 4)?,
+            field_uint(&fields, 5)?,
+            field_bytes_exact::<32>(&fields, 6)?,
+        )
+    }
+}
+
+impl From<&ChunkingDescriptor> for Value {
+    fn from(c: &ChunkingDescriptor) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(c.algorithm)),
+            (Value::U64(1), Value::U64(c.version)),
+            (Value::U64(2), Value::U64(c.minimum_size)),
+            (Value::U64(3), Value::U64(c.average_size)),
+            (Value::U64(4), Value::U64(c.maximum_size)),
+            (Value::U64(5), Value::U64(c.normalization)),
+            (Value::U64(6), Value::Bytes(c.gear_table_id.to_vec())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ContentManifestChunkEntry (FORMAT.md §9.10)
+// ---------------------------------------------------------------------------
+
+/// A single chunk entry within a ContentManifestPayload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentManifestChunkEntry {
+    chunk_id: [u8; 32],
+    plaintext_length: u64,
+}
+
+impl ContentManifestChunkEntry {
+    pub fn new(chunk_id: [u8; 32], plaintext_length: u64) -> Self {
+        Self {
+            chunk_id,
+            plaintext_length,
+        }
+    }
+
+    pub fn chunk_id(&self) -> &[u8; 32] {
+        &self.chunk_id
+    }
+    pub fn plaintext_length(&self) -> u64 {
+        self.plaintext_length
+    }
+}
+
+impl TryFrom<Value> for ContentManifestChunkEntry {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 2)?;
+        let fields = parse_fields(pairs, 2);
+        Ok(Self::new(
+            field_bytes_exact::<32>(&fields, 0)?,
+            field_uint(&fields, 1)?,
+        ))
+    }
+}
+
+impl From<&ContentManifestChunkEntry> for Value {
+    fn from(e: &ContentManifestChunkEntry) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::Bytes(e.chunk_id.to_vec())),
+            (Value::U64(1), Value::U64(e.plaintext_length)),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EncodedChunkPayload (FORMAT.md §9.9 — record type 4, unsigned)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodedChunkPayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    chunk_id: [u8; 32],
+    plaintext_length: u64,
+    codec: CodecDescriptor,
+    encryption: Option<EncryptionDescriptor>,
+    encoded_bytes: Vec<u8>,
+}
+
+impl EncodedChunkPayload {
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        chunk_id: [u8; 32],
+        plaintext_length: u64,
+        codec: CodecDescriptor,
+        encryption: Option<EncryptionDescriptor>,
+        encoded_bytes: Vec<u8>,
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        if !(1..=8_388_608).contains(&plaintext_length) {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: format!("plaintext_length {plaintext_length} out of range 1..8388608"),
+            });
+        }
+        if encoded_bytes.is_empty() {
+            return Err(PayloadError::EmptyArray { key: 6 });
+        }
+        // For codec none and encryption null, encoded_bytes == raw chunk bytes
+        // (no structural constraint beyond non-empty)
+        Ok(Self {
+            format_version,
+            repository_id,
+            chunk_id,
+            plaintext_length,
+            codec,
+            encryption,
+            encoded_bytes,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+    pub fn chunk_id(&self) -> &[u8; 32] {
+        &self.chunk_id
+    }
+    pub fn plaintext_length(&self) -> u64 {
+        self.plaintext_length
+    }
+    pub fn codec(&self) -> &CodecDescriptor {
+        &self.codec
+    }
+    pub fn encryption(&self) -> Option<&EncryptionDescriptor> {
+        self.encryption.as_ref()
+    }
+    pub fn encoded_bytes(&self) -> &[u8] {
+        &self.encoded_bytes
+    }
+
+    /// Compute the record ID (DomainHash of deterministic CBOR payload).
+    pub fn record_id(&self) -> Result<EncodedChunkRecordId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:EncodedChunk:v1", &cbor)?;
+        Ok(EncodedChunkRecordId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for EncodedChunkPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 7)?;
+        let fields = parse_fields(pairs, 7);
+        let codec = match fields.get(4).and_then(|f| *f) {
+            Some(Value::Map(pairs)) => CodecDescriptor::try_from(Value::Map(pairs.clone()))?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 4,
+                    expected: "map",
+                });
+            }
+            None => return Err(PayloadError::MissingField(4)),
+        };
+        let encryption = match fields.get(5).and_then(|f| *f) {
+            Some(Value::Map(pairs)) => {
+                Some(EncryptionDescriptor::try_from(Value::Map(pairs.clone()))?)
+            }
+            Some(Value::Null) => None,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 5,
+                    expected: "null or map",
+                });
+            }
+            None => return Err(PayloadError::MissingField(5)),
+        };
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            field_bytes_exact::<32>(&fields, 2)?,
+            field_uint(&fields, 3)?,
+            codec,
+            encryption,
+            field_bytes(&fields, 6)?,
+        )
+    }
+}
+
+impl From<&EncodedChunkPayload> for Value {
+    fn from(p: &EncodedChunkPayload) -> Self {
+        let enc: Value = match &p.encryption {
+            Some(e) => Value::from(e),
+            None => Value::Null,
+        };
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::Bytes(p.chunk_id.to_vec())),
+            (Value::U64(3), Value::U64(p.plaintext_length)),
+            (Value::U64(4), Value::from(&p.codec)),
+            (Value::U64(5), enc),
+            (Value::U64(6), Value::Bytes(p.encoded_bytes.clone())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Content root computation (FORMAT.md §9.11)
+// ---------------------------------------------------------------------------
+
+pub fn compute_content_root(
+    chunks: &[ContentManifestChunkEntry],
+) -> Result<[u8; 32], DomainHashError> {
+    if chunks.is_empty() {
+        return domain_hash("EternalCore:ContentEmpty:v1", &[]);
+    }
+    let mut level: Vec<[u8; 32]> = Vec::with_capacity(chunks.len());
+    for entry in chunks {
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(&entry.chunk_id);
+        preimage.extend_from_slice(&entry.plaintext_length.to_le_bytes());
+        let leaf = domain_hash("EternalCore:ContentLeaf:v1", &preimage)?;
+        level.push(leaf);
+    }
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            let left = &pair[0];
+            let right = if pair.len() == 2 { &pair[1] } else { &pair[0] };
+            let mut preimage = Vec::with_capacity(64);
+            preimage.extend_from_slice(left);
+            preimage.extend_from_slice(right);
+            let parent = domain_hash("EternalCore:ContentNode:v1", &preimage)?;
+            next.push(parent);
+        }
+        level = next;
+    }
+    Ok(level[0])
+}
+
+// ---------------------------------------------------------------------------
+// ContentManifestPayload (FORMAT.md §9.12 — record type 5, unsigned)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentManifestPayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    chunking_scheme: ChunkingDescriptor,
+    total_size: u64,
+    chunks: Vec<ContentManifestChunkEntry>,
+    content_root: [u8; 32],
+}
+
+impl ContentManifestPayload {
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        chunking_scheme: ChunkingDescriptor,
+        total_size: u64,
+        chunks: Vec<ContentManifestChunkEntry>,
+        content_root: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        let computed_total: u64 = chunks.iter().map(|e| e.plaintext_length).sum();
+        if total_size != computed_total {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: format!(
+                    "total_size {total_size} does not match sum of chunk lengths {computed_total}"
+                ),
+            });
+        }
+        let computed_root =
+            compute_content_root(&chunks).map_err(|_| PayloadError::UnsupportedValue {
+                key: 5,
+                detail: "content_root computation failed".into(),
+            })?;
+        if content_root != computed_root {
+            return Err(PayloadError::UnsupportedValue {
+                key: 5,
+                detail: "content_root does not match recomputed root".into(),
+            });
+        }
+        Ok(Self {
+            format_version,
+            repository_id,
+            chunking_scheme,
+            total_size,
+            chunks,
+            content_root,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+    pub fn chunking_scheme(&self) -> &ChunkingDescriptor {
+        &self.chunking_scheme
+    }
+    pub fn total_size(&self) -> u64 {
+        self.total_size
+    }
+    pub fn chunks(&self) -> &[ContentManifestChunkEntry] {
+        &self.chunks
+    }
+    pub fn content_root(&self) -> &[u8; 32] {
+        &self.content_root
+    }
+
+    /// Compute the record ID (DomainHash of deterministic CBOR payload).
+    pub fn record_id(&self) -> Result<ContentManifestId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:ContentManifest:v1", &cbor)?;
+        Ok(ContentManifestId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for ContentManifestPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 6)?;
+        let fields = parse_fields(pairs, 6);
+        let chunking_scheme = match fields.get(2).and_then(|f| *f) {
+            Some(Value::Map(pairs)) => ChunkingDescriptor::try_from(Value::Map(pairs.clone()))?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 2,
+                    expected: "map",
+                });
+            }
+            None => return Err(PayloadError::MissingField(2)),
+        };
+        let chunks = match fields.get(4).and_then(|f| *f) {
+            Some(Value::Array(items)) => {
+                let mut entries = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Map(pairs) => {
+                            entries.push(ContentManifestChunkEntry::try_from(Value::Map(
+                                pairs.clone(),
+                            ))?);
+                        }
+                        _ => {
+                            return Err(PayloadError::FieldType {
+                                key: 4,
+                                expected: "array of maps",
+                            });
+                        }
+                    }
+                }
+                entries
+            }
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 4,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(4)),
+        };
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            chunking_scheme,
+            field_uint(&fields, 3)?,
+            chunks,
+            field_bytes_exact::<32>(&fields, 5)?,
+        )
+    }
+}
+
+impl From<&ContentManifestPayload> for Value {
+    fn from(p: &ContentManifestPayload) -> Self {
+        let chunks: Vec<Value> = p.chunks.iter().map(Value::from).collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::from(&p.chunking_scheme)),
+            (Value::U64(3), Value::U64(p.total_size)),
+            (Value::U64(4), Value::Array(chunks)),
+            (Value::U64(5), Value::Bytes(p.content_root.to_vec())),
+        ])
     }
 }
 
@@ -3517,5 +4228,560 @@ mod tests {
         ]);
         let err = KeyringRecordPayload::try_from(value).unwrap_err();
         assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    // -----------------------------------------------------------------------
+    // CodecDescriptor tests
+    // -----------------------------------------------------------------------
+
+    fn make_codec_none() -> CodecDescriptor {
+        CodecDescriptor::new(0, None, None).unwrap()
+    }
+
+    fn make_codec_zstd() -> CodecDescriptor {
+        CodecDescriptor::new(1, Some(3), Some(1)).unwrap()
+    }
+
+    #[test]
+    fn codec_descriptor_none_roundtrip() {
+        let c = make_codec_none();
+        let decoded = CodecDescriptor::try_from(Value::from(&c)).unwrap();
+        assert_eq!(decoded, c);
+    }
+
+    #[test]
+    fn codec_descriptor_zstd_roundtrip() {
+        let c = make_codec_zstd();
+        let decoded = CodecDescriptor::try_from(Value::from(&c)).unwrap();
+        assert_eq!(decoded, c);
+    }
+
+    #[test]
+    fn codec_descriptor_rejects_unknown_algorithm() {
+        let err = CodecDescriptor::new(99, None, None).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn codec_descriptor_rejects_level_for_none() {
+        let err = CodecDescriptor::new(0, Some(3), None).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn codec_descriptor_rejects_bad_level() {
+        let err = CodecDescriptor::new(1, Some(99), Some(1)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn codec_descriptor_rejects_bad_profile() {
+        let err = CodecDescriptor::new(1, Some(3), Some(99)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 2, .. }));
+    }
+
+    #[test]
+    fn codec_descriptor_rejects_not_a_map() {
+        let err = CodecDescriptor::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    #[test]
+    fn codec_descriptor_field_numbers_none() {
+        let pairs = match Value::from(&make_codec_none()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, Value::U64(0));
+    }
+
+    #[test]
+    fn codec_descriptor_field_numbers_zstd() {
+        let pairs = match Value::from(&make_codec_zstd()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0].0, Value::U64(0));
+        assert_eq!(pairs[1].0, Value::U64(1));
+        assert_eq!(pairs[2].0, Value::U64(2));
+    }
+
+    #[test]
+    fn codec_descriptor_rejects_unknown_field() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::U64(0)),
+            (Value::U64(99), Value::U64(0)),
+        ]);
+        let err = CodecDescriptor::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    // -----------------------------------------------------------------------
+    // EncryptionDescriptor tests
+    // -----------------------------------------------------------------------
+
+    fn make_encryption() -> EncryptionDescriptor {
+        EncryptionDescriptor::new(1, 7, [0x10u8; 24], 1).unwrap()
+    }
+
+    #[test]
+    fn encryption_descriptor_roundtrip() {
+        let e = make_encryption();
+        let decoded = EncryptionDescriptor::try_from(Value::from(&e)).unwrap();
+        assert_eq!(decoded, e);
+    }
+
+    #[test]
+    fn encryption_descriptor_rejects_unknown_algorithm() {
+        let err = EncryptionDescriptor::new(99, 7, [0x10u8; 24], 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn encryption_descriptor_rejects_zero_key_epoch() {
+        let err = EncryptionDescriptor::new(1, 0, [0x10u8; 24], 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn encryption_descriptor_rejects_bad_aad_profile() {
+        let err = EncryptionDescriptor::new(1, 7, [0x10u8; 24], 99).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn encryption_descriptor_field_numbers() {
+        let pairs = match Value::from(&make_encryption()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 4);
+        assert_eq!(pairs[0].0, Value::U64(0));
+        assert_eq!(pairs[1].0, Value::U64(1));
+        assert_eq!(pairs[2].0, Value::U64(2));
+        assert_eq!(pairs[3].0, Value::U64(3));
+    }
+
+    #[test]
+    fn encryption_descriptor_rejects_unknown_field() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::U64(7)),
+            (Value::U64(2), Value::Bytes([0x10u8; 24].to_vec())),
+            (Value::U64(3), Value::U64(1)),
+            (Value::U64(99), Value::U64(0)),
+        ]);
+        let err = EncryptionDescriptor::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    // -----------------------------------------------------------------------
+    // ChunkingDescriptor tests
+    // -----------------------------------------------------------------------
+
+    fn make_chunking_v1() -> ChunkingDescriptor {
+        ChunkingDescriptor::new_v1([0xABu8; 32])
+    }
+
+    #[test]
+    fn chunking_descriptor_roundtrip() {
+        let c = make_chunking_v1();
+        let decoded = ChunkingDescriptor::try_from(Value::from(&c)).unwrap();
+        assert_eq!(decoded, c);
+    }
+
+    #[test]
+    fn chunking_descriptor_new_v1_matches_defaults() {
+        let c = make_chunking_v1();
+        assert_eq!(c.algorithm(), 1);
+        assert_eq!(c.version(), 1);
+        assert_eq!(c.minimum_size(), 1_048_576);
+        assert_eq!(c.average_size(), 4_194_304);
+        assert_eq!(c.maximum_size(), 8_388_608);
+        assert_eq!(c.normalization(), 2);
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_unknown_algorithm() {
+        let err =
+            ChunkingDescriptor::new(99, 1, 1048576, 4194304, 8388608, 2, [0xABu8; 32]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_unknown_version() {
+        let err =
+            ChunkingDescriptor::new(1, 99, 1048576, 4194304, 8388608, 2, [0xABu8; 32]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn chunking_descriptor_field_numbers() {
+        let pairs = match Value::from(&make_chunking_v1()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 7);
+        for i in 0..7 {
+            assert_eq!(pairs[i as usize].0, Value::U64(i));
+        }
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_unknown_field() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::U64(1)),
+            (Value::U64(2), Value::U64(1048576)),
+            (Value::U64(3), Value::U64(4194304)),
+            (Value::U64(4), Value::U64(8388608)),
+            (Value::U64(5), Value::U64(2)),
+            (Value::U64(6), Value::Bytes([0xABu8; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ]);
+        let err = ChunkingDescriptor::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    // -----------------------------------------------------------------------
+    // ContentManifestChunkEntry tests
+    // -----------------------------------------------------------------------
+
+    fn make_chunk_entry() -> ContentManifestChunkEntry {
+        ContentManifestChunkEntry::new([0xCCu8; 32], 65536)
+    }
+
+    #[test]
+    fn chunk_entry_roundtrip() {
+        let e = make_chunk_entry();
+        let decoded = ContentManifestChunkEntry::try_from(Value::from(&e)).unwrap();
+        assert_eq!(decoded, e);
+    }
+
+    #[test]
+    fn chunk_entry_field_numbers() {
+        let pairs = match Value::from(&make_chunk_entry()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].0, Value::U64(0));
+        assert_eq!(pairs[1].0, Value::U64(1));
+    }
+
+    #[test]
+    fn chunk_entry_rejects_unknown_field() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Bytes([0xCCu8; 32].to_vec())),
+            (Value::U64(1), Value::U64(65536)),
+            (Value::U64(99), Value::U64(0)),
+        ]);
+        let err = ContentManifestChunkEntry::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    // -----------------------------------------------------------------------
+    // EncodedChunkPayload tests
+    // -----------------------------------------------------------------------
+
+    fn make_encoded_chunk() -> EncodedChunkPayload {
+        EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            1024,
+            make_codec_none(),
+            None,
+            vec![0xAAu8; 1024],
+        )
+        .unwrap()
+    }
+
+    fn make_encoded_chunk_encrypted() -> EncodedChunkPayload {
+        EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            1024,
+            make_codec_zstd(),
+            Some(make_encryption()),
+            vec![0xBBu8; 1024],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn encoded_chunk_roundtrip() {
+        let p = make_encoded_chunk();
+        let decoded = EncodedChunkPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn encoded_chunk_roundtrip_with_encryption() {
+        let p = make_encoded_chunk_encrypted();
+        let decoded = EncodedChunkPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_bad_format_version() {
+        let err = EncodedChunkPayload::new(
+            99,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            1024,
+            make_codec_none(),
+            None,
+            vec![0xAAu8; 1024],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_empty_encoded_bytes() {
+        let err = EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            1024,
+            make_codec_none(),
+            None,
+            vec![],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::EmptyArray { key: 6 }));
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_zero_plaintext_length() {
+        let err = EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            0,
+            make_codec_none(),
+            None,
+            vec![0xAAu8; 1024],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_oversized_plaintext_length() {
+        let err = EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            8_388_609,
+            make_codec_none(),
+            None,
+            vec![0xAAu8; 1024],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn encoded_chunk_field_numbers() {
+        let pairs = match Value::from(&make_encoded_chunk()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 7);
+        for i in 0..7 {
+            assert_eq!(pairs[i as usize].0, Value::U64(i));
+        }
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_unknown_field() {
+        let p = make_encoded_chunk();
+        let mut pairs = match Value::from(&p) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        pairs.push((Value::U64(99), Value::U64(0)));
+        let value = Value::Map(pairs);
+        let err = EncodedChunkPayload::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_not_a_map() {
+        let err = EncodedChunkPayload::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    #[test]
+    fn encoded_chunk_record_id_distinct_from_chunk_id() {
+        let p = make_encoded_chunk();
+        let rid = p.record_id().expect("record_id");
+        // RecordId is 32 bytes, distinct from ChunkId in derivation
+        assert_ne!(rid.as_bytes(), p.chunk_id());
+    }
+
+    // -----------------------------------------------------------------------
+    // Content root computation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compute_content_root_empty() {
+        let root = compute_content_root(&[]).unwrap();
+        let expected = domain_hash("EternalCore:ContentEmpty:v1", &[]).unwrap();
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn compute_content_root_single_leaf() {
+        let entry = ContentManifestChunkEntry::new([0xCCu8; 32], 65536);
+        let root = compute_content_root(&[entry]).unwrap();
+        // Single leaf: leaf is the root
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(&[0xCCu8; 32]);
+        preimage.extend_from_slice(&65536u64.to_le_bytes());
+        let expected = domain_hash("EternalCore:ContentLeaf:v1", &preimage).unwrap();
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn compute_content_root_two_leaves() {
+        let e1 = ContentManifestChunkEntry::new([0xCCu8; 32], 65536);
+        let e2 = ContentManifestChunkEntry::new([0xDDu8; 32], 131072);
+        let root = compute_content_root(&[e1, e2]).unwrap();
+        // Two leaves produce a parent node
+        let mut preimage1 = Vec::with_capacity(40);
+        preimage1.extend_from_slice(&[0xCCu8; 32]);
+        preimage1.extend_from_slice(&65536u64.to_le_bytes());
+        let leaf1 = domain_hash("EternalCore:ContentLeaf:v1", &preimage1).unwrap();
+        let mut preimage2 = Vec::with_capacity(40);
+        preimage2.extend_from_slice(&[0xDDu8; 32]);
+        preimage2.extend_from_slice(&131072u64.to_le_bytes());
+        let leaf2 = domain_hash("EternalCore:ContentLeaf:v1", &preimage2).unwrap();
+        let mut parent_preimage = Vec::with_capacity(64);
+        parent_preimage.extend_from_slice(&leaf1);
+        parent_preimage.extend_from_slice(&leaf2);
+        let expected = domain_hash("EternalCore:ContentNode:v1", &parent_preimage).unwrap();
+        assert_eq!(root, expected);
+    }
+
+    // -----------------------------------------------------------------------
+    // ContentManifestPayload tests
+    // -----------------------------------------------------------------------
+
+    fn make_manifest_empty() -> ContentManifestPayload {
+        let root = compute_content_root(&[]).unwrap();
+        ContentManifestPayload::new(1, [0x01u8; 16], make_chunking_v1(), 0, vec![], root).unwrap()
+    }
+
+    fn make_manifest_with_chunks() -> ContentManifestPayload {
+        let chunks = vec![
+            ContentManifestChunkEntry::new([0xCCu8; 32], 65536),
+            ContentManifestChunkEntry::new([0xDDu8; 32], 131072),
+        ];
+        let root = compute_content_root(&chunks).unwrap();
+        ContentManifestPayload::new(
+            1,
+            [0x01u8; 16],
+            make_chunking_v1(),
+            65536 + 131072,
+            chunks,
+            root,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn content_manifest_empty_roundtrip() {
+        let p = make_manifest_empty();
+        let decoded = ContentManifestPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn content_manifest_with_chunks_roundtrip() {
+        let p = make_manifest_with_chunks();
+        let decoded = ContentManifestPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn content_manifest_rejects_bad_format_version() {
+        let root = compute_content_root(&[]).unwrap();
+        let err =
+            ContentManifestPayload::new(99, [0x01u8; 16], make_chunking_v1(), 0, vec![], root)
+                .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn content_manifest_rejects_bad_total_size() {
+        let err = ContentManifestPayload::new(
+            1,
+            [0x01u8; 16],
+            make_chunking_v1(),
+            42,
+            vec![],
+            compute_content_root(&[]).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn content_manifest_rejects_bad_content_root() {
+        let chunks = vec![ContentManifestChunkEntry::new([0xCCu8; 32], 65536)];
+        let err = ContentManifestPayload::new(
+            1,
+            [0x01u8; 16],
+            make_chunking_v1(),
+            65536,
+            chunks,
+            [0x00u8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
+    }
+
+    #[test]
+    fn content_manifest_field_numbers() {
+        let pairs = match Value::from(&make_manifest_with_chunks()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 6);
+        for i in 0..6 {
+            assert_eq!(pairs[i as usize].0, Value::U64(i));
+        }
+    }
+
+    #[test]
+    fn content_manifest_rejects_unknown_field() {
+        let p = make_manifest_empty();
+        let mut pairs = match Value::from(&p) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        pairs.push((Value::U64(99), Value::U64(0)));
+        let value = Value::Map(pairs);
+        let err = ContentManifestPayload::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn content_manifest_rejects_not_a_map() {
+        let err = ContentManifestPayload::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    #[test]
+    fn content_manifest_record_id_distinct() {
+        let p = make_manifest_empty();
+        let mid = p.record_id().expect("record_id");
+        assert_eq!(mid.as_bytes().len(), 32);
     }
 }
