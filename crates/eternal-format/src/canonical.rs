@@ -186,6 +186,7 @@ impl Default for CanonicalEncoder {
 /// - `max_depth` — maximum nesting of arrays/maps (default: 64)
 /// - `max_nodes` — maximum total `CanonicalValue` nodes (default: 1_000_000)
 /// - `max_string_bytes` — maximum byte length for Text/Bytes (default: 1_048_576)
+/// - `max_metadata_bytes` — maximum total CBOR encoded output (default: 16_777_216)
 ///
 /// Text values and map keys containing NUL (`\0`) are rejected.
 pub fn encode_canonical_value(
@@ -195,6 +196,13 @@ pub fn encode_canonical_value(
     let mut encoder = CanonicalEncoder::new();
     let mut node_count = 0u64;
     validate_encode_value(&mut encoder, value, 0, &mut node_count, limits)?;
+    let total = encoder.as_bytes().len() as u64;
+    if total > limits.max_metadata_bytes() {
+        return Err(CanonicalEncodeError::InputTooLarge {
+            max: limits.max_metadata_bytes(),
+            actual: total,
+        });
+    }
     Ok(encoder.into_bytes())
 }
 
@@ -952,11 +960,13 @@ pub struct CanonicalDecoder<'a> {
     max_depth: usize,
     max_item_count: u64,
     max_string_bytes: u64,
+    max_metadata_bytes: u64,
 }
 
 impl<'a> CanonicalDecoder<'a> {
     /// Create a decoder from a `FormatLimits` reference.
-    /// The decoder enforces the same depth, node count, and string byte limits.
+    /// The decoder enforces the same depth, node count, string byte, and
+    /// total metadata byte limits.
     pub fn from_limits(input: &'a [u8], limits: &FormatLimits) -> Self {
         Self {
             input,
@@ -964,6 +974,7 @@ impl<'a> CanonicalDecoder<'a> {
             max_depth: limits.max_depth() as usize,
             max_item_count: limits.max_nodes(),
             max_string_bytes: limits.max_string_bytes(),
+            max_metadata_bytes: limits.max_metadata_bytes(),
         }
     }
 
@@ -1203,6 +1214,13 @@ impl<'a> CanonicalDecoder<'a> {
     /// Uses `max_depth` for CanonicalValue nesting and a 1,000,000 node
     /// count limit per FORMAT.md §20.
     pub fn decode_canonical_value(&mut self) -> Result<CanonicalValue, DecodeError> {
+        let input_len = self.input.len() as u64;
+        if input_len > self.max_metadata_bytes {
+            return Err(DecodeError::ValueTooLarge {
+                requested: input_len,
+                max: self.max_metadata_bytes,
+            });
+        }
         let mut node_count = 0u64;
         let result = self.decode_cv_inner(0, &mut node_count)?;
         if self.pos != self.input.len() {
@@ -2675,6 +2693,71 @@ mod tests {
         let tight = FormatLimits::default().with_max_metadata_bytes(8).unwrap();
         let input = b"\"too long for 8-byte limit\"";
         let result = canonical_value_from_json_slice(input, &tight);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::InputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_rejects_metadata_exceeded() {
+        // Encode a CanonicalValue whose CBOR output exceeds max_metadata_bytes.
+        // Each null unit encodes as [0] (2 bytes). With max_metadata_bytes=4,
+        // 3 nulls (6 bytes) should be rejected.
+        let tight = FormatLimits::default().with_max_metadata_bytes(4).unwrap();
+        let cv = CanonicalValue::Array(vec![
+            CanonicalValue::Null,
+            CanonicalValue::Null,
+            CanonicalValue::Null,
+        ]);
+        let result = encode_canonical_value(&cv, &tight);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::InputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_accepts_metadata_at_limit() {
+        // Encode a CanonicalValue whose CBOR output meets max_metadata_bytes.
+        // Null encodes as [0] = 0x81 0x00 = 2 bytes.
+        let tight = FormatLimits::default().with_max_metadata_bytes(2).unwrap();
+        let cv = CanonicalValue::Null;
+        let result = encode_canonical_value(&cv, &tight);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decode_rejects_input_exceeding_metadata_limit() {
+        // CBOR input exceeding max_metadata_bytes must be rejected before parsing.
+        let tight = FormatLimits::default().with_max_metadata_bytes(2).unwrap();
+        // Null encodes as [0] = 0x81 0x00 = 2 bytes — within limit
+        let bytes = vec![0x81, 0x00];
+        let mut dec = CanonicalDecoder::from_limits(&bytes, &tight);
+        assert!(dec.decode_canonical_value().is_ok());
+
+        // 3 bytes exceeds metadata limit of 2
+        let too_big = vec![0x82, 0x00, 0x00];
+        let mut dec = CanonicalDecoder::from_limits(&too_big, &tight);
+        let err = dec
+            .decode_canonical_value()
+            .expect_err("should exceed metadata limit");
+        assert!(matches!(err, DecodeError::ValueTooLarge { .. }));
+    }
+
+    #[test]
+    fn encode_rejects_small_strings_summing_over_metadata_limit() {
+        // Multiple individually-valid small strings that together exceed
+        // max_metadata_bytes must be rejected.
+        // Each text node encodes as [4, "s"] ≈ 2 + 1 + len bytes.
+        // With max_metadata_bytes=16, three 6-byte texts should be rejected.
+        let tight = FormatLimits::default().with_max_metadata_bytes(16).unwrap();
+        let cv = CanonicalValue::Array(vec![
+            CanonicalValue::Text("aaaaaa".to_string()),
+            CanonicalValue::Text("bbbbbb".to_string()),
+            CanonicalValue::Text("cccccc".to_string()),
+        ]);
+        let result = encode_canonical_value(&cv, &tight);
         assert!(matches!(
             result,
             Err(CanonicalEncodeError::InputTooLarge { .. })

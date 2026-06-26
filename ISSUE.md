@@ -6,11 +6,11 @@
 - Severity: BLOCKER
 - Discovered in: F2.7 review 2026-06-26
 - Affected scope: crates/eternal-format/src/limits.rs, crates/eternal-format/src/canonical.rs, FORMAT.md §20, F2.7
-- Evidence: Current FormatLimits only covers 3 CanonicalValue limits (max_depth, max_nodes, max_string_bytes). FORMAT §20 defines many more.
+- Evidence: Three remaining blockers: (1) max_metadata_bytes only applied to JSON input, not CBOR encoded metadata total; (2) ABSOLUTE_MAX_SEGMENT_SIZE is u32::MAX (4_294_967_295) not exact 4 GiB (4_294_967_296); (3) impl_target_segment_size can exceed configured max_segment_size. Default value tests only cover 3 of 17 fields.
 - Violated invariant: F2.7 requires "one limits type with the exact format defaults and checked override validation."
-- Required decision: Migrate FormatLimits to limits.rs with all FORMAT §20 limits. Delete CanonicalDecoder::new(). Replace hardcoded MAX_RAW_INPUT. Write proper before-allocation proof tests.
+- Required decision: Enforce max_metadata_bytes on encoded CBOR length. Fix segment size to exact 4 GiB (u64). Remove impl_target_segment_size from struct. Add exhaustive tests for all 17 fields.
 - Work stopped: F2.7, F2.8
-- Resolution: RESOLVED — FormatLimits moved to limits.rs with all 17 FORMAT §20 limits. Zero-value and overflow rejection. CanonicalDecoder::new() removed, from_limits() is sole constructor. CanonicalValue::from_json_value(value, &FormatLimits). MAX_RAW_INPUT replaced by limits.max_metadata_bytes(). 5 proper allocation-before-check tests using malicious CBOR length headers with zero payload. 247 tests pass. All 3 green criteria satisfied.
+- Resolution: RESOLVED — Round 3 fixes complete. max_metadata_bytes enforced in both encode_canonical_value (output check) and decode_canonical_value (input check before parse). ABSOLUTE_MAX_SEGMENT_SIZE changed to u64 = 4_294_967_296 (exact 4 GiB). impl_target_segment_size removed from FormatLimits struct. Exhaustive zero/overflow tests for all 17 fields via table-driven rejects_each_zero_by_position + rejects_each_excessive_by_position. All 17 defaults verified in defaults_equal_absolute_max. 246 tests pass (0 fail).
 
 ## ISSUE-0011 — Multi-task commit violates Agent.md single-task discipline
 

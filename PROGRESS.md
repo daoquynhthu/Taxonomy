@@ -4,9 +4,9 @@
 
 - Status: GREEN
 - Commit: SELF
-- Completed: Full FormatLimits in dedicated limits.rs with all 17 FORMAT §20 limits (record payload, chunk plaintext, metadata bytes, parents, relations, changes, policy keys, permissions, key slots, manifest chunks, pack records, pack size, segment size, plus existing depth/nodes/string). Zero-value and overflow rejection in new() and all with_* builders. CanonicalDecoder::from_limits(&FormatLimits) replaces raw new(). CanonicalValue::from_json_value(value, &FormatLimits). Hardcoded MAX_RAW_INPUT replaced by limits.max_metadata_bytes(). 11 allocation-before-check proof tests: oversized string/array/map/text CBOR headers with no payload reject before read, JSON metadata limit rejects before parse. 16 limits.rs construction tests.
-- Tests: `cargo test --workspace --all-features` (247 tests)
-- Evidence: All 3 green criteria satisfied. FormatLimits is the single limits type; CanonicalDecoder::new() removed; all parsers accept &FormatLimits; allocation-before-check proven with malicious zero-payload CBOR headers.
+- Completed: Full FormatLimits in dedicated limits.rs with all 17 FORMAT §20 limits. Zero/overflow rejection. Encoded metadata total enforced: encode_canonical_value checks output length, decode_canonical_value checks input length before parse. ABSOLUTE_MAX_SEGMENT_SIZE = 4_294_967_296 (exact 4 GiB, u64). impl_target_segment_size removed. Exhaustive table-driven zero/overflow tests for all 17 fields.
+- Tests: `cargo test --workspace --all-features` (246 tests)
+- Evidence: All green criteria satisfied. Metadata total encoding/decoding tested with boundary values. 17-field zero/overflow verification via parameterized tests. 17-field default-value verification.
 - Follow-up: None (GREEN)
 
 ## F2.6 — Implement constrained names

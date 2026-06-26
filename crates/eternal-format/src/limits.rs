@@ -63,8 +63,7 @@ pub struct FormatLimits {
     max_manifest_chunks: u64,
     max_pack_records: u64,
     max_pack_size: u64,
-    max_segment_size: u32,
-    impl_target_segment_size: u64,
+    max_segment_size: u64,
 }
 
 impl FormatLimits {
@@ -84,8 +83,7 @@ impl FormatLimits {
     pub const ABSOLUTE_MAX_MANIFEST_CHUNKS: u64 = 16_777_216;
     pub const ABSOLUTE_MAX_PACK_RECORDS: u64 = 1_000_000_000;
     pub const ABSOLUTE_MAX_PACK_SIZE: u64 = 17_592_186_044_416;
-    pub const ABSOLUTE_MAX_SEGMENT_SIZE: u32 = 4_294_967_295;
-    pub const IMPL_TARGET_SEGMENT_SIZE: u64 = 67_108_864;
+    pub const ABSOLUTE_MAX_SEGMENT_SIZE: u64 = 4_294_967_296;
 
     /// Create a `FormatLimits` with all limits set to the given values.
     /// Returns an error if any value is zero or exceeds the FORMAT absolute cap.
@@ -107,7 +105,7 @@ impl FormatLimits {
         max_manifest_chunks: u64,
         max_pack_records: u64,
         max_pack_size: u64,
-        max_segment_size: u32,
+        max_segment_size: u64,
     ) -> Result<Self, LimitsError> {
         Self::check_nonzero("max_depth", max_depth)?;
         Self::check_nonzero("max_nodes", max_nodes)?;
@@ -125,7 +123,7 @@ impl FormatLimits {
         Self::check_nonzero("max_manifest_chunks", max_manifest_chunks)?;
         Self::check_nonzero("max_pack_records", max_pack_records)?;
         Self::check_nonzero("max_pack_size", max_pack_size)?;
-        Self::check_nonzero_u32("max_segment_size", max_segment_size)?;
+        Self::check_nonzero("max_segment_size", max_segment_size)?;
 
         Self::check_max("max_depth", max_depth, Self::ABSOLUTE_MAX_DEPTH)?;
         Self::check_max("max_nodes", max_nodes, Self::ABSOLUTE_MAX_NODES)?;
@@ -183,7 +181,7 @@ impl FormatLimits {
             Self::ABSOLUTE_MAX_PACK_RECORDS,
         )?;
         Self::check_max("max_pack_size", max_pack_size, Self::ABSOLUTE_MAX_PACK_SIZE)?;
-        Self::check_max_u32(
+        Self::check_max(
             "max_segment_size",
             max_segment_size,
             Self::ABSOLUTE_MAX_SEGMENT_SIZE,
@@ -207,18 +205,10 @@ impl FormatLimits {
             max_pack_records,
             max_pack_size,
             max_segment_size,
-            impl_target_segment_size: Self::IMPL_TARGET_SEGMENT_SIZE,
         })
     }
 
     fn check_nonzero(field: &'static str, value: u64) -> Result<(), LimitsError> {
-        if value == 0 {
-            return Err(LimitsError::LimitIsZero { field });
-        }
-        Ok(())
-    }
-
-    fn check_nonzero_u32(field: &'static str, value: u32) -> Result<(), LimitsError> {
         if value == 0 {
             return Err(LimitsError::LimitIsZero { field });
         }
@@ -231,17 +221,6 @@ impl FormatLimits {
                 field,
                 requested: value,
                 absolute_max: max,
-            });
-        }
-        Ok(())
-    }
-
-    fn check_max_u32(field: &'static str, value: u32, max: u32) -> Result<(), LimitsError> {
-        if value > max {
-            return Err(LimitsError::LimitExceedsAbsoluteMax {
-                field,
-                requested: value as u64,
-                absolute_max: max as u64,
             });
         }
         Ok(())
@@ -297,11 +276,8 @@ impl FormatLimits {
     pub fn max_pack_size(&self) -> u64 {
         self.max_pack_size
     }
-    pub fn max_segment_size(&self) -> u32 {
+    pub fn max_segment_size(&self) -> u64 {
         self.max_segment_size
-    }
-    pub fn impl_target_segment_size(&self) -> u64 {
-        self.impl_target_segment_size
     }
 
     // --- Convenience builders (only reduce, never increase) ---
@@ -379,7 +355,6 @@ impl Default for FormatLimits {
             max_pack_records: Self::ABSOLUTE_MAX_PACK_RECORDS,
             max_pack_size: Self::ABSOLUTE_MAX_PACK_SIZE,
             max_segment_size: Self::ABSOLUTE_MAX_SEGMENT_SIZE,
-            impl_target_segment_size: Self::IMPL_TARGET_SEGMENT_SIZE,
         }
     }
 }
@@ -400,82 +375,208 @@ mod tests {
             d.max_string_bytes(),
             FormatLimits::ABSOLUTE_MAX_STRING_BYTES
         );
-    }
-
-    // --- Zero-value rejection ---
-
-    #[test]
-    fn rejects_zero_depth() {
-        let result = FormatLimits::new(0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-        assert_eq!(result, Err(LimitsError::LimitIsZero { field: "max_depth" }));
-    }
-
-    #[test]
-    fn rejects_zero_nodes() {
-        let result = FormatLimits::new(1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-        assert_eq!(result, Err(LimitsError::LimitIsZero { field: "max_nodes" }));
-    }
-
-    #[test]
-    fn rejects_zero_string_bytes() {
-        let result = FormatLimits::new(1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
         assert_eq!(
-            result,
-            Err(LimitsError::LimitIsZero {
-                field: "max_string_bytes"
-            })
+            d.max_record_payload(),
+            FormatLimits::ABSOLUTE_MAX_RECORD_PAYLOAD
+        );
+        assert_eq!(
+            d.max_chunk_plaintext(),
+            FormatLimits::ABSOLUTE_MAX_CHUNK_PLAINTEXT
+        );
+        assert_eq!(
+            d.max_metadata_bytes(),
+            FormatLimits::ABSOLUTE_MAX_METADATA_BYTES
+        );
+        assert_eq!(
+            d.max_object_version_parents(),
+            FormatLimits::ABSOLUTE_MAX_OBJECT_VERSION_PARENTS
+        );
+        assert_eq!(
+            d.max_repocommit_parents(),
+            FormatLimits::ABSOLUTE_MAX_REPOCOMMIT_PARENTS
+        );
+        assert_eq!(d.max_relations(), FormatLimits::ABSOLUTE_MAX_RELATIONS);
+        assert_eq!(d.max_changes(), FormatLimits::ABSOLUTE_MAX_CHANGES);
+        assert_eq!(d.max_policy_keys(), FormatLimits::ABSOLUTE_MAX_POLICY_KEYS);
+        assert_eq!(
+            d.max_policy_permissions(),
+            FormatLimits::ABSOLUTE_MAX_POLICY_PERMISSIONS
+        );
+        assert_eq!(d.max_key_slots(), FormatLimits::ABSOLUTE_MAX_KEY_SLOTS);
+        assert_eq!(
+            d.max_manifest_chunks(),
+            FormatLimits::ABSOLUTE_MAX_MANIFEST_CHUNKS
+        );
+        assert_eq!(
+            d.max_pack_records(),
+            FormatLimits::ABSOLUTE_MAX_PACK_RECORDS
+        );
+        assert_eq!(d.max_pack_size(), FormatLimits::ABSOLUTE_MAX_PACK_SIZE);
+        assert_eq!(
+            d.max_segment_size(),
+            FormatLimits::ABSOLUTE_MAX_SEGMENT_SIZE
         );
     }
 
+    /// Helper: a single valid limits instance for zero-test parameter positions.
+    const VALID_ARG: u64 = 1;
+
     #[test]
-    fn rejects_zero_record_payload() {
-        let result = FormatLimits::new(1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-        assert_eq!(
-            result,
-            Err(LimitsError::LimitIsZero {
-                field: "max_record_payload"
-            })
-        );
+    fn rejects_each_zero_by_position() {
+        let fields = [
+            ("max_depth", 0, 1usize),
+            ("max_nodes", 1, 0usize),
+            ("max_string_bytes", 2, 0usize),
+            ("max_record_payload", 3, 0usize),
+            ("max_chunk_plaintext", 4, 0usize),
+            ("max_metadata_bytes", 5, 0usize),
+            ("max_object_version_parents", 6, 0usize),
+            ("max_repocommit_parents", 7, 0usize),
+            ("max_relations", 8, 0usize),
+            ("max_changes", 9, 0usize),
+            ("max_policy_keys", 10, 0usize),
+            ("max_policy_permissions", 11, 0usize),
+            ("max_key_slots", 12, 0usize),
+            ("max_manifest_chunks", 13, 0usize),
+            ("max_pack_records", 14, 0usize),
+            ("max_pack_size", 15, 0usize),
+            ("max_segment_size", 16, 0usize),
+        ];
+        for &(field, zero_pos, _) in &fields {
+            let args = (0..17)
+                .map(|i| if i == zero_pos { 0u64 } else { VALID_ARG })
+                .collect::<Vec<_>>();
+            let result = FormatLimits::new(
+                args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8],
+                args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16],
+            );
+            assert_eq!(
+                result,
+                Err(LimitsError::LimitIsZero { field }),
+                "expected LimitIsZero for {field} at position {zero_pos}",
+            );
+        }
     }
 
     #[test]
-    fn rejects_zero_segment_size() {
-        let result = FormatLimits::new(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0);
-        assert_eq!(
-            result,
-            Err(LimitsError::LimitIsZero {
-                field: "max_segment_size"
-            })
-        );
-    }
-
-    // --- Overflow rejection ---
-
-    #[test]
-    fn rejects_excessive_depth() {
-        let result = FormatLimits::new(65, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-        assert_eq!(
-            result,
-            Err(LimitsError::LimitExceedsAbsoluteMax {
-                field: "max_depth",
-                requested: 65,
-                absolute_max: 64,
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_excessive_pack_size() {
-        let bad = FormatLimits::ABSOLUTE_MAX_PACK_SIZE + 1;
-        let result = FormatLimits::new(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, bad, 1);
-        assert_eq!(
-            result,
-            Err(LimitsError::LimitExceedsAbsoluteMax {
-                field: "max_pack_size",
-                requested: bad,
-                absolute_max: FormatLimits::ABSOLUTE_MAX_PACK_SIZE,
-            })
-        );
+    fn rejects_each_excessive_by_position() {
+        let fields: [(&str, usize, u64, u64); 17] = [
+            ("max_depth", 0, 65, FormatLimits::ABSOLUTE_MAX_DEPTH),
+            (
+                "max_nodes",
+                1,
+                FormatLimits::ABSOLUTE_MAX_NODES + 1,
+                FormatLimits::ABSOLUTE_MAX_NODES,
+            ),
+            (
+                "max_string_bytes",
+                2,
+                FormatLimits::ABSOLUTE_MAX_STRING_BYTES + 1,
+                FormatLimits::ABSOLUTE_MAX_STRING_BYTES,
+            ),
+            (
+                "max_record_payload",
+                3,
+                FormatLimits::ABSOLUTE_MAX_RECORD_PAYLOAD + 1,
+                FormatLimits::ABSOLUTE_MAX_RECORD_PAYLOAD,
+            ),
+            (
+                "max_chunk_plaintext",
+                4,
+                FormatLimits::ABSOLUTE_MAX_CHUNK_PLAINTEXT + 1,
+                FormatLimits::ABSOLUTE_MAX_CHUNK_PLAINTEXT,
+            ),
+            (
+                "max_metadata_bytes",
+                5,
+                FormatLimits::ABSOLUTE_MAX_METADATA_BYTES + 1,
+                FormatLimits::ABSOLUTE_MAX_METADATA_BYTES,
+            ),
+            (
+                "max_object_version_parents",
+                6,
+                FormatLimits::ABSOLUTE_MAX_OBJECT_VERSION_PARENTS + 1,
+                FormatLimits::ABSOLUTE_MAX_OBJECT_VERSION_PARENTS,
+            ),
+            (
+                "max_repocommit_parents",
+                7,
+                FormatLimits::ABSOLUTE_MAX_REPOCOMMIT_PARENTS + 1,
+                FormatLimits::ABSOLUTE_MAX_REPOCOMMIT_PARENTS,
+            ),
+            (
+                "max_relations",
+                8,
+                FormatLimits::ABSOLUTE_MAX_RELATIONS + 1,
+                FormatLimits::ABSOLUTE_MAX_RELATIONS,
+            ),
+            (
+                "max_changes",
+                9,
+                FormatLimits::ABSOLUTE_MAX_CHANGES + 1,
+                FormatLimits::ABSOLUTE_MAX_CHANGES,
+            ),
+            (
+                "max_policy_keys",
+                10,
+                FormatLimits::ABSOLUTE_MAX_POLICY_KEYS + 1,
+                FormatLimits::ABSOLUTE_MAX_POLICY_KEYS,
+            ),
+            (
+                "max_policy_permissions",
+                11,
+                FormatLimits::ABSOLUTE_MAX_POLICY_PERMISSIONS + 1,
+                FormatLimits::ABSOLUTE_MAX_POLICY_PERMISSIONS,
+            ),
+            (
+                "max_key_slots",
+                12,
+                FormatLimits::ABSOLUTE_MAX_KEY_SLOTS + 1,
+                FormatLimits::ABSOLUTE_MAX_KEY_SLOTS,
+            ),
+            (
+                "max_manifest_chunks",
+                13,
+                FormatLimits::ABSOLUTE_MAX_MANIFEST_CHUNKS + 1,
+                FormatLimits::ABSOLUTE_MAX_MANIFEST_CHUNKS,
+            ),
+            (
+                "max_pack_records",
+                14,
+                FormatLimits::ABSOLUTE_MAX_PACK_RECORDS + 1,
+                FormatLimits::ABSOLUTE_MAX_PACK_RECORDS,
+            ),
+            (
+                "max_pack_size",
+                15,
+                FormatLimits::ABSOLUTE_MAX_PACK_SIZE + 1,
+                FormatLimits::ABSOLUTE_MAX_PACK_SIZE,
+            ),
+            (
+                "max_segment_size",
+                16,
+                FormatLimits::ABSOLUTE_MAX_SEGMENT_SIZE + 1,
+                FormatLimits::ABSOLUTE_MAX_SEGMENT_SIZE,
+            ),
+        ];
+        for &(field, pos, bad_val, abs_max) in &fields {
+            let args = (0..17)
+                .map(|i| if i == pos { bad_val } else { VALID_ARG })
+                .collect::<Vec<_>>();
+            let result = FormatLimits::new(
+                args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8],
+                args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16],
+            );
+            assert_eq!(
+                result,
+                Err(LimitsError::LimitExceedsAbsoluteMax {
+                    field,
+                    requested: bad_val,
+                    absolute_max: abs_max,
+                }),
+                "expected LimitExceedsAbsoluteMax for {field} with value {bad_val}",
+            );
+        }
     }
 
     // --- with_* zero rejection ---

@@ -145,7 +145,7 @@
         },
         {
           "id": "F2.7",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.5"
           ]
