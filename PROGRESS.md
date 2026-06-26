@@ -1,5 +1,15 @@
 # Progress
 
+## F3.2 — Implement repository authority payload schemas
+
+- Status: GREEN
+- Commit: SELF
+- Completed: All 8 payload structs (RepositoryGenesisPayload, PublicKeyEntry, RefPermissionEntry, PolicyRecordPayload, PasswordKdfDescriptor, KeySlot, WrappedDek, KeyringRecordPayload) with `new()` constructors validating constraints per FORMAT.md §9.1–§9.8, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with shared field-extraction helpers. PolicyRecordPayload validates 5 sorted-unique array types (introduced_keys, administrators, writers, per_ref_permissions, tag_creators, revoked_keys). KeySlot validates conditional slot_kind requirements (password_kdf for kind 1, recipient_key_id/ephemeral_public_key for kinds 2/3) and wrap_algorithm=1. WrappedDek validates nonzero key_epoch, non-empty slots sorted by slot_id. KeyringRecordPayload validates sorted content_id_key_slots, sorted dek_slots, sorted unique retired_key_epochs.
+- Tests: 330 unit + 1 integration (`cargo test --workspace --all-features`); 89 new tests in record module — 64 F3.2-specific (roundtrip × 8, field-number fixture × 8, validation/rejection × 40+, sorted-unique × 8) + 25 existing SignedRecord tests
+- Evidence: field-number fixture tests prove each field appears at the correct CBOR unsigned-integer key for all 8 types; sorted-unique rejection tests for all 6 array-type fields (writers, administrators, tag_creators, revoked_keys, introduced_keys, per_ref_permissions, key_slots, dek_slots, retired_key_epochs); conditional KeySlot constraint tests (password_without_kdf, password_with_recipient, recipient_without_key, recipient_without_ephemeral).
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
+- Follow-up: F3.3 Record-layer encode/decode
+
 ## F3.1 — Implement SignedRecord envelope
 
 - Status: GREEN

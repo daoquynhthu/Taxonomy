@@ -3,6 +3,182 @@ use crate::ids::{KeyId, RecordId, Signature};
 use crate::limits::FormatLimits;
 
 // ---------------------------------------------------------------------------
+// Payload validation error
+// ---------------------------------------------------------------------------
+
+/// Validation error for record payload construction or decoding.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PayloadError {
+    /// A field has an unexpected CBOR type.
+    FieldType { key: u64, expected: &'static str },
+    /// A required field is missing.
+    MissingField(u64),
+    /// An unsupported field value.
+    UnsupportedValue { key: u64, detail: String },
+    /// A byte-string field has the wrong length.
+    WrongLength {
+        key: u64,
+        expected: usize,
+        actual: usize,
+    },
+    /// A text field violates constrained-text rules.
+    InvalidText { key: u64, detail: String },
+    /// An array field is not sorted or contains duplicates.
+    UnsortedOrDuplicate { key: u64 },
+    /// An array is empty when it should be non-empty.
+    EmptyArray { key: u64 },
+    /// The payload value is not a CBOR map.
+    NotAMap,
+    /// Wrapped CBOR decode error.
+    Decode(DecodeError),
+}
+
+// ---------------------------------------------------------------------------
+// Shared CBOR field-extraction helpers for record payload decoding
+// ---------------------------------------------------------------------------
+
+fn parse_fields(pairs: &[(Value, Value)], count: usize) -> Vec<Option<&Value>> {
+    let mut fields = vec![None; count];
+    for (k, v) in pairs {
+        if let Value::U64(idx) = k
+            && (*idx as usize) < count
+        {
+            fields[*idx as usize] = Some(v);
+        }
+    }
+    fields
+}
+
+fn field_uint(fields: &[Option<&Value>], key: usize) -> Result<u64, PayloadError> {
+    match fields.get(key).and_then(|f| *f) {
+        Some(Value::U64(v)) => Ok(*v),
+        Some(_) => Err(PayloadError::FieldType {
+            key: key as u64,
+            expected: "uint",
+        }),
+        None => Err(PayloadError::MissingField(key as u64)),
+    }
+}
+
+fn field_int(fields: &[Option<&Value>], key: usize) -> Result<i64, PayloadError> {
+    match fields.get(key).and_then(|f| *f) {
+        Some(Value::I64(v)) => Ok(*v),
+        Some(_) => Err(PayloadError::FieldType {
+            key: key as u64,
+            expected: "int",
+        }),
+        None => Err(PayloadError::MissingField(key as u64)),
+    }
+}
+
+fn field_bytes(fields: &[Option<&Value>], key: usize) -> Result<Vec<u8>, PayloadError> {
+    match fields.get(key).and_then(|f| *f) {
+        Some(Value::Bytes(b)) => Ok(b.clone()),
+        Some(_) => Err(PayloadError::FieldType {
+            key: key as u64,
+            expected: "bytes",
+        }),
+        None => Err(PayloadError::MissingField(key as u64)),
+    }
+}
+
+fn field_bytes_exact<const N: usize>(
+    fields: &[Option<&Value>],
+    key: usize,
+) -> Result<[u8; N], PayloadError> {
+    let b = field_bytes(fields, key)?;
+    let actual = b.len();
+    let arr: [u8; N] = b.try_into().map_err(|_| PayloadError::WrongLength {
+        key: key as u64,
+        expected: N,
+        actual,
+    })?;
+    Ok(arr)
+}
+
+fn field_text(fields: &[Option<&Value>], key: usize) -> Result<String, PayloadError> {
+    match fields.get(key).and_then(|f| *f) {
+        Some(Value::Text(s)) => Ok(s.clone()),
+        Some(_) => Err(PayloadError::FieldType {
+            key: key as u64,
+            expected: "text",
+        }),
+        None => Err(PayloadError::MissingField(key as u64)),
+    }
+}
+
+fn field_nullable_bytes(
+    fields: &[Option<&Value>],
+    key: usize,
+) -> Result<Option<Vec<u8>>, PayloadError> {
+    match fields.get(key).and_then(|f| *f) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::Bytes(b)) => Ok(Some(b.clone())),
+        Some(_) => Err(PayloadError::FieldType {
+            key: key as u64,
+            expected: "null or bytes",
+        }),
+        None => Ok(None),
+    }
+}
+
+fn field_nullable_bytes_exact<const N: usize>(
+    fields: &[Option<&Value>],
+    key: usize,
+) -> Result<Option<[u8; N]>, PayloadError> {
+    match field_nullable_bytes(fields, key)? {
+        None => Ok(None),
+        Some(b) => {
+            let actual = b.len();
+            let arr: [u8; N] = b.try_into().map_err(|_| PayloadError::WrongLength {
+                key: key as u64,
+                expected: N,
+                actual,
+            })?;
+            Ok(Some(arr))
+        }
+    }
+}
+
+fn check_sorted_unique_bytes(items: &[Vec<u8>], key: u64) -> Result<(), PayloadError> {
+    for w in items.windows(2) {
+        if w[0] >= w[1] {
+            return Err(PayloadError::UnsortedOrDuplicate { key });
+        }
+    }
+    Ok(())
+}
+
+fn check_sorted_unique_u64(items: &[u64], key: u64) -> Result<(), PayloadError> {
+    for w in items.windows(2) {
+        if w[0] >= w[1] {
+            return Err(PayloadError::UnsortedOrDuplicate { key });
+        }
+    }
+    Ok(())
+}
+
+fn bytes_array_field(fields: &[Option<&Value>], key: usize) -> Result<Vec<Vec<u8>>, PayloadError> {
+    match fields.get(key).and_then(|f| *f) {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .map(|v| match v {
+                Value::Bytes(b) => Ok(b.clone()),
+                _ => Err(PayloadError::FieldType {
+                    key: key as u64,
+                    expected: "array of bytes",
+                }),
+            })
+            .collect(),
+        Some(_) => Err(PayloadError::FieldType {
+            key: key as u64,
+            expected: "array",
+        }),
+        None => Err(PayloadError::MissingField(key as u64)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SignedRecord envelope (FORMAT.md §4.6 / ARCHITECTURE.md §4.3)
 // ---------------------------------------------------------------------------
 
@@ -67,6 +243,1026 @@ pub enum SignedRecordError {
     Decode(DecodeError),
     /// The encoded envelope exceeds `max_metadata_bytes`.
     EnvelopeTooLarge { actual: u64, max: u64 },
+}
+
+// ---------------------------------------------------------------------------
+// PasswordKdfDescriptor (FORMAT.md §9.5)
+// ---------------------------------------------------------------------------
+
+/// Argon2id KDF parameters embedded in a KeySlot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PasswordKdfDescriptor {
+    pub algorithm: u64,
+    pub version: u64,
+    pub salt: Vec<u8>,
+    pub memory_kib: u64,
+    pub iterations: u64,
+    pub parallelism: u64,
+}
+
+impl PasswordKdfDescriptor {
+    pub fn new(
+        algorithm: u64,
+        version: u64,
+        salt: Vec<u8>,
+        memory_kib: u64,
+        iterations: u64,
+        parallelism: u64,
+    ) -> Result<Self, PayloadError> {
+        if algorithm != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("expected 1 (Argon2id), got {algorithm}"),
+            });
+        }
+        if version != 0x13 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 1,
+                detail: format!("expected 0x13, got {version}"),
+            });
+        }
+        if salt.len() < 16 || salt.len() > 64 {
+            let detail = if salt.len() < 16 {
+                format!("salt too short: {} < 16", salt.len())
+            } else {
+                format!("salt too long: {} > 64", salt.len())
+            };
+            return Err(PayloadError::UnsupportedValue { key: 2, detail });
+        }
+        if memory_kib < 65536 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: format!("minimum 65536 KiB, got {memory_kib}"),
+            });
+        }
+        if iterations < 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 4,
+                detail: format!("minimum 1, got {iterations}"),
+            });
+        }
+        if !(1..=255).contains(&parallelism) {
+            return Err(PayloadError::UnsupportedValue {
+                key: 5,
+                detail: format!("must be 1..255, got {parallelism}"),
+            });
+        }
+        Ok(Self {
+            algorithm,
+            version,
+            salt,
+            memory_kib,
+            iterations,
+            parallelism,
+        })
+    }
+}
+
+impl From<&PasswordKdfDescriptor> for Value {
+    fn from(p: &PasswordKdfDescriptor) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.algorithm)),
+            (Value::U64(1), Value::U64(p.version)),
+            (Value::U64(2), Value::Bytes(p.salt.clone())),
+            (Value::U64(3), Value::U64(p.memory_kib)),
+            (Value::U64(4), Value::U64(p.iterations)),
+            (Value::U64(5), Value::U64(p.parallelism)),
+        ])
+    }
+}
+
+impl TryFrom<Value> for PasswordKdfDescriptor {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let mut f: [Option<&Value>; 6] = Default::default();
+        for (k, v) in pairs {
+            match k {
+                Value::U64(0) => f[0] = Some(v),
+                Value::U64(1) => f[1] = Some(v),
+                Value::U64(2) => f[2] = Some(v),
+                Value::U64(3) => f[3] = Some(v),
+                Value::U64(4) => f[4] = Some(v),
+                Value::U64(5) => f[5] = Some(v),
+                _ => {}
+            }
+        }
+        Self::new(
+            Self::get_uint(&f, 0)?,
+            Self::get_uint(&f, 1)?,
+            Self::get_bytes(&f, 2)?,
+            Self::get_uint(&f, 3)?,
+            Self::get_uint(&f, 4)?,
+            Self::get_uint(&f, 5)?,
+        )
+    }
+}
+
+// Shared helper for payload decoding
+impl PasswordKdfDescriptor {
+    fn get_uint(fields: &[Option<&Value>; 6], key: usize) -> Result<u64, PayloadError> {
+        match fields[key] {
+            Some(Value::U64(v)) => Ok(*v),
+            Some(_) => Err(PayloadError::FieldType {
+                key: key as u64,
+                expected: "uint",
+            }),
+            None => Err(PayloadError::MissingField(key as u64)),
+        }
+    }
+    fn get_bytes(fields: &[Option<&Value>; 6], key: usize) -> Result<Vec<u8>, PayloadError> {
+        match fields[key] {
+            Some(Value::Bytes(b)) => Ok(b.clone()),
+            Some(_) => Err(PayloadError::FieldType {
+                key: key as u64,
+                expected: "bytes",
+            }),
+            None => Err(PayloadError::MissingField(key as u64)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PublicKeyEntry (FORMAT.md §9.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublicKeyEntry {
+    pub key_id: [u8; 32],
+    pub algorithm: u64,
+    pub public_key: [u8; 32],
+    pub label: String,
+}
+
+impl PublicKeyEntry {
+    pub fn new(
+        key_id: [u8; 32],
+        algorithm: u64,
+        public_key: [u8; 32],
+        label: String,
+    ) -> Result<Self, PayloadError> {
+        if algorithm != 1 && algorithm != 2 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 1,
+                detail: format!("expected 1 (Ed25519) or 2 (X25519), got {algorithm}"),
+            });
+        }
+        if label.len() > 128 {
+            return Err(PayloadError::InvalidText {
+                key: 3,
+                detail: format!("label too long: {} > 128", label.len()),
+            });
+        }
+        Ok(Self {
+            key_id,
+            algorithm,
+            public_key,
+            label,
+        })
+    }
+}
+
+impl From<&PublicKeyEntry> for Value {
+    fn from(p: &PublicKeyEntry) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::Bytes(p.key_id.to_vec())),
+            (Value::U64(1), Value::U64(p.algorithm)),
+            (Value::U64(2), Value::Bytes(p.public_key.to_vec())),
+            (Value::U64(3), Value::Text(p.label.clone())),
+        ])
+    }
+}
+
+impl TryFrom<Value> for PublicKeyEntry {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 4);
+        Self::new(
+            field_bytes_exact::<32>(&fields, 0)?,
+            field_uint(&fields, 1)?,
+            field_bytes_exact::<32>(&fields, 2)?,
+            field_text(&fields, 3)?,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefPermissionEntry (FORMAT.md §9.3)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefPermissionEntry {
+    pub pattern: String,
+    pub writers: Vec<[u8; 32]>,
+}
+
+impl RefPermissionEntry {
+    pub fn new(pattern: String, writers: Vec<[u8; 32]>) -> Result<Self, PayloadError> {
+        if writers.is_empty() {
+            return Err(PayloadError::EmptyArray { key: 1 });
+        }
+        let raw: Vec<Vec<u8>> = writers.iter().map(|w| w.to_vec()).collect();
+        check_sorted_unique_bytes(&raw, 1)?;
+        Ok(Self { pattern, writers })
+    }
+}
+
+impl From<&RefPermissionEntry> for Value {
+    fn from(p: &RefPermissionEntry) -> Self {
+        let writers: Vec<Value> = p.writers.iter().map(|w| Value::Bytes(w.to_vec())).collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::Text(p.pattern.clone())),
+            (Value::U64(1), Value::Array(writers)),
+        ])
+    }
+}
+
+impl TryFrom<Value> for RefPermissionEntry {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 2);
+        let raw_writers = bytes_array_field(&fields, 1)?;
+        let writers: Vec<[u8; 32]> = raw_writers
+            .iter()
+            .map(|b| {
+                let mut arr = [0u8; 32];
+                if b.len() != 32 {
+                    return Err(PayloadError::WrongLength {
+                        key: 1,
+                        expected: 32,
+                        actual: b.len(),
+                    });
+                }
+                arr.copy_from_slice(b);
+                Ok(arr)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(field_text(&fields, 0)?, writers)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RepositoryGenesisPayload (FORMAT.md §9.1)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepositoryGenesisPayload {
+    pub format_version: u64,
+    pub repository_id: [u8; 16],
+    pub federation_id: [u8; 16],
+    pub creator_key_id: [u8; 32],
+    pub creator_public_key: [u8; 32],
+    pub initial_policy_id: [u8; 32],
+    pub initial_keyring_id: [u8; 32],
+    pub created_at_ns: i64,
+}
+
+impl RepositoryGenesisPayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        federation_id: [u8; 16],
+        creator_key_id: [u8; 32],
+        creator_public_key: [u8; 32],
+        initial_policy_id: [u8; 32],
+        initial_keyring_id: [u8; 32],
+        created_at_ns: i64,
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("expected 1, got {format_version}"),
+            });
+        }
+        Ok(Self {
+            format_version,
+            repository_id,
+            federation_id,
+            creator_key_id,
+            creator_public_key,
+            initial_policy_id,
+            initial_keyring_id,
+            created_at_ns,
+        })
+    }
+}
+
+impl From<&RepositoryGenesisPayload> for Value {
+    fn from(p: &RepositoryGenesisPayload) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::Bytes(p.federation_id.to_vec())),
+            (Value::U64(3), Value::Bytes(p.creator_key_id.to_vec())),
+            (Value::U64(4), Value::Bytes(p.creator_public_key.to_vec())),
+            (Value::U64(5), Value::Bytes(p.initial_policy_id.to_vec())),
+            (Value::U64(6), Value::Bytes(p.initial_keyring_id.to_vec())),
+            (Value::U64(7), Value::I64(p.created_at_ns)),
+        ])
+    }
+}
+
+impl TryFrom<Value> for RepositoryGenesisPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 8);
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            field_bytes_exact::<16>(&fields, 2)?,
+            field_bytes_exact::<32>(&fields, 3)?,
+            field_bytes_exact::<32>(&fields, 4)?,
+            field_bytes_exact::<32>(&fields, 5)?,
+            field_bytes_exact::<32>(&fields, 6)?,
+            field_int(&fields, 7)?,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRecordPayload (FORMAT.md §9.4)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolicyRecordPayload {
+    pub format_version: u64,
+    pub repository_id: [u8; 16],
+    pub previous_policy_id: Option<[u8; 32]>,
+    pub policy_sequence: u64,
+    pub introduced_keys: Vec<PublicKeyEntry>,
+    pub administrators: Vec<[u8; 32]>,
+    pub writers: Vec<[u8; 32]>,
+    pub per_ref_permissions: Vec<RefPermissionEntry>,
+    pub tag_creators: Vec<[u8; 32]>,
+    pub revoked_keys: Vec<[u8; 32]>,
+    pub created_at_ns: i64,
+    pub author_key_id: [u8; 32],
+}
+
+impl PolicyRecordPayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        previous_policy_id: Option<[u8; 32]>,
+        policy_sequence: u64,
+        introduced_keys: Vec<PublicKeyEntry>,
+        administrators: Vec<[u8; 32]>,
+        writers: Vec<[u8; 32]>,
+        per_ref_permissions: Vec<RefPermissionEntry>,
+        tag_creators: Vec<[u8; 32]>,
+        revoked_keys: Vec<[u8; 32]>,
+        created_at_ns: i64,
+        author_key_id: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("expected 1, got {format_version}"),
+            });
+        }
+        if policy_sequence < 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: format!("minimum 1, got {policy_sequence}"),
+            });
+        }
+        // Validate introduced_keys sorted by key_id
+        for w in introduced_keys.windows(2) {
+            if w[0].key_id >= w[1].key_id {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 4 });
+            }
+        }
+        // Validate sorted-unique byte arrays
+        let admins_raw: Vec<Vec<u8>> = administrators.iter().map(|a| a.to_vec()).collect();
+        check_sorted_unique_bytes(&admins_raw, 5)?;
+        let writers_raw: Vec<Vec<u8>> = writers.iter().map(|w| w.to_vec()).collect();
+        check_sorted_unique_bytes(&writers_raw, 6)?;
+        // Validate per_ref_permissions sorted by pattern
+        for w in per_ref_permissions.windows(2) {
+            if w[0].pattern >= w[1].pattern {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 7 });
+            }
+        }
+        let tag_raw: Vec<Vec<u8>> = tag_creators.iter().map(|t| t.to_vec()).collect();
+        check_sorted_unique_bytes(&tag_raw, 8)?;
+        let revoked_raw: Vec<Vec<u8>> = revoked_keys.iter().map(|r| r.to_vec()).collect();
+        check_sorted_unique_bytes(&revoked_raw, 9)?;
+        Ok(Self {
+            format_version,
+            repository_id,
+            previous_policy_id,
+            policy_sequence,
+            introduced_keys,
+            administrators,
+            writers,
+            per_ref_permissions,
+            tag_creators,
+            revoked_keys,
+            created_at_ns,
+            author_key_id,
+        })
+    }
+}
+
+impl From<&PolicyRecordPayload> for Value {
+    fn from(p: &PolicyRecordPayload) -> Self {
+        let introduced: Vec<Value> = p.introduced_keys.iter().map(Value::from).collect();
+        let admins: Vec<Value> = p
+            .administrators
+            .iter()
+            .map(|a| Value::Bytes(a.to_vec()))
+            .collect();
+        let writers: Vec<Value> = p.writers.iter().map(|w| Value::Bytes(w.to_vec())).collect();
+        let permissions: Vec<Value> = p.per_ref_permissions.iter().map(Value::from).collect();
+        let tags: Vec<Value> = p
+            .tag_creators
+            .iter()
+            .map(|t| Value::Bytes(t.to_vec()))
+            .collect();
+        let revoked: Vec<Value> = p
+            .revoked_keys
+            .iter()
+            .map(|r| Value::Bytes(r.to_vec()))
+            .collect();
+        let prev = match &p.previous_policy_id {
+            Some(id) => Value::Bytes(id.to_vec()),
+            None => Value::Null,
+        };
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), prev),
+            (Value::U64(3), Value::U64(p.policy_sequence)),
+            (Value::U64(4), Value::Array(introduced)),
+            (Value::U64(5), Value::Array(admins)),
+            (Value::U64(6), Value::Array(writers)),
+            (Value::U64(7), Value::Array(permissions)),
+            (Value::U64(8), Value::Array(tags)),
+            (Value::U64(9), Value::Array(revoked)),
+            (Value::U64(10), Value::I64(p.created_at_ns)),
+            (Value::U64(11), Value::Bytes(p.author_key_id.to_vec())),
+        ])
+    }
+}
+
+impl TryFrom<Value> for PolicyRecordPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 12);
+
+        let previous_policy_id = field_nullable_bytes_exact::<32>(&fields, 2)?;
+
+        // Parse introduced_keys array
+        let introduced_keys = match fields.get(4).and_then(|f| *f) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .map(|v| PublicKeyEntry::try_from(v.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 4,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(4)),
+        };
+
+        // Parse administrators
+        let admins_raw = bytes_array_field(&fields, 5)?;
+        let administrators: Vec<[u8; 32]> = admins_raw
+            .iter()
+            .map(|b| {
+                let mut arr = [0u8; 32];
+                if b.len() != 32 {
+                    return Err(PayloadError::WrongLength {
+                        key: 5,
+                        expected: 32,
+                        actual: b.len(),
+                    });
+                }
+                arr.copy_from_slice(b);
+                Ok(arr)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Parse writers
+        let writers_raw = bytes_array_field(&fields, 6)?;
+        let writers: Vec<[u8; 32]> = writers_raw
+            .iter()
+            .map(|b| {
+                let mut arr = [0u8; 32];
+                if b.len() != 32 {
+                    return Err(PayloadError::WrongLength {
+                        key: 6,
+                        expected: 32,
+                        actual: b.len(),
+                    });
+                }
+                arr.copy_from_slice(b);
+                Ok(arr)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Parse per_ref_permissions
+        let per_ref_permissions = match fields.get(7).and_then(|f| *f) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .map(|v| RefPermissionEntry::try_from(v.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 7,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(7)),
+        };
+
+        // Parse tag_creators
+        let tags_raw = bytes_array_field(&fields, 8)?;
+        let tag_creators: Vec<[u8; 32]> = tags_raw
+            .iter()
+            .map(|b| {
+                let mut arr = [0u8; 32];
+                if b.len() != 32 {
+                    return Err(PayloadError::WrongLength {
+                        key: 8,
+                        expected: 32,
+                        actual: b.len(),
+                    });
+                }
+                arr.copy_from_slice(b);
+                Ok(arr)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Parse revoked_keys
+        let revoked_raw = bytes_array_field(&fields, 9)?;
+        let revoked_keys: Vec<[u8; 32]> = revoked_raw
+            .iter()
+            .map(|b| {
+                let mut arr = [0u8; 32];
+                if b.len() != 32 {
+                    return Err(PayloadError::WrongLength {
+                        key: 9,
+                        expected: 32,
+                        actual: b.len(),
+                    });
+                }
+                arr.copy_from_slice(b);
+                Ok(arr)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            previous_policy_id,
+            field_uint(&fields, 3)?,
+            introduced_keys,
+            administrators,
+            writers,
+            per_ref_permissions,
+            tag_creators,
+            revoked_keys,
+            field_int(&fields, 10)?,
+            field_bytes_exact::<32>(&fields, 11)?,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KeySlot (FORMAT.md §9.6)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeySlot {
+    pub slot_id: [u8; 16],
+    pub slot_kind: u64,
+    pub label: String,
+    pub password_kdf: Option<PasswordKdfDescriptor>,
+    pub recipient_key_id: Option<[u8; 32]>,
+    pub ephemeral_public_key: Option<[u8; 32]>,
+    pub wrap_algorithm: u64,
+    pub wrap_nonce: [u8; 24],
+    pub wrapped_secret: Vec<u8>,
+    pub created_at_ns: i64,
+}
+
+impl KeySlot {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        slot_id: [u8; 16],
+        slot_kind: u64,
+        label: String,
+        password_kdf: Option<PasswordKdfDescriptor>,
+        recipient_key_id: Option<[u8; 32]>,
+        ephemeral_public_key: Option<[u8; 32]>,
+        wrap_algorithm: u64,
+        wrap_nonce: [u8; 24],
+        wrapped_secret: Vec<u8>,
+        created_at_ns: i64,
+    ) -> Result<Self, PayloadError> {
+        if !(1..=3).contains(&slot_kind) {
+            return Err(PayloadError::UnsupportedValue {
+                key: 1,
+                detail: format!("expected 1, 2, or 3, got {slot_kind}"),
+            });
+        }
+        if label.is_empty() || label.len() > 128 {
+            return Err(PayloadError::InvalidText {
+                key: 2,
+                detail: format!("label must be 1..128 bytes, got {}", label.len()),
+            });
+        }
+        if wrap_algorithm != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 6,
+                detail: format!("expected 1 (XChaCha20-Poly1305), got {wrap_algorithm}"),
+            });
+        }
+        match slot_kind {
+            1 => {
+                if password_kdf.is_none() {
+                    return Err(PayloadError::MissingField(3));
+                }
+                if recipient_key_id.is_some() {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 4,
+                        detail: "recipient_key_id must be null for password slots".into(),
+                    });
+                }
+                if ephemeral_public_key.is_some() {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 5,
+                        detail: "ephemeral_public_key must be null for password slots".into(),
+                    });
+                }
+            }
+            2 | 3 => {
+                if password_kdf.is_some() {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 3,
+                        detail: "password_kdf must be null for recipient slots".into(),
+                    });
+                }
+                if recipient_key_id.is_none() {
+                    return Err(PayloadError::MissingField(4));
+                }
+                if ephemeral_public_key.is_none() {
+                    return Err(PayloadError::MissingField(5));
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(Self {
+            slot_id,
+            slot_kind,
+            label,
+            password_kdf,
+            recipient_key_id,
+            ephemeral_public_key,
+            wrap_algorithm,
+            wrap_nonce,
+            wrapped_secret,
+            created_at_ns,
+        })
+    }
+}
+
+impl From<&KeySlot> for Value {
+    fn from(s: &KeySlot) -> Self {
+        let kdf: Value = match &s.password_kdf {
+            Some(k) => Value::from(k),
+            None => Value::Null,
+        };
+        let recipient: Value = match &s.recipient_key_id {
+            Some(id) => Value::Bytes(id.to_vec()),
+            None => Value::Null,
+        };
+        let ephemeral: Value = match &s.ephemeral_public_key {
+            Some(k) => Value::Bytes(k.to_vec()),
+            None => Value::Null,
+        };
+        Value::Map(vec![
+            (Value::U64(0), Value::Bytes(s.slot_id.to_vec())),
+            (Value::U64(1), Value::U64(s.slot_kind)),
+            (Value::U64(2), Value::Text(s.label.clone())),
+            (Value::U64(3), kdf),
+            (Value::U64(4), recipient),
+            (Value::U64(5), ephemeral),
+            (Value::U64(6), Value::U64(s.wrap_algorithm)),
+            (Value::U64(7), Value::Bytes(s.wrap_nonce.to_vec())),
+            (Value::U64(8), Value::Bytes(s.wrapped_secret.clone())),
+            (Value::U64(9), Value::I64(s.created_at_ns)),
+        ])
+    }
+}
+
+impl TryFrom<Value> for KeySlot {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 10);
+
+        let password_kdf = match fields.get(3).and_then(|f| *f) {
+            Some(Value::Map(pairs)) => {
+                Some(PasswordKdfDescriptor::try_from(Value::Map(pairs.clone()))?)
+            }
+            Some(Value::Null) | None => None,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 3,
+                    expected: "null or map",
+                });
+            }
+        };
+        let recipient_key_id = field_nullable_bytes_exact::<32>(&fields, 4)?;
+        let ephemeral_public_key = field_nullable_bytes_exact::<32>(&fields, 5)?;
+
+        Self::new(
+            field_bytes_exact::<16>(&fields, 0)?,
+            field_uint(&fields, 1)?,
+            field_text(&fields, 2)?,
+            password_kdf,
+            recipient_key_id,
+            ephemeral_public_key,
+            field_uint(&fields, 6)?,
+            field_bytes_exact::<24>(&fields, 7)?,
+            field_bytes(&fields, 8)?,
+            field_int(&fields, 9)?,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WrappedDek (FORMAT.md §9.7)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrappedDek {
+    pub key_epoch: u64,
+    pub dek_id: [u8; 16],
+    pub slots: Vec<KeySlot>,
+}
+
+impl WrappedDek {
+    pub fn new(
+        key_epoch: u64,
+        dek_id: [u8; 16],
+        slots: Vec<KeySlot>,
+    ) -> Result<Self, PayloadError> {
+        if key_epoch == 0 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: "key_epoch must be nonzero".into(),
+            });
+        }
+        if slots.is_empty() {
+            return Err(PayloadError::EmptyArray { key: 2 });
+        }
+        // Validate slots sorted by slot_id
+        for w in slots.windows(2) {
+            if w[0].slot_id >= w[1].slot_id {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 2 });
+            }
+        }
+        Ok(Self {
+            key_epoch,
+            dek_id,
+            slots,
+        })
+    }
+}
+
+impl From<&WrappedDek> for Value {
+    fn from(w: &WrappedDek) -> Self {
+        let slots: Vec<Value> = w.slots.iter().map(Value::from).collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(w.key_epoch)),
+            (Value::U64(1), Value::Bytes(w.dek_id.to_vec())),
+            (Value::U64(2), Value::Array(slots)),
+        ])
+    }
+}
+
+impl TryFrom<Value> for WrappedDek {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 3);
+
+        let slots = match fields.get(2).and_then(|f| *f) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .map(|v| KeySlot::try_from(v.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 2,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(2)),
+        };
+
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            slots,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KeyringRecordPayload (FORMAT.md §9.8)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyringRecordPayload {
+    pub format_version: u64,
+    pub repository_id: [u8; 16],
+    pub previous_keyring_id: Option<[u8; 32]>,
+    pub key_epoch: u64,
+    pub content_id_key_slots: Vec<KeySlot>,
+    pub dek_slots: Vec<WrappedDek>,
+    pub retired_key_epochs: Vec<u64>,
+    pub created_at_ns: i64,
+    pub author_key_id: [u8; 32],
+}
+
+impl KeyringRecordPayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        previous_keyring_id: Option<[u8; 32]>,
+        key_epoch: u64,
+        content_id_key_slots: Vec<KeySlot>,
+        dek_slots: Vec<WrappedDek>,
+        retired_key_epochs: Vec<u64>,
+        created_at_ns: i64,
+        author_key_id: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("expected 1, got {format_version}"),
+            });
+        }
+        // Validate content_id_key_slots sorted by slot_id
+        for w in content_id_key_slots.windows(2) {
+            if w[0].slot_id >= w[1].slot_id {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 4 });
+            }
+        }
+        // Validate dek_slots sorted by key_epoch
+        for w in dek_slots.windows(2) {
+            if w[0].key_epoch >= w[1].key_epoch {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 5 });
+            }
+        }
+        // Validate retired_key_epochs sorted unique
+        check_sorted_unique_u64(&retired_key_epochs, 6)?;
+        Ok(Self {
+            format_version,
+            repository_id,
+            previous_keyring_id,
+            key_epoch,
+            content_id_key_slots,
+            dek_slots,
+            retired_key_epochs,
+            created_at_ns,
+            author_key_id,
+        })
+    }
+}
+
+impl From<&KeyringRecordPayload> for Value {
+    fn from(p: &KeyringRecordPayload) -> Self {
+        let cik_slots: Vec<Value> = p.content_id_key_slots.iter().map(Value::from).collect();
+        let dek_slots: Vec<Value> = p.dek_slots.iter().map(Value::from).collect();
+        let retired: Vec<Value> = p
+            .retired_key_epochs
+            .iter()
+            .map(|e| Value::U64(*e))
+            .collect();
+        let prev = match &p.previous_keyring_id {
+            Some(id) => Value::Bytes(id.to_vec()),
+            None => Value::Null,
+        };
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), prev),
+            (Value::U64(3), Value::U64(p.key_epoch)),
+            (Value::U64(4), Value::Array(cik_slots)),
+            (Value::U64(5), Value::Array(dek_slots)),
+            (Value::U64(6), Value::Array(retired)),
+            (Value::U64(7), Value::I64(p.created_at_ns)),
+            (Value::U64(8), Value::Bytes(p.author_key_id.to_vec())),
+        ])
+    }
+}
+
+impl TryFrom<Value> for KeyringRecordPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        let fields = parse_fields(pairs, 9);
+
+        let previous_keyring_id = field_nullable_bytes_exact::<32>(&fields, 2)?;
+
+        let content_id_key_slots = match fields.get(4).and_then(|f| *f) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .map(|v| KeySlot::try_from(v.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 4,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(4)),
+        };
+
+        let dek_slots = match fields.get(5).and_then(|f| *f) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .map(|v| WrappedDek::try_from(v.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 5,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(5)),
+        };
+
+        let retired_key_epochs = match fields.get(6).and_then(|f| *f) {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .map(|v| match v {
+                    Value::U64(e) => Ok(*e),
+                    _ => Err(PayloadError::FieldType {
+                        key: 6,
+                        expected: "array of uint",
+                    }),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 6,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(6)),
+        };
+
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            previous_keyring_id,
+            field_uint(&fields, 3)?,
+            content_id_key_slots,
+            dek_slots,
+            retired_key_epochs,
+            field_int(&fields, 7)?,
+            field_bytes_exact::<32>(&fields, 8)?,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -518,5 +1714,924 @@ mod tests {
             result,
             Err(SignedRecordError::EnvelopeTooLarge { .. })
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // PasswordKdfDescriptor tests
+    // -----------------------------------------------------------------------
+
+    fn make_password_kdf() -> PasswordKdfDescriptor {
+        PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65536, 3, 1).unwrap()
+    }
+
+    #[test]
+    fn password_kdf_roundtrip() {
+        let kdf = make_password_kdf();
+        let decoded = PasswordKdfDescriptor::try_from(Value::from(&kdf)).unwrap();
+        assert_eq!(decoded, kdf);
+    }
+
+    #[test]
+    fn password_kdf_field_numbers() {
+        let pairs = match Value::from(&make_password_kdf()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 6);
+        assert_eq!(pairs[0].0, Value::U64(0));
+        assert_eq!(pairs[1].0, Value::U64(1));
+        assert_eq!(pairs[2].0, Value::U64(2));
+        assert_eq!(pairs[3].0, Value::U64(3));
+        assert_eq!(pairs[4].0, Value::U64(4));
+        assert_eq!(pairs[5].0, Value::U64(5));
+    }
+
+    #[test]
+    fn password_kdf_rejects_bad_algorithm() {
+        let err = PasswordKdfDescriptor::new(2, 0x13, vec![0xABu8; 32], 65536, 3, 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn password_kdf_rejects_bad_version() {
+        let err = PasswordKdfDescriptor::new(1, 10, vec![0xABu8; 32], 65536, 3, 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn password_kdf_rejects_short_salt() {
+        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 15], 65536, 3, 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 2, .. }));
+    }
+
+    #[test]
+    fn password_kdf_rejects_low_memory() {
+        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65535, 3, 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn password_kdf_rejects_zero_iterations() {
+        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65536, 0, 1).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn password_kdf_rejects_bad_parallelism() {
+        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65536, 3, 0).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
+    }
+
+    #[test]
+    fn password_kdf_rejects_not_a_map() {
+        let err = PasswordKdfDescriptor::try_from(Value::U64(42)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    #[test]
+    fn password_kdf_rejects_wrong_field_type() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Text("x".into())),
+            (Value::U64(1), Value::U64(0x13)),
+            (Value::U64(2), Value::Bytes(vec![0xABu8; 32])),
+            (Value::U64(3), Value::U64(65536)),
+            (Value::U64(4), Value::U64(3)),
+            (Value::U64(5), Value::U64(1)),
+        ]);
+        let err = PasswordKdfDescriptor::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::FieldType { key: 0, .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // PublicKeyEntry tests
+    // -----------------------------------------------------------------------
+
+    fn make_public_key_entry() -> PublicKeyEntry {
+        PublicKeyEntry::new([0xAAu8; 32], 1, [0xBBu8; 32], "test key".into()).unwrap()
+    }
+
+    #[test]
+    fn public_key_entry_roundtrip() {
+        let entry = make_public_key_entry();
+        let decoded = PublicKeyEntry::try_from(Value::from(&entry)).unwrap();
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn public_key_entry_field_numbers() {
+        let pairs = match Value::from(&make_public_key_entry()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 4);
+        assert_eq!(pairs[0].0, Value::U64(0)); // key_id
+        assert_eq!(pairs[1].0, Value::U64(1)); // algorithm
+        assert_eq!(pairs[2].0, Value::U64(2)); // public_key
+        assert_eq!(pairs[3].0, Value::U64(3)); // label
+    }
+
+    #[test]
+    fn public_key_entry_rejects_bad_algorithm() {
+        let err = PublicKeyEntry::new([0xAAu8; 32], 3, [0xBBu8; 32], "test".into()).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn public_key_entry_rejects_long_label() {
+        let err = PublicKeyEntry::new([0xAAu8; 32], 1, [0xBBu8; 32], "x".repeat(129)).unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 3, .. }));
+    }
+
+    #[test]
+    fn public_key_entry_rejects_not_a_map() {
+        let err = PublicKeyEntry::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    #[test]
+    fn public_key_entry_rejects_wrong_key_id_length() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Bytes(vec![0xAAu8; 31])),
+            (Value::U64(1), Value::U64(1)),
+            (Value::U64(2), Value::Bytes(vec![0xBBu8; 32])),
+            (Value::U64(3), Value::Text("test".into())),
+        ]);
+        let err = PublicKeyEntry::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::WrongLength { key: 0, .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // RefPermissionEntry tests
+    // -----------------------------------------------------------------------
+
+    fn make_ref_permission_entry() -> RefPermissionEntry {
+        RefPermissionEntry::new("refs/heads/main".into(), vec![[0xCCu8; 32], [0xDDu8; 32]]).unwrap()
+    }
+
+    #[test]
+    fn ref_permission_entry_roundtrip() {
+        let entry = make_ref_permission_entry();
+        let decoded = RefPermissionEntry::try_from(Value::from(&entry)).unwrap();
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn ref_permission_entry_field_numbers() {
+        let pairs = match Value::from(&make_ref_permission_entry()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].0, Value::U64(0)); // pattern
+        assert_eq!(pairs[1].0, Value::U64(1)); // writers
+    }
+
+    #[test]
+    fn ref_permission_entry_rejects_empty_writers() {
+        let err = RefPermissionEntry::new("refs/heads/main".into(), vec![]).unwrap_err();
+        assert!(matches!(err, PayloadError::EmptyArray { key: 1 }));
+    }
+
+    #[test]
+    fn ref_permission_entry_rejects_unsorted_writers() {
+        let err =
+            RefPermissionEntry::new("refs/heads/main".into(), vec![[0xDDu8; 32], [0xCCu8; 32]])
+                .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 1 }));
+    }
+
+    #[test]
+    fn ref_permission_entry_rejects_duplicate_writers() {
+        let err =
+            RefPermissionEntry::new("refs/heads/main".into(), vec![[0xCCu8; 32], [0xCCu8; 32]])
+                .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 1 }));
+    }
+
+    #[test]
+    fn ref_permission_entry_rejects_wrong_writer_length() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Text("refs/heads/main".into())),
+            (
+                Value::U64(1),
+                Value::Array(vec![Value::Bytes(vec![0xCCu8; 31])]),
+            ),
+        ]);
+        let err = RefPermissionEntry::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::WrongLength { key: 1, .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryGenesisPayload tests
+    // -----------------------------------------------------------------------
+
+    fn make_genesis_payload() -> RepositoryGenesisPayload {
+        RepositoryGenesisPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 16],
+            [0x03u8; 32],
+            [0x04u8; 32],
+            [0x05u8; 32],
+            [0x06u8; 32],
+            1_000_000,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn genesis_roundtrip() {
+        let payload = make_genesis_payload();
+        let decoded = RepositoryGenesisPayload::try_from(Value::from(&payload)).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn genesis_field_numbers() {
+        let pairs = match Value::from(&make_genesis_payload()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 8);
+        assert_eq!(pairs[0].0, Value::U64(0)); // format_version
+        assert_eq!(pairs[1].0, Value::U64(1)); // repository_id
+        assert_eq!(pairs[2].0, Value::U64(2)); // federation_id
+        assert_eq!(pairs[3].0, Value::U64(3)); // creator_key_id
+        assert_eq!(pairs[4].0, Value::U64(4)); // creator_public_key
+        assert_eq!(pairs[5].0, Value::U64(5)); // initial_policy_id
+        assert_eq!(pairs[6].0, Value::U64(6)); // initial_keyring_id
+        assert_eq!(pairs[7].0, Value::U64(7)); // created_at_ns
+    }
+
+    #[test]
+    fn genesis_rejects_bad_format_version() {
+        let err = RepositoryGenesisPayload::new(
+            2,
+            [0x01u8; 16],
+            [0x02u8; 16],
+            [0x03u8; 32],
+            [0x04u8; 32],
+            [0x05u8; 32],
+            [0x06u8; 32],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn genesis_rejects_not_a_map() {
+        let err = RepositoryGenesisPayload::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    // -----------------------------------------------------------------------
+    // PolicyRecordPayload tests
+    // -----------------------------------------------------------------------
+
+    fn make_policy_payload() -> PolicyRecordPayload {
+        PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            Some([0xAAu8; 32]),
+            3,
+            vec![
+                PublicKeyEntry::new([0x10u8; 32], 1, [0x20u8; 32], "key1".into()).unwrap(),
+                PublicKeyEntry::new([0x11u8; 32], 2, [0x21u8; 32], "key2".into()).unwrap(),
+            ],
+            vec![[0xA0u8; 32], [0xA1u8; 32]],
+            vec![[0xB0u8; 32], [0xB1u8; 32]],
+            vec![
+                RefPermissionEntry::new("refs/heads/a".into(), vec![[0xC0u8; 32]]).unwrap(),
+                RefPermissionEntry::new("refs/heads/b".into(), vec![[0xC1u8; 32]]).unwrap(),
+            ],
+            vec![[0xD0u8; 32]],
+            vec![[0xE0u8; 32]],
+            2_000_000,
+            [0xFFu8; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn policy_roundtrip() {
+        let payload = make_policy_payload();
+        let decoded = PolicyRecordPayload::try_from(Value::from(&payload)).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn policy_field_numbers() {
+        let pairs = match Value::from(&make_policy_payload()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 12);
+        for (i, pair) in pairs.iter().enumerate() {
+            assert_eq!(pair.0, Value::U64(i as u64), "field {i} key mismatch");
+        }
+    }
+
+    #[test]
+    fn policy_rejects_bad_format_version() {
+        let mut p = make_policy_payload();
+        p.format_version = 2;
+        let value = Value::from(&p);
+        let err = PolicyRecordPayload::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn policy_rejects_zero_sequence() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn policy_rejects_unsorted_introduced_keys() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![
+                PublicKeyEntry::new([0x11u8; 32], 1, [0x20u8; 32], "b".into()).unwrap(),
+                PublicKeyEntry::new([0x10u8; 32], 1, [0x21u8; 32], "a".into()).unwrap(),
+            ],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 4 }));
+    }
+
+    #[test]
+    fn policy_rejects_unsorted_administrators() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![],
+            vec![[0xA1u8; 32], [0xA0u8; 32]],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 5 }));
+    }
+
+    #[test]
+    fn policy_rejects_unsorted_writers() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![],
+            vec![],
+            vec![[0xB1u8; 32], [0xB0u8; 32]],
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
+    }
+
+    #[test]
+    fn policy_rejects_unsorted_permissions() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![
+                RefPermissionEntry::new("z".into(), vec![[0xC0u8; 32]]).unwrap(),
+                RefPermissionEntry::new("a".into(), vec![[0xC1u8; 32]]).unwrap(),
+            ],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 7 }));
+    }
+
+    #[test]
+    fn policy_rejects_unsorted_tag_creators() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![[0xD1u8; 32], [0xD0u8; 32]],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 8 }));
+    }
+
+    #[test]
+    fn policy_rejects_unsorted_revoked_keys() {
+        let err = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![[0xE1u8; 32], [0xE0u8; 32]],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 9 }));
+    }
+
+    #[test]
+    fn policy_accepts_null_previous_policy_id() {
+        let payload = PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap();
+        let decoded = PolicyRecordPayload::try_from(Value::from(&payload)).unwrap();
+        assert!(decoded.previous_policy_id.is_none());
+    }
+
+    #[test]
+    fn policy_rejects_not_a_map() {
+        let err = PolicyRecordPayload::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    // -----------------------------------------------------------------------
+    // KeySlot tests
+    // -----------------------------------------------------------------------
+
+    fn make_key_slot_password() -> KeySlot {
+        KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "password slot".into(),
+            Some(make_password_kdf()),
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            1_000_000,
+        )
+        .unwrap()
+    }
+
+    fn make_key_slot_recipient() -> KeySlot {
+        KeySlot::new(
+            [0x02u8; 16],
+            2,
+            "recipient slot".into(),
+            None,
+            Some([0x20u8; 32]),
+            Some([0x30u8; 32]),
+            1,
+            [0x11u8; 24],
+            vec![0xBBu8; 48],
+            2_000_000,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn key_slot_password_roundtrip() {
+        let slot = make_key_slot_password();
+        let decoded = KeySlot::try_from(Value::from(&slot)).unwrap();
+        assert_eq!(decoded, slot);
+    }
+
+    #[test]
+    fn key_slot_recipient_roundtrip() {
+        let slot = make_key_slot_recipient();
+        let decoded = KeySlot::try_from(Value::from(&slot)).unwrap();
+        assert_eq!(decoded, slot);
+    }
+
+    #[test]
+    fn key_slot_field_numbers() {
+        let pairs = match Value::from(&make_key_slot_password()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 10);
+        for (i, pair) in pairs.iter().enumerate() {
+            assert_eq!(pair.0, Value::U64(i as u64), "field {i} key mismatch");
+        }
+    }
+
+    #[test]
+    fn key_slot_rejects_bad_slot_kind() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            0,
+            "slot".into(),
+            None,
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn key_slot_rejects_empty_label() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "".into(),
+            Some(make_password_kdf()),
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn key_slot_rejects_password_without_kdf() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "slot".into(),
+            None,
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::MissingField(3)));
+    }
+
+    #[test]
+    fn key_slot_rejects_password_with_recipient_key() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "slot".into(),
+            Some(make_password_kdf()),
+            Some([0x20u8; 32]),
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn key_slot_rejects_recipient_without_key() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            2,
+            "slot".into(),
+            None,
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::MissingField(4)));
+    }
+
+    #[test]
+    fn key_slot_rejects_recipient_without_ephemeral() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            2,
+            "slot".into(),
+            None,
+            Some([0x20u8; 32]),
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::MissingField(5)));
+    }
+
+    #[test]
+    fn key_slot_rejects_recipient_with_kdf() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            2,
+            "slot".into(),
+            Some(make_password_kdf()),
+            Some([0x20u8; 32]),
+            Some([0x30u8; 32]),
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn key_slot_rejects_bad_wrap_algorithm() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "slot".into(),
+            Some(make_password_kdf()),
+            None,
+            None,
+            2,
+            [0x10u8; 24],
+            vec![0xAAu8; 48],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 6, .. }));
+    }
+
+    #[test]
+    fn key_slot_rejects_not_a_map() {
+        let err = KeySlot::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    // -----------------------------------------------------------------------
+    // WrappedDek tests
+    // -----------------------------------------------------------------------
+
+    fn make_wrapped_dek() -> WrappedDek {
+        WrappedDek::new(
+            1,
+            [0x01u8; 16],
+            vec![make_key_slot_password(), make_key_slot_recipient()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn wrapped_dek_roundtrip() {
+        let wd = make_wrapped_dek();
+        let decoded = WrappedDek::try_from(Value::from(&wd)).unwrap();
+        assert_eq!(decoded, wd);
+    }
+
+    #[test]
+    fn wrapped_dek_field_numbers() {
+        let pairs = match Value::from(&make_wrapped_dek()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0].0, Value::U64(0)); // key_epoch
+        assert_eq!(pairs[1].0, Value::U64(1)); // dek_id
+        assert_eq!(pairs[2].0, Value::U64(2)); // slots
+    }
+
+    #[test]
+    fn wrapped_dek_rejects_zero_epoch() {
+        let err = WrappedDek::new(0, [0x01u8; 16], vec![make_key_slot_password()]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn wrapped_dek_rejects_empty_slots() {
+        let err = WrappedDek::new(1, [0x01u8; 16], vec![]).unwrap_err();
+        assert!(matches!(err, PayloadError::EmptyArray { key: 2 }));
+    }
+
+    #[test]
+    fn wrapped_dek_rejects_unsorted_slots() {
+        let slot_b = make_key_slot_recipient(); // slot_id = [0x02; 16]
+        let slot_a = make_key_slot_password(); // slot_id = [0x01; 16]
+        let err = WrappedDek::new(1, [0x01u8; 16], vec![slot_b, slot_a]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 2 }));
+    }
+
+    #[test]
+    fn wrapped_dek_rejects_not_a_map() {
+        let err = WrappedDek::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
+    }
+
+    // -----------------------------------------------------------------------
+    // KeyringRecordPayload tests
+    // -----------------------------------------------------------------------
+
+    fn make_keyring_payload() -> KeyringRecordPayload {
+        KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            Some([0xAAu8; 32]),
+            5,
+            vec![make_key_slot_password()],
+            vec![make_wrapped_dek()],
+            vec![1, 3],
+            3_000_000,
+            [0xFFu8; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn keyring_roundtrip() {
+        let payload = make_keyring_payload();
+        let decoded = KeyringRecordPayload::try_from(Value::from(&payload)).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn keyring_field_numbers() {
+        let pairs = match Value::from(&make_keyring_payload()) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 9);
+        for (i, pair) in pairs.iter().enumerate() {
+            assert_eq!(pair.0, Value::U64(i as u64), "field {i} key mismatch");
+        }
+    }
+
+    #[test]
+    fn keyring_rejects_bad_format_version() {
+        let err = KeyringRecordPayload::new(
+            2,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn keyring_rejects_unsorted_content_id_key_slots() {
+        let slot_a = make_key_slot_recipient(); // slot_id = [0x02; 16]
+        let slot_b = make_key_slot_password(); // slot_id = [0x01; 16]
+        let err = KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![slot_a, slot_b],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 4 }));
+    }
+
+    #[test]
+    fn keyring_rejects_unsorted_dek_slots() {
+        let dek_1 = WrappedDek::new(2, [0x01u8; 16], vec![make_key_slot_password()]).unwrap();
+        let dek_2 = WrappedDek::new(1, [0x02u8; 16], vec![make_key_slot_recipient()]).unwrap();
+        let err = KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![],
+            vec![dek_1, dek_2],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 5 }));
+    }
+
+    #[test]
+    fn keyring_rejects_unsorted_retired_epochs() {
+        let err = KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![],
+            vec![],
+            vec![3, 1],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
+    }
+
+    #[test]
+    fn keyring_rejects_duplicate_retired_epochs() {
+        let err = KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![],
+            vec![],
+            vec![1, 1],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
+    }
+
+    #[test]
+    fn keyring_accepts_null_previous_keyring_id() {
+        let payload = KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            None,
+            0,
+            vec![],
+            vec![],
+            vec![],
+            0,
+            [0xFFu8; 32],
+        )
+        .unwrap();
+        let decoded = KeyringRecordPayload::try_from(Value::from(&payload)).unwrap();
+        assert!(decoded.previous_keyring_id.is_none());
+    }
+
+    #[test]
+    fn keyring_rejects_not_a_map() {
+        let err = KeyringRecordPayload::try_from(Value::U64(0)).unwrap_err();
+        assert_eq!(err, PayloadError::NotAMap);
     }
 }
