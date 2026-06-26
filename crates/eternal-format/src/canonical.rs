@@ -51,6 +51,14 @@ impl CanonicalEncoder {
         Self { buf: Vec::new() }
     }
 
+    /// Create an encoder with a pre-allocated output buffer of `capacity` bytes.
+    /// Used by `encode_canonical_value` after pre-computing the exact size.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
+        }
+    }
+
     pub fn into_bytes(self) -> Vec<u8> {
         self.buf
     }
@@ -177,6 +185,159 @@ impl Default for CanonicalEncoder {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Exact-size pre-computation helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the exact number of bytes in a CBOR head for the given unsigned
+/// value using the shortest encoding (RFC 8949 §3).
+fn cbor_head_size(value: u64) -> u64 {
+    if value <= 23 {
+        1
+    } else if value <= 0xff {
+        2
+    } else if value <= 0xffff {
+        3
+    } else if value <= 0xffff_ffff {
+        5
+    } else {
+        9
+    }
+}
+
+/// Pre-compute the exact CBOR encoded byte count for `value` without
+/// allocating an output buffer.  Validates all encode-time limits (depth,
+/// node count, string byte length, NUL content) and returns the exact
+/// number of bytes the encoder will produce.
+///
+/// On overflow during checked arithmetic the function returns
+/// `InputTooLarge` immediately — the size would exceed every possible
+/// limit.
+fn compute_encoded_size(
+    value: &CanonicalValue,
+    depth: u64,
+    node_count: &mut u64,
+    limits: &FormatLimits,
+) -> Result<u64, CanonicalEncodeError> {
+    if depth > limits.max_depth() {
+        return Err(CanonicalEncodeError::DepthExceeded);
+    }
+    *node_count = node_count
+        .checked_add(1)
+        .ok_or(CanonicalEncodeError::NodeCountExceeded {
+            max: limits.max_nodes(),
+        })?;
+    if *node_count > limits.max_nodes() {
+        return Err(CanonicalEncodeError::NodeCountExceeded {
+            max: limits.max_nodes(),
+        });
+    }
+    let max_limit = limits.max_metadata_bytes();
+    use CanonicalEncodeError::InputTooLarge;
+    macro_rules! add {
+        ($a:expr, $b:expr) => {
+            $a.checked_add($b).ok_or(InputTooLarge {
+                max: max_limit,
+                actual: u64::MAX,
+            })?
+        };
+    }
+    match value {
+        CanonicalValue::Null => {
+            // array(1) + u64(0) = 1 + 1 = 2 bytes
+            Ok(2)
+        }
+        CanonicalValue::Bool(_) => {
+            // array(2) + u64(1) + simple(1) = 1 + 1 + 1 = 3 bytes
+            Ok(3)
+        }
+        CanonicalValue::I64(v) => {
+            let inner = if *v >= 0 {
+                cbor_head_size(*v as u64)
+            } else {
+                cbor_head_size((-1i64 - *v) as u64)
+            };
+            // array(2) + u64(2) + inner
+            Ok(add!(2u64, inner))
+        }
+        CanonicalValue::U64(v) => {
+            // array(2) + u64(3) + u64(v)
+            Ok(add!(2u64, cbor_head_size(*v)))
+        }
+        CanonicalValue::Text(s) => {
+            if s.contains('\0') {
+                return Err(CanonicalEncodeError::TextContainsNul);
+            }
+            let len = s.len() as u64;
+            if len > limits.max_string_bytes() {
+                return Err(CanonicalEncodeError::StringTooLong {
+                    max: limits.max_string_bytes(),
+                    actual: len,
+                });
+            }
+            // array(2) + u64(4) + head(3, len) + payload
+            let mut t = 2u64;
+            t = add!(t, cbor_head_size(len));
+            t = add!(t, len);
+            Ok(t)
+        }
+        CanonicalValue::Bytes(b) => {
+            let len = b.len() as u64;
+            if len > limits.max_string_bytes() {
+                return Err(CanonicalEncodeError::StringTooLong {
+                    max: limits.max_string_bytes(),
+                    actual: len,
+                });
+            }
+            // array(2) + u64(5) + head(2, len) + payload
+            let mut t = 2u64;
+            t = add!(t, cbor_head_size(len));
+            t = add!(t, len);
+            Ok(t)
+        }
+        CanonicalValue::Array(items) => {
+            // array(2) + u64(6) + head(4, len) + children
+            let mut t = 2u64;
+            t = add!(t, cbor_head_size(items.len() as u64));
+            for item in items {
+                t = add!(
+                    t,
+                    compute_encoded_size(item, depth + 1, node_count, limits)?
+                );
+            }
+            Ok(t)
+        }
+        CanonicalValue::Map(entries) => {
+            // array(2) + u64(7) + head(4, len) + per-entry
+            let mut t = 2u64;
+            t = add!(t, cbor_head_size(entries.len() as u64));
+            for (key, value) in entries {
+                if key.contains('\0') {
+                    return Err(CanonicalEncodeError::TextContainsNul);
+                }
+                let key_len = key.len() as u64;
+                if key_len > limits.max_string_bytes() {
+                    return Err(CanonicalEncodeError::StringTooLong {
+                        max: limits.max_string_bytes(),
+                        actual: key_len,
+                    });
+                }
+                // per-entry: array(2) + head(3, key_len) + key_payload + child
+                let mut e = 1u64; // array(2) head
+                e = add!(e, cbor_head_size(key_len));
+                e = add!(e, key_len);
+                e = add!(
+                    e,
+                    compute_encoded_size(value, depth + 1, node_count, limits)?
+                );
+                t = add!(t, e);
+            }
+            Ok(t)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Bounded CanonicalValue encoder
 // ---------------------------------------------------------------------------
 
@@ -189,20 +350,31 @@ impl Default for CanonicalEncoder {
 /// - `max_metadata_bytes` — maximum total CBOR encoded output (default: 16_777_216)
 ///
 /// Text values and map keys containing NUL (`\0`) are rejected.
+///
+/// ## Allocation order
+///
+/// 1. Pre-compute exact encoded size (zero output allocation).
+/// 2. Reject if size exceeds `max_metadata_bytes`.
+/// 3. Allocate exact-capacity output buffer and encode.
 pub fn encode_canonical_value(
     value: &CanonicalValue,
     limits: &FormatLimits,
 ) -> Result<Vec<u8>, CanonicalEncodeError> {
-    let mut encoder = CanonicalEncoder::new();
+    // Phase 1: pre-compute exact size with all limit checks (no output buffer).
     let mut node_count = 0u64;
-    validate_encode_value(&mut encoder, value, 0, &mut node_count, limits)?;
-    let total = encoder.as_bytes().len() as u64;
-    if total > limits.max_metadata_bytes() {
+    let size = compute_encoded_size(value, 0, &mut node_count, limits)?;
+    // Phase 2: check total output length BEFORE any output buffer allocation.
+    if size > limits.max_metadata_bytes() {
         return Err(CanonicalEncodeError::InputTooLarge {
             max: limits.max_metadata_bytes(),
-            actual: total,
+            actual: size,
         });
     }
+    // Phase 3: allocate exact-capacity output buffer and encode.
+    let mut encoder = CanonicalEncoder::with_capacity(size as usize);
+    node_count = 0;
+    validate_encode_value(&mut encoder, value, 0, &mut node_count, limits)?;
+    debug_assert_eq!(encoder.as_bytes().len() as u64, size);
     Ok(encoder.into_bytes())
 }
 
@@ -2589,29 +2761,11 @@ mod tests {
         let cv = CanonicalValue::Null;
         assert!(encode_canonical_value(&cv, &limits).is_ok());
 
-        // Allocation checks happen before allocation: a value exceeding
-        // node count must be rejected before full encoding completes.
+        // Allocation checks happen before allocation: node count exceeding
+        // limit must be rejected before any output buffer is written.
         let tight = FormatLimits::default().with_max_nodes(1).unwrap();
         let arr = CanonicalValue::Array(vec![CanonicalValue::Null, CanonicalValue::Null]);
         let result = encode_canonical_value(&arr, &tight);
-        assert!(matches!(
-            result,
-            Err(CanonicalEncodeError::NodeCountExceeded { .. })
-        ));
-    }
-
-    #[test]
-    fn allocation_check_before_allocation() {
-        // Prove that depth/node limits are checked BEFORE string allocation.
-        // Construct a degenerate map with many keys that would require large
-        // allocation — the node limit must trigger before the allocation.
-        let tight = FormatLimits::default().with_max_nodes(2).unwrap();
-        // A map with 2 entries = 5 nodes (1 map + 2 keys + 2 values).
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("a".to_string(), CanonicalValue::Null);
-        map.insert("b".to_string(), CanonicalValue::Null);
-        let cv = CanonicalValue::Map(map);
-        let result = encode_canonical_value(&cv, &tight);
         assert!(matches!(
             result,
             Err(CanonicalEncodeError::NodeCountExceeded { .. })
@@ -2700,16 +2854,73 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejects_metadata_exceeded() {
-        // Encode a CanonicalValue whose CBOR output exceeds max_metadata_bytes.
-        // Each null unit encodes as [0] (2 bytes). With max_metadata_bytes=4,
-        // 3 nulls (6 bytes) should be rejected.
-        let tight = FormatLimits::default().with_max_metadata_bytes(4).unwrap();
-        let cv = CanonicalValue::Array(vec![
+    fn precomputed_size_matches_actual_for_each_variant() {
+        // Prove that compute_encoded_size returns the exact encoded byte count
+        // for every CanonicalValue variant by comparing against actual encoding.
+        let default = FormatLimits::default();
+        let cases: Vec<CanonicalValue> = vec![
             CanonicalValue::Null,
-            CanonicalValue::Null,
-            CanonicalValue::Null,
-        ]);
+            CanonicalValue::Bool(true),
+            CanonicalValue::Bool(false),
+            CanonicalValue::I64(0),
+            CanonicalValue::I64(-1),
+            CanonicalValue::I64(1 << 20),
+            CanonicalValue::I64(-(1 << 20)),
+            CanonicalValue::U64(0),
+            CanonicalValue::U64(255),
+            CanonicalValue::U64(1 << 24),
+            CanonicalValue::U64(1 << 40),
+            CanonicalValue::Text("hello".to_string()),
+            CanonicalValue::Text("".to_string()),
+            CanonicalValue::Bytes(vec![0x00; 100]),
+            CanonicalValue::Bytes(vec![]),
+            CanonicalValue::Array(vec![CanonicalValue::Null, CanonicalValue::Null]),
+            CanonicalValue::Array(vec![
+                CanonicalValue::I64(1),
+                CanonicalValue::I64(2),
+                CanonicalValue::I64(3),
+            ]),
+            CanonicalValue::Array(vec![
+                CanonicalValue::Text("abc".to_string()),
+                CanonicalValue::Text("defg".to_string()),
+            ]),
+        ];
+        for cv in &cases {
+            let mut nc = 0u64;
+            let size = compute_encoded_size(cv, 0, &mut nc, &default).unwrap();
+            let encoded = encode_canonical_value(cv, &default).unwrap();
+            assert_eq!(
+                size,
+                encoded.len() as u64,
+                "size mismatch for {:?}: computed {} != actual {}",
+                cv,
+                size,
+                encoded.len()
+            );
+        }
+    }
+
+    #[test]
+    fn precomputed_size_matches_actual_for_map() {
+        // Separate test for Map because it's the most complex variant.
+        let default = FormatLimits::default();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("key1".to_string(), CanonicalValue::Null);
+        map.insert("key2".to_string(), CanonicalValue::Bool(true));
+        map.insert("key3".to_string(), CanonicalValue::U64(42));
+        let cv = CanonicalValue::Map(map);
+
+        let mut nc = 0u64;
+        let size = compute_encoded_size(&cv, 0, &mut nc, &default).unwrap();
+        let encoded = encode_canonical_value(&cv, &default).unwrap();
+        assert_eq!(size, encoded.len() as u64);
+    }
+
+    #[test]
+    fn encode_rejects_one_byte_over_metadata_limit() {
+        // Pre-computed size = 2 for Null. Set limit to 1 → rejection.
+        let tight = FormatLimits::default().with_max_metadata_bytes(1).unwrap();
+        let cv = CanonicalValue::Null;
         let result = encode_canonical_value(&cv, &tight);
         assert!(matches!(
             result,
@@ -2718,13 +2929,13 @@ mod tests {
     }
 
     #[test]
-    fn encode_accepts_metadata_at_limit() {
-        // Encode a CanonicalValue whose CBOR output meets max_metadata_bytes.
-        // Null encodes as [0] = 0x81 0x00 = 2 bytes.
+    fn encode_accepts_metadata_at_exact_limit() {
+        // Null encodes as [0] = 2 bytes. Set limit to 2 → acceptance.
         let tight = FormatLimits::default().with_max_metadata_bytes(2).unwrap();
         let cv = CanonicalValue::Null;
         let result = encode_canonical_value(&cv, &tight);
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![0x81, 0x00]);
     }
 
     #[test]
@@ -2748,15 +2959,50 @@ mod tests {
     #[test]
     fn encode_rejects_small_strings_summing_over_metadata_limit() {
         // Multiple individually-valid small strings that together exceed
-        // max_metadata_bytes must be rejected.
-        // Each text node encodes as [4, "s"] ≈ 2 + 1 + len bytes.
-        // With max_metadata_bytes=16, three 6-byte texts should be rejected.
+        // max_metadata_bytes must be rejected before allocation.
+        // Each text "aaaaaa" = array(2) + u64(4) + head(3,6) + 6 = 9 bytes.
+        // Three texts + outer array(2) + u64(6) + head(4,3) = 2 + 27 = 29 bytes.
+        // With max_metadata_bytes=16, the 29-byte value must be rejected.
         let tight = FormatLimits::default().with_max_metadata_bytes(16).unwrap();
         let cv = CanonicalValue::Array(vec![
             CanonicalValue::Text("aaaaaa".to_string()),
             CanonicalValue::Text("bbbbbb".to_string()),
             CanonicalValue::Text("cccccc".to_string()),
         ]);
+        // Prove pre-computed size exceeds limit
+        let mut nc = 0u64;
+        let size = compute_encoded_size(&cv, 0, &mut nc, &tight).unwrap();
+        assert!(size > 16, "computed size {} should exceed limit 16", size);
+        // Prove encoding returns InputTooLarge
+        let result = encode_canonical_value(&cv, &tight);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::InputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_rejects_map_exceeding_metadata_limit() {
+        // Map with enough entries to exceed a tight metadata limit.
+        let tight = FormatLimits::default().with_max_metadata_bytes(10).unwrap();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("k1".to_string(), CanonicalValue::Null);
+        map.insert("k2".to_string(), CanonicalValue::Null);
+        let cv = CanonicalValue::Map(map);
+        let result = encode_canonical_value(&cv, &tight);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::InputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_rejects_nested_array_over_metadata_limit() {
+        // Deeply nested array that exceeds a tight metadata limit.
+        // Each nesting adds: array(2) + u64(6) + array(1) = ~3 bytes overhead.
+        // With limit=5, more than 1 level of nesting should be rejected.
+        let tight = FormatLimits::default().with_max_metadata_bytes(5).unwrap();
+        let cv = CanonicalValue::Array(vec![CanonicalValue::Array(vec![CanonicalValue::Null])]);
         let result = encode_canonical_value(&cv, &tight);
         assert!(matches!(
             result,

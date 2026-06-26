@@ -4,9 +4,9 @@
 
 - Status: GREEN
 - Commit: SELF
-- Completed: Full FormatLimits in dedicated limits.rs with all 17 FORMAT §20 limits. Zero/overflow rejection. Encoded metadata total enforced: encode_canonical_value checks output length, decode_canonical_value checks input length before parse. ABSOLUTE_MAX_SEGMENT_SIZE = 4_294_967_296 (exact 4 GiB, u64). impl_target_segment_size removed. Exhaustive table-driven zero/overflow tests for all 17 fields.
-- Tests: `cargo test --workspace --all-features` (246 tests)
-- Evidence: All green criteria satisfied. Metadata total encoding/decoding tested with boundary values. 17-field zero/overflow verification via parameterized tests. 17-field default-value verification.
+- Completed: Full FormatLimits with all 17 FORMAT §20 limits, zero/overflow rejection, two-phase encode (pre-compute exact CBOR size with checked arithmetic → check max_metadata_bytes → allocate Vec::with_capacity → encode), exhaustive 17-field tests.
+- Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (249 tests)
+- Evidence: compute_encoded_size() matches actual encoded length for all CanonicalValue variants including Map. Encode rejects at exact limit boundary (+1 byte). Small strings summing over limit rejected. All zero/overflow/limit tests pass.
 - Follow-up: None (GREEN)
 
 ## F2.6 — Implement constrained names

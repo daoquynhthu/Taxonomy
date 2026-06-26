@@ -10,7 +10,7 @@
 - Violated invariant: F2.7 requires "one limits type with the exact format defaults and checked override validation."
 - Required decision: Enforce max_metadata_bytes on encoded CBOR length. Fix segment size to exact 4 GiB (u64). Remove impl_target_segment_size from struct. Add exhaustive tests for all 17 fields.
 - Work stopped: F2.7, F2.8
-- Resolution: RESOLVED — Round 3 fixes complete. max_metadata_bytes enforced in both encode_canonical_value (output check) and decode_canonical_value (input check before parse). ABSOLUTE_MAX_SEGMENT_SIZE changed to u64 = 4_294_967_296 (exact 4 GiB). impl_target_segment_size removed from FormatLimits struct. Exhaustive zero/overflow tests for all 17 fields via table-driven rejects_each_zero_by_position + rejects_each_excessive_by_position. All 17 defaults verified in defaults_equal_absolute_max. 246 tests pass (0 fail).
+- Resolution: Round 3 fix — pre-compute exact CBOR size with checked arithmetic before allocating output buffer. Encode side now two-phase: (1) compute_encoded_size() validates all limits and returns exact byte count; (2) check against max_metadata_bytes; (3) allocate Vec::with_capacity(exact_size) and encode. decode side unchanged (input length checked before parse). Segment size and exhaustive tests unchanged from round 3. Final RESOLVED at commit `SELF`. 249 tests pass (0 fail).
 
 ## ISSUE-0011 — Multi-task commit violates Agent.md single-task discipline
 
