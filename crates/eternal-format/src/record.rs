@@ -67,6 +67,11 @@ fn field_uint(fields: &[Option<&Value>], key: usize) -> Result<u64, PayloadError
 fn field_int(fields: &[Option<&Value>], key: usize) -> Result<i64, PayloadError> {
     match fields.get(key).and_then(|f| *f) {
         Some(Value::I64(v)) => Ok(*v),
+        Some(Value::U64(v)) if *v <= i64::MAX as u64 => Ok(*v as i64),
+        Some(Value::U64(_)) => Err(PayloadError::UnsupportedValue {
+            key: key as u64,
+            detail: "positive int exceeds i64::MAX".into(),
+        }),
         Some(_) => Err(PayloadError::FieldType {
             key: key as u64,
             expected: "int",
@@ -217,10 +222,10 @@ fn bytes_array_field(fields: &[Option<&Value>], key: usize) -> Result<Vec<Vec<u8
 /// schemas (F3.2+) convert to/from `Value` externally.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignedRecord<P = Value> {
-    pub payload: P,
-    pub record_id: RecordId,
-    pub signer_key_id: KeyId,
-    pub signature: Signature,
+    payload: P,
+    record_id: RecordId,
+    signer_key_id: KeyId,
+    signature: Signature,
 }
 
 impl<P> SignedRecord<P> {
@@ -236,6 +241,22 @@ impl<P> SignedRecord<P> {
             signer_key_id,
             signature,
         }
+    }
+
+    pub fn payload(&self) -> &P {
+        &self.payload
+    }
+
+    pub fn record_id(&self) -> &RecordId {
+        &self.record_id
+    }
+
+    pub fn signer_key_id(&self) -> &KeyId {
+        &self.signer_key_id
+    }
+
+    pub fn signature(&self) -> &Signature {
+        &self.signature
     }
 }
 
@@ -1078,6 +1099,15 @@ impl KeySlot {
             }
             _ => unreachable!(),
         }
+        if wrapped_secret.len() < 16 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 8,
+                detail: format!(
+                    "wrapped_secret must be at least 16 bytes (AEAD tag), got {}",
+                    wrapped_secret.len()
+                ),
+            });
+        }
         Ok(Self {
             slot_id,
             slot_kind,
@@ -1167,7 +1197,8 @@ impl TryFrom<Value> for KeySlot {
             Some(Value::Map(pairs)) => {
                 Some(PasswordKdfDescriptor::try_from(Value::Map(pairs.clone()))?)
             }
-            Some(Value::Null) | None => None,
+            Some(Value::Null) => None,
+            None => return Err(PayloadError::MissingField(3)),
             Some(_) => {
                 return Err(PayloadError::FieldType {
                     key: 3,
@@ -1489,9 +1520,12 @@ impl SignedRecord<Value> {
     /// The payload is embedded as a nested CBOR value (not wrapped in bytes).
     /// The output is checked against `limits.max_metadata_bytes()`.
     pub fn encode(&self, limits: &FormatLimits) -> Result<Vec<u8>, SignedRecordError> {
+        if !matches!(self.payload, Value::Map(_)) {
+            return Err(SignedRecordError::PayloadNotAMap);
+        }
         let envelope = Value::Map(vec![
             (Value::U64(0), Value::U64(1)),        // envelope_version
-            (Value::U64(1), self.payload.clone()), // payload (any CBOR value)
+            (Value::U64(1), self.payload.clone()), // payload
             (
                 Value::U64(2),
                 Value::Bytes(self.record_id.as_bytes().to_vec()),
@@ -1745,7 +1779,7 @@ mod tests {
         let decoded = SignedRecord::<Value>::decode(&encoded, &limits).expect("decode");
 
         // Verify the decoded payload still has unsigned integer keys
-        match &decoded.payload {
+        match decoded.payload() {
             Value::Map(pairs) => {
                 assert!(
                     pairs.iter().all(|(k, _)| matches!(k, Value::U64(_))),
@@ -1901,10 +1935,11 @@ mod tests {
         let dec_a = SignedRecord::<Value>::decode(&enc_a, &limits).unwrap();
         let dec_b = SignedRecord::<Value>::decode(&enc_b, &limits).unwrap();
         assert_eq!(
-            dec_a.record_id, dec_b.record_id,
+            dec_a.record_id(),
+            dec_b.record_id(),
             "record_id must not depend on signature"
         );
-        assert_eq!(dec_a.record_id, record_id);
+        assert_eq!(*dec_a.record_id(), record_id);
     }
 
     #[test]
@@ -1928,6 +1963,95 @@ mod tests {
             result,
             Err(SignedRecordError::EnvelopeTooLarge { .. })
         ));
+    }
+
+    /// Roundtrip a typed payload through Value → CBOR bytes → CanonicalDecoder → Value → TryFrom.
+    /// This catches `field_int` rejecting `Value::U64` produced by CBOR decode of a non-negative i64.
+    fn cbor_roundtrip<T>(make: impl Fn() -> T) -> T
+    where
+        T: Clone + PartialEq + std::fmt::Debug,
+        for<'a> Value: From<&'a T>,
+        T: TryFrom<Value, Error = PayloadError>,
+    {
+        let original = make();
+        let value: Value = Value::from(&original);
+        let cbor = value.reencode();
+        let decoded_value = CanonicalDecoder::from_limits(&cbor, &FormatLimits::default())
+            .decode()
+            .expect("CBOR decode");
+        let typed = T::try_from(decoded_value).expect("typed decode");
+        assert_eq!(typed, original);
+        typed
+    }
+
+    #[test]
+    fn key_slot_cbor_roundtrip_created_at_ns_zero() {
+        cbor_roundtrip(|| {
+            KeySlot::new(
+                [0x01u8; 16],
+                1,
+                "test".into(),
+                Some(make_password_kdf()),
+                None,
+                None,
+                1,
+                [0x10u8; 24],
+                vec![0xAAu8; 48],
+                0,
+            )
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn key_slot_cbor_roundtrip_created_at_ns_positive() {
+        cbor_roundtrip(|| {
+            KeySlot::new(
+                [0x01u8; 16],
+                1,
+                "positive".into(),
+                Some(make_password_kdf()),
+                None,
+                None,
+                1,
+                [0x10u8; 24],
+                vec![0xAAu8; 48],
+                42,
+            )
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn key_slot_cbor_roundtrip_created_at_ns_negative() {
+        cbor_roundtrip(|| {
+            KeySlot::new(
+                [0x01u8; 16],
+                1,
+                "negative".into(),
+                Some(make_password_kdf()),
+                None,
+                None,
+                1,
+                [0x10u8; 24],
+                vec![0xAAu8; 48],
+                -1,
+            )
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn signed_record_encode_rejects_non_map_payload() {
+        let limits = FormatLimits::default();
+        let record = SignedRecord::new(
+            Value::U64(42),
+            RecordId::new([0x11u8; 32]),
+            KeyId::new([0x22u8; 32]),
+            Signature::new([0x33u8; 64]),
+        );
+        let result = record.encode(&limits);
+        assert_eq!(result, Err(SignedRecordError::PayloadNotAMap));
     }
 
     fn compute_key_id(algorithm: u8, public_key: &[u8; 32]) -> [u8; 32] {
@@ -2828,6 +2952,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn key_slot_rejects_missing_password_kdf_key() {
+        // Key 3 (password_kdf) is missing from the map entirely
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Bytes([0x01u8; 16].to_vec())),
+            (Value::U64(1), Value::U64(1)),
+            (Value::U64(2), Value::Text("test".into())),
+            // key 3 omitted
+            (Value::U64(4), Value::Null),
+            (Value::U64(5), Value::Null),
+            (Value::U64(6), Value::U64(1)),
+            (Value::U64(7), Value::Bytes([0x10u8; 24].to_vec())),
+            (Value::U64(8), Value::Bytes(vec![0xAAu8; 48])),
+            (Value::U64(9), Value::I64(0)),
+        ]);
+        let err = KeySlot::try_from(value).unwrap_err();
+        assert_eq!(err, PayloadError::MissingField(3));
+    }
+
+    #[test]
+    fn key_slot_rejects_short_wrapped_secret() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "test".into(),
+            Some(make_password_kdf()),
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 15], // only 15 bytes, less than 16-byte AEAD tag
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 8, .. }));
     }
 
     // -----------------------------------------------------------------------
