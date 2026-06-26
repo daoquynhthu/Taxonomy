@@ -716,8 +716,9 @@ pub fn canonical_value_from_json_slice(
     let result = de.deserialize_any(visitor);
     match result {
         Ok(cv) => {
-            // Check for trailing data
-            de.end()?;
+            if de.end().is_err() {
+                return Err(CanonicalEncodeError::TrailingData);
+            }
             Ok(cv)
         }
         Err(e) => match captured.into_inner() {
@@ -866,7 +867,12 @@ impl<'de, 'a> serde::de::Visitor<'de> for CanonicalValueVisitor<'a> {
 
     fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<CanonicalValue, E> {
         self.count_node()?;
-        Ok(CanonicalValue::U64(v))
+        // Unify with TryFrom<serde_json::Value>: values in i64 range → I64
+        if v <= i64::MAX as u64 {
+            Ok(CanonicalValue::I64(v as i64))
+        } else {
+            Ok(CanonicalValue::U64(v))
+        }
     }
 
     fn visit_f64<E: serde::de::Error>(self, _v: f64) -> Result<CanonicalValue, E> {
@@ -2551,8 +2557,8 @@ mod tests {
         let cv = canonical_value_from_json_slice(b"{\"a\":1,\"b\":2}", &FormatLimits::default())
             .unwrap();
         let mut expected = std::collections::BTreeMap::new();
-        expected.insert("a".to_string(), CanonicalValue::U64(1));
-        expected.insert("b".to_string(), CanonicalValue::U64(2));
+        expected.insert("a".to_string(), CanonicalValue::I64(1));
+        expected.insert("b".to_string(), CanonicalValue::I64(2));
         assert_eq!(cv, CanonicalValue::Map(expected));
     }
 
@@ -2687,5 +2693,141 @@ mod tests {
                 actual: 1_048_577,
             })
         );
+    }
+
+    #[test]
+    fn json_slice_rejects_invalid_utf8_byte() {
+        let result = canonical_value_from_json_slice(b"\"\xff\"", &FormatLimits::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_slice_rejects_escaped_oversized_string() {
+        // Build a JSON string with \u00e9 escapes that decodes to > 1 MiB
+        // Each \u00e9 = 6 JSON bytes input → 2 UTF-8 bytes decoded
+        // Raw input: 524_289 * 6 = 3_145_734 (< 16 MiB limit)
+        // Decoded:   524_289 * 2 = 1_048_578 (> 1 MiB limit)
+        let escape = b"\\u00e9";
+        let mut raw = Vec::with_capacity(3_200_000);
+        raw.push(b'"');
+        for _ in 0..524_289 {
+            raw.extend_from_slice(escape);
+        }
+        raw.push(b'"');
+        let result = canonical_value_from_json_slice(&raw, &FormatLimits::default());
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::StringTooLong {
+                max: FormatLimits::ABSOLUTE_MAX_STRING_BYTES,
+                actual: 1_048_578,
+            })
+        );
+    }
+
+    #[test]
+    fn json_slice_rejects_trailing_data() {
+        let result = canonical_value_from_json_slice(b"1 2", &FormatLimits::default());
+        assert_eq!(result, Err(CanonicalEncodeError::TrailingData));
+    }
+
+    #[test]
+    fn json_slice_rejects_trailing_null_true() {
+        let result = canonical_value_from_json_slice(b"null true", &FormatLimits::default());
+        assert_eq!(result, Err(CanonicalEncodeError::TrailingData));
+    }
+
+    #[test]
+    fn json_slice_accepts_trailing_newline_tab() {
+        let cv = canonical_value_from_json_slice(b"1 \n\t", &FormatLimits::default()).unwrap();
+        assert_eq!(cv, CanonicalValue::I64(1));
+    }
+
+    #[test]
+    fn json_slice_negative_integer() {
+        let cv = canonical_value_from_json_slice(b"-1", &FormatLimits::default()).unwrap();
+        assert_eq!(cv, CanonicalValue::I64(-1));
+    }
+
+    #[test]
+    fn json_slice_positive_integer_is_i64() {
+        let cv = canonical_value_from_json_slice(b"42", &FormatLimits::default()).unwrap();
+        assert_eq!(cv, CanonicalValue::I64(42));
+    }
+
+    #[test]
+    fn json_slice_u64_max_i64() {
+        // i64::MAX as raw JSON integer
+        let cv = canonical_value_from_json_slice(b"9223372036854775807", &FormatLimits::default())
+            .unwrap();
+        assert_eq!(cv, CanonicalValue::I64(i64::MAX));
+    }
+
+    #[test]
+    fn json_slice_u64_above_i64_max() {
+        let cv = canonical_value_from_json_slice(b"9223372036854775808", &FormatLimits::default())
+            .unwrap();
+        assert_eq!(cv, CanonicalValue::U64(i64::MAX as u64 + 1));
+    }
+
+    #[test]
+    fn json_slice_zero_is_i64() {
+        let cv = canonical_value_from_json_slice(b"0", &FormatLimits::default()).unwrap();
+        assert_eq!(cv, CanonicalValue::I64(0));
+    }
+
+    #[test]
+    fn json_two_entries_agree_on_integers() {
+        let cases = [
+            "0",
+            "1",
+            "-1",
+            "42",
+            "9223372036854775807",
+            "9223372036854775808",
+        ];
+        for raw in &cases {
+            let from_slice =
+                canonical_value_from_json_slice(raw.as_bytes(), &FormatLimits::default()).unwrap();
+            let from_value: CanonicalValue = serde_json::from_str::<serde_json::Value>(raw)
+                .unwrap()
+                .try_into()
+                .unwrap();
+            assert_eq!(from_slice, from_value, "CanonicalValue mismatch for {raw}");
+            let bytes_slice =
+                encode_canonical_value(&from_slice, &FormatLimits::default()).unwrap();
+            let bytes_value =
+                encode_canonical_value(&from_value, &FormatLimits::default()).unwrap();
+            assert_eq!(bytes_slice, bytes_value, "CBOR bytes mismatch for {raw}");
+        }
+    }
+
+    #[test]
+    fn json_two_entries_agree_on_objects() {
+        let raw = r#"{"a":1,"b":-2,"c":9223372036854775808}"#;
+        let from_slice =
+            canonical_value_from_json_slice(raw.as_bytes(), &FormatLimits::default()).unwrap();
+        let from_value: CanonicalValue = serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(from_slice, from_value, "CanonicalValue mismatch for object");
+        let bytes_slice = encode_canonical_value(&from_slice, &FormatLimits::default()).unwrap();
+        let bytes_value = encode_canonical_value(&from_value, &FormatLimits::default()).unwrap();
+        assert_eq!(bytes_slice, bytes_value, "CBOR bytes mismatch for object");
+    }
+
+    #[test]
+    fn json_two_entries_agree_on_array() {
+        let raw = r#"[-1,0,1,9223372036854775808]"#;
+        let from_slice =
+            canonical_value_from_json_slice(raw.as_bytes(), &FormatLimits::default()).unwrap();
+        let from_value: CanonicalValue = serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(from_slice, from_value, "CanonicalValue mismatch for array");
+        let bytes_slice = encode_canonical_value(&from_slice, &FormatLimits::default()).unwrap();
+        let bytes_value = encode_canonical_value(&from_value, &FormatLimits::default()).unwrap();
+        assert_eq!(bytes_slice, bytes_value, "CBOR bytes mismatch for array");
     }
 }

@@ -102,7 +102,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: RESOLVED
+- Status: OPEN
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -110,14 +110,11 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: RESOLVED — custom JsonParser deleted; replaced with serde_json::Deserializer + custom CanonicalValueVisitor implementing de::Visitor. Specific findings addressed:
-   1. CRITICAL (UTF-8): JsonParser deleted; serde_json's parser handles UTF-8 correctly, multi-byte sequences and raw UTF-8 bytes pass
-   2. CRITICAL (surrogates): serde_json correctly decodes \uD83D\uDE00 → 😀; isolated surrogates rejected
-   3. HIGH (whitespace): serde_json rejects vertical tab/form feed as invalid JSON whitespace
-   4. HIGH (allocation): string length checked in check_string() during visitor accumulation, before full allocation in MapKeyVisitor
-   5. HIGH (stringly-typed error): JsonSyntax(String) replaced with JsonSyntax { message, line, column } + DuplicateTextKey, TrailingData, InputTooLarge structured variants
-   6. HIGH (FormatLimits zero values): not preempting F2.7 per user instruction; 16 MiB total input limit added as MAX_RAW_INPUT in canonical_value_from_json_slice
-   7. All required tests added: raw_utf8, escaped_unicode, dup_unicode_key, surrogate_pair, isolated_surrogate, illegal_whitespace, max_string (1 MiB), oversized_string (1 MiB + 1)
+- Resolution: PENDING — items 1-4 from 5b3593b review fixed, see below. P1.6/G1 must also be GREEN before F2.5 can close.
+   1. CRITICAL: `visit_u64()` produces U64 while `TryFrom<serde_json::Value>` produces I64 for same integer. → FIXED: `visit_u64` now returns I64 for v ≤ i64::MAX, U64 for larger. Two-entry equivalence tests added.
+   2. HIGH: `TrailingData` unreachable — `de.end()?` error mapped through `JsonSyntax`. → FIXED: `de.end()` error now explicitly returns `TrailingData`.
+   3. HIGH: String length checked after Serde already allocates the full string, not during accumulation. → CORRECTION: actual protection is 16 MiB raw input limit bounding total allocation; 1 MiB per-string check runs after Serde decode. `check_string()` only handles NUL; `visit_str`/`visit_string`/`visit_map` enforce the length limit.
+   4. Missing tests: invalid UTF-8 byte `\xff` → ADDED; `\uXXXX`-escaped oversized string → ADDED; two-entry equivalence → ADDED (3 tests: integers, objects, arrays); TrailingData reachability → ADDED (2 positive, 1 negative); negative/zero/positive/boundary integer types → ADDED.
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 
