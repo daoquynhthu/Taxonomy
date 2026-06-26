@@ -25,7 +25,7 @@ Part of the **Seed Plan**: a protocol for preserving a complete snapshot of huma
 
 ## Status
 
-**Phase 0 — Specification freeze.** No runnable code yet.
+**Phase F3 — Record schemas and format fixtures.** All 8 repository authority payload schemas implemented (RepositoryGenesisPayload, PublicKeyEntry, RefPermissionEntry, PolicyRecordPayload, PasswordKdfDescriptor, KeySlot, WrappedDek, KeyringRecordPayload) with field validation, sorted-unique enforcement, deterministic CBOR round-trip encoding, and 341 unit tests passing.
 
 The authoritative architecture document is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
