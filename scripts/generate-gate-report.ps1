@@ -163,18 +163,22 @@ Write-Host "gate-report.json written to $outputPath" -ForegroundColor Green
 # ── Determine overall exit code ──────────────────────────────────────────
 $anyFailed = $steps | Where-Object { $_.exit_code -ne 0 } | Select-Object -First 1
 $testCountsOk = ($totalPassed -ne 0 -or $totalFailed -ne 0)
-$noIgnoredTests = ($ignoredTests.Count -eq 0)
+$noIgnoredTests = ($totalIgnored -eq 0)
+$fixtureChecksumOk = ($null -ne $fixtureChecksum)
 
 if (-not $testCountsOk) {
     Write-Host "[FAIL] No test counts parsed. The output may have an unexpected format." -ForegroundColor Red
 }
 if (-not $noIgnoredTests) {
-    Write-Host "[FAIL] Ignored tests detected ($($ignoredTests.Count)). G1 gate forbids #[ignore]." -ForegroundColor Red
+    Write-Host "[FAIL] Ignored tests detected ($totalIgnored from cargo test output). G1 gate forbids #[ignore]." -ForegroundColor Red
+}
+if (-not $fixtureChecksumOk) {
+    Write-Host "[FAIL] Fixture manifest checksum missing. G1 gate requires non-null checksum." -ForegroundColor Red
 }
 if ($anyFailed) {
     Write-Host "Gate FAILED. Some steps had non-zero exit codes." -ForegroundColor Red
 }
-if ($testCountsOk -and $noIgnoredTests -and -not $anyFailed) {
+if ($testCountsOk -and $noIgnoredTests -and $fixtureChecksumOk -and -not $anyFailed) {
     Write-Host "All gate steps passed." -ForegroundColor Green
     exit 0
 }

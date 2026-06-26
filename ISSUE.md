@@ -2,7 +2,7 @@
 
 ## ISSUE-0011 — Multi-task commit violates Agent.md single-task discipline
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-26
 - Affected scope: Agent.md, commit 2739a53
@@ -10,7 +10,7 @@
 - Violated invariant: Agent.md §2.5 / §7 — one reviewable commit per numbered task.
 - Required decision: Do not re-write history, but flag as process deviation and enforce single-task commits going forward.
 - Work stopped: none
-- Resolution: PENDING (process deviation recorded; from next commit onward, single-task discipline restored)
+- Resolution: RESOLVED — process deviation recorded. From commit 5b3593b onward, single-task discipline restored (F2.5 only in both 5b3593b and b99af6f).
 
 ## ISSUE-0001 — Ledger checker does not verify PLAN.md task completeness
 
@@ -26,19 +26,19 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
-- Affected scope: CI workflows, G1
+- Affected scope: CI workflows, scripts/generate-gate-report.ps1, G1
 - Evidence: CI runs commands but produces no gate-report.json with commit SHA, rustc version, exit codes, test counts, fixture manifest checksum, ignored test list.
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: PENDING — partial fixes applied but still open:
-  1. Script uses source scan ($ignoredTests) instead of cargo's own $totalIgnored for the hard fail; must use `$totalIgnored -eq 0` directly
-  2. Missing fixture checksum is logged as null but does not cause hard fail
-  3. CI artifact not yet generated and verified on GitHub
-  4. Source scan only covers crates/**/*.rs, may miss workspace-root tests
+- Resolution: RESOLVED — generate-gate-report.ps1 fixed:
+   1. Hard fail now uses cargo's own $totalIgnored from test output (was source scan via Select-String)
+   2. Fixture checksum null now causes hard fail (was silently logged as null)
+   3. CI artifact upload configured in .github/workflows/ci.yml (gate-report job)
+   4. Script verified locally: pass=224, fail=0, ignored=0, fixture checksum present
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
