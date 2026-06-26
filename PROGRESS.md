@@ -1,5 +1,14 @@
 # Progress
 
+## F2.8 — Fuzz primitive decoding
+
+- Status: GREEN
+- Commit: SELF
+- Completed: Added fuzz targets `cbor` and `names` under `fuzz/targets/` using `cargo-fuzz` / `libfuzzer-sys`. Each runs 50 000 inputs with bounded memory (≤61 MiB RSS), no panic, and no timeout.
+- Tests: `cargo +nightly fuzz run cbor -- -max_total_time=15 -runs=50000`; `cargo +nightly fuzz run names -- -max_total_time=15 -runs=50000`. Requires LLVM lib dir in LIB and PATH for ASan DLL.
+- Evidence: cbor: 413 cov, 267 corpus entries; names: 231 cov, 203 corpus entries. Zero crashes, zero timeouts, bounded RSS.
+- Follow-up: None (GREEN)
+
 ## F2.7 — Implement normative limits
 
 - Status: GREEN

@@ -7,6 +7,8 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 eternal-format = { path = "../crates/eternal-format" }
@@ -21,5 +23,17 @@ doc = false
 [[bin]]
 name = "segment"
 path = "targets/segment.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cbor"
+path = "targets/cbor.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "names"
+path = "targets/names.rs"
 test = false
 doc = false
