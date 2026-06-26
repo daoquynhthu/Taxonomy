@@ -26,7 +26,7 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: RESOLVED
+- Status: OPEN
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: CI workflows, scripts/generate-gate-report.ps1, G1
@@ -34,11 +34,7 @@
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: RESOLVED — generate-gate-report.ps1 fixed:
-   1. Hard fail now uses cargo's own $totalIgnored from test output (was source scan via Select-String)
-   2. Fixture checksum null now causes hard fail (was silently logged as null)
-   3. CI artifact upload configured in .github/workflows/ci.yml (gate-report job)
-   4. Script verified locally: pass=224, fail=0, ignored=0, fixture checksum present
+- Resolution: PENDING — script fixes applied (use $totalIgnored, fixture checksum null → hard fail), CI upload configured. Remaining: push to GitHub, verify CI artifact contains exact evidence, then close.
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
@@ -110,11 +106,11 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: PENDING — items 1-4 from 5b3593b review fixed, see below. P1.6/G1 must also be GREEN before F2.5 can close.
-   1. CRITICAL: `visit_u64()` produces U64 while `TryFrom<serde_json::Value>` produces I64 for same integer. → FIXED: `visit_u64` now returns I64 for v ≤ i64::MAX, U64 for larger. Two-entry equivalence tests added.
-   2. HIGH: `TrailingData` unreachable — `de.end()?` error mapped through `JsonSyntax`. → FIXED: `de.end()` error now explicitly returns `TrailingData`.
-   3. HIGH: String length checked after Serde already allocates the full string, not during accumulation. → CORRECTION: actual protection is 16 MiB raw input limit bounding total allocation; 1 MiB per-string check runs after Serde decode. `check_string()` only handles NUL; `visit_str`/`visit_string`/`visit_map` enforce the length limit.
-   4. Missing tests: invalid UTF-8 byte `\xff` → ADDED; `\uXXXX`-escaped oversized string → ADDED; two-entry equivalence → ADDED (3 tests: integers, objects, arrays); TrailingData reachability → ADDED (2 positive, 1 negative); negative/zero/positive/boundary integer types → ADDED.
+- Resolution: PENDING — F2.5 code-level issues resolved (commits 5b3593b, b99af6f). Blocked on G1 (ISSUE-0002): CI artifact must be verified on GitHub before F2.5 can close.
+    1. CRITICAL (integer type unification): FIXED — `visit_u64` returns I64 for v ≤ i64::MAX, U64 for larger; two-entry equivalence tests verify identical CanonicalValue and CBOR bytes.
+    2. HIGH (TrailingData unreachable): FIXED — `de.end()` error explicitly returns `CanonicalEncodeError::TrailingData`.
+    3. HIGH (string allocation claim): CORRECTION — 16 MiB raw input limit bounds total allocation; per-string 1 MiB limit enforced after Serde decode.
+    4. Missing tests: ADDED — invalid UTF-8 byte, `\uXXXX`-escaped oversized string, two-entry equivalence (×3), TrailingData (×3), integer boundary (×3).
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 

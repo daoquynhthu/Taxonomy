@@ -9,16 +9,6 @@
 - Evidence: ObjectId rejects all invalid forms; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering correct; bare `refs/heads/` rejected; all constrained types enforce bounds.
 - Follow-up: None (GREEN)
 
-## F2.5 — Implement CanonicalValue tagged union
-
-- Status: RED
-- Commit: SELF
-- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection. Audit fix: JsonParser deleted and replaced with serde_json::Deserializer + custom Visitor. Structured error enum. Depth, node count, NUL rejection, string length limit enforced.
-- Audit findings remaining: P1.6/G1 not yet GREEN (blocked by CI artifact gate). All F2.5 code-level issues resolved: integer type unified (v ≤ i64::MAX → I64), TrailingData reachable, string allocation bounded by 16 MiB raw input, 13 new tests added (UTF-8, surrogates, whitespace, dup unicode keys, max/oversized strings, escaped oversized, invalid UTF-8 byte, TrailingData x3, integer boundary x3, two-entry equivalence x3).
-- Tests: `cargo test --workspace --all-features` (224 tests)
-- Evidence: 224 tests pass (0 failed). Two JSON entry points produce identical CanonicalValue and identical CBOR bytes for all integer cases.
-- Follow-up: Fix P1.6/G1 gate-report CI artifact generation; verify CI artifact on GitHub; then promote F2.5 to GREEN.
-
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
 - Status: GREEN
@@ -55,16 +45,7 @@
 - Evidence: Round-trip bytes and display/parse; malformed length rejection; bound rejection; distinct-type compile check; no external access to unchecked construction.
 - Follow-up: None (GREEN)
 
-## P1.6 — Freeze workspace baseline
-
-- Status: GREEN
-- Commit: SELF
-- Completed: G1 hard gate runs locally — standard task gate (fmt, clippy, test, doc-test), check-deps, check-specs, check-fixtures, check-plan-ledger all exit 0. Added generate-gate-report.ps1 and CI workflow with artifact upload. Audit fixes: script now uses cargo's $totalIgnored for hard fail (not source scan); fixture checksum null causes hard fail; CI artifact defined.
-- Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features`; `powershell -File scripts/generate-gate-report.ps1`
-- Evidence: Scripts exit 0 locally; gate report generated with 224 tests, 0 ignored, non-null fixture checksum. CI artifact upload configured in CI workflow.
-- Follow-up: Merge to main and verify CI artifact on GitHub
-
-## P0/P1 — post-audit fixes (fixture path alignment, TempRepo, crash-failpoints, G0 compatibility)
+## P0/P1 — post-audit fixes
 
 - Status: GREEN
 - Commit: SELF
