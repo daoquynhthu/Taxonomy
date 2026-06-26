@@ -327,6 +327,9 @@ pub enum CanonicalEncodeError {
     TextContainsNul,
     FloatUnsupported,
     NumberOutOfRange,
+    LimitIsZero {
+        field: &'static str,
+    },
     LimitExceedsAbsoluteMax {
         field: &'static str,
         requested: u64,
@@ -367,12 +370,23 @@ impl FormatLimits {
     pub const ABSOLUTE_MAX_STRING_BYTES: u64 = 1_048_576;
 
     /// Create a `FormatLimits` with all limits set to their maximum allowed values.
-    /// Returns an error if any value exceeds the FORMAT absolute cap.
+    /// Returns an error if any value is zero or exceeds the FORMAT absolute cap.
     pub fn new(
         max_depth: u64,
         max_nodes: u64,
         max_string_bytes: u64,
     ) -> Result<Self, CanonicalEncodeError> {
+        if max_depth == 0 {
+            return Err(CanonicalEncodeError::LimitIsZero { field: "max_depth" });
+        }
+        if max_nodes == 0 {
+            return Err(CanonicalEncodeError::LimitIsZero { field: "max_nodes" });
+        }
+        if max_string_bytes == 0 {
+            return Err(CanonicalEncodeError::LimitIsZero {
+                field: "max_string_bytes",
+            });
+        }
         if max_depth > Self::ABSOLUTE_MAX_DEPTH {
             return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
                 field: "max_depth",
@@ -411,8 +425,11 @@ impl FormatLimits {
         self.max_string_bytes
     }
 
-    /// Return a copy with a reduced max_depth (must be ≤ current value).
+    /// Return a copy with a reduced max_depth (must be nonzero and ≤ current value).
     pub fn with_max_depth(mut self, max_depth: u64) -> Result<Self, CanonicalEncodeError> {
+        if max_depth == 0 {
+            return Err(CanonicalEncodeError::LimitIsZero { field: "max_depth" });
+        }
         if max_depth > self.max_depth {
             return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
                 field: "max_depth",
@@ -424,8 +441,11 @@ impl FormatLimits {
         Ok(self)
     }
 
-    /// Return a copy with a reduced max_nodes (must be ≤ current value).
+    /// Return a copy with a reduced max_nodes (must be nonzero and ≤ current value).
     pub fn with_max_nodes(mut self, max_nodes: u64) -> Result<Self, CanonicalEncodeError> {
+        if max_nodes == 0 {
+            return Err(CanonicalEncodeError::LimitIsZero { field: "max_nodes" });
+        }
         if max_nodes > self.max_nodes {
             return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
                 field: "max_nodes",
@@ -437,11 +457,16 @@ impl FormatLimits {
         Ok(self)
     }
 
-    /// Return a copy with a reduced max_string_bytes (must be ≤ current value).
+    /// Return a copy with a reduced max_string_bytes (must be nonzero and ≤ current value).
     pub fn with_max_string_bytes(
         mut self,
         max_string_bytes: u64,
     ) -> Result<Self, CanonicalEncodeError> {
+        if max_string_bytes == 0 {
+            return Err(CanonicalEncodeError::LimitIsZero {
+                field: "max_string_bytes",
+            });
+        }
         if max_string_bytes > self.max_string_bytes {
             return Err(CanonicalEncodeError::LimitExceedsAbsoluteMax {
                 field: "max_string_bytes",
@@ -591,13 +616,22 @@ pub enum CanonicalValue {
 // JSON conversion
 // ---------------------------------------------------------------------------
 
+impl CanonicalValue {
+    /// Convert a `serde_json::Value` into `CanonicalValue` with the given limits.
+    pub fn from_json_value(
+        value: serde_json::Value,
+        limits: &FormatLimits,
+    ) -> Result<Self, CanonicalEncodeError> {
+        let mut nodes = 0u64;
+        cv_from_json(&value, 0, &mut nodes, limits)
+    }
+}
+
 impl TryFrom<serde_json::Value> for CanonicalValue {
     type Error = CanonicalEncodeError;
 
     fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
-        let limits = FormatLimits::default();
-        let mut nodes = 0u64;
-        cv_from_json(&value, 0, &mut nodes, &limits)
+        Self::from_json_value(value, &FormatLimits::default())
     }
 }
 
@@ -768,6 +802,7 @@ impl std::fmt::Display for CanonicalEncodeError {
             Self::TextContainsNul => write!(f, "text contains NUL"),
             Self::FloatUnsupported => write!(f, "float not supported"),
             Self::NumberOutOfRange => write!(f, "number out of range"),
+            Self::LimitIsZero { field } => write!(f, "{field} limit must not be zero"),
             Self::LimitExceedsAbsoluteMax {
                 field,
                 requested,
@@ -1086,6 +1121,18 @@ impl<'a> CanonicalDecoder<'a> {
         }
     }
 
+    /// Create a decoder from a `FormatLimits` reference.
+    /// The decoder enforces the same depth, node count, and string byte limits.
+    pub fn from_limits(input: &'a [u8], limits: &FormatLimits) -> Self {
+        Self {
+            input,
+            pos: 0,
+            max_depth: limits.max_depth() as usize,
+            max_item_count: limits.max_nodes(),
+            max_string_bytes: limits.max_string_bytes(),
+        }
+    }
+
     /// Convert a `u64` to `usize` with overflow checking.
     /// Returns `ValueTooLarge` on 32-bit platforms if the value exceeds `usize::MAX`.
     fn usize_from_u64(&self, val: u64) -> Result<usize, DecodeError> {
@@ -1339,10 +1386,10 @@ impl<'a> CanonicalDecoder<'a> {
             return Err(DecodeError::DepthExceeded);
         }
         *node_count += 1;
-        if *node_count > 1_000_000 {
+        if *node_count > self.max_item_count {
             return Err(DecodeError::ValueTooLarge {
                 requested: *node_count,
-                max: 1_000_000,
+                max: self.max_item_count,
             });
         }
 
@@ -2626,6 +2673,157 @@ mod tests {
         let limits = FormatLimits::new(32, 1_000_000, 1_048_576).unwrap();
         let result = limits.with_max_depth(33);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn format_limits_rejects_zero_depth() {
+        let result = FormatLimits::new(0, 1_000_000, 1_048_576);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitIsZero { field: "max_depth" })
+        );
+    }
+
+    #[test]
+    fn format_limits_rejects_zero_nodes() {
+        let result = FormatLimits::new(64, 0, 1_048_576);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitIsZero { field: "max_nodes" })
+        );
+    }
+
+    #[test]
+    fn format_limits_rejects_zero_string_bytes() {
+        let result = FormatLimits::new(64, 1_000_000, 0);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitIsZero {
+                field: "max_string_bytes"
+            })
+        );
+    }
+
+    #[test]
+    fn format_limits_with_max_depth_rejects_zero() {
+        let limits = FormatLimits::new(32, 1_000_000, 1_048_576).unwrap();
+        let result = limits.with_max_depth(0);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitIsZero { field: "max_depth" })
+        );
+    }
+
+    #[test]
+    fn format_limits_with_max_nodes_rejects_zero() {
+        let limits = FormatLimits::new(32, 1_000_000, 1_048_576).unwrap();
+        let result = limits.with_max_nodes(0);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitIsZero { field: "max_nodes" })
+        );
+    }
+
+    #[test]
+    fn format_limits_with_max_string_bytes_rejects_zero() {
+        let limits = FormatLimits::new(32, 1_000_000, 1_048_576).unwrap();
+        let result = limits.with_max_string_bytes(0);
+        assert_eq!(
+            result,
+            Err(CanonicalEncodeError::LimitIsZero {
+                field: "max_string_bytes"
+            })
+        );
+    }
+
+    #[test]
+    fn decoder_from_limits_accepts_limits_reference() {
+        let limits = FormatLimits::new(16, 100, 1024).unwrap();
+        let cv = CanonicalValue::Array(vec![CanonicalValue::Null; 10]);
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(&cv);
+        let bytes = enc.into_bytes();
+
+        let mut dec = CanonicalDecoder::from_limits(&bytes, &limits);
+        let decoded = dec.decode_canonical_value().unwrap();
+        assert_eq!(decoded, cv);
+    }
+
+    #[test]
+    fn decoder_from_limits_enforces_custom_node_limit() {
+        let limits = FormatLimits::new(16, 5, 1_048_576).unwrap();
+        let cv = CanonicalValue::Array(vec![CanonicalValue::Null; 10]);
+        let mut enc = CanonicalEncoder::new();
+        enc.canonical_value(&cv);
+        let bytes = enc.into_bytes();
+
+        let mut dec = CanonicalDecoder::from_limits(&bytes, &limits);
+        let err = dec
+            .decode_canonical_value()
+            .expect_err("should exceed node limit");
+        assert!(matches!(err, DecodeError::ValueTooLarge { .. }));
+    }
+
+    #[test]
+    fn from_json_value_accepts_limits_reference() {
+        let limits = FormatLimits::new(16, 100, 1024).unwrap();
+        let value = serde_json::json!([1, 2, 3]);
+        let cv = CanonicalValue::from_json_value(value, &limits).unwrap();
+        assert_eq!(
+            cv,
+            CanonicalValue::Array(vec![
+                CanonicalValue::I64(1),
+                CanonicalValue::I64(2),
+                CanonicalValue::I64(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn from_json_value_enforces_custom_node_limit() {
+        let limits = FormatLimits::new(16, 3, 1_048_576).unwrap();
+        let value = serde_json::json!([1, 2, 3, 4, 5]);
+        let result = CanonicalValue::from_json_value(value, &limits);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::NodeCountExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn encode_canonical_value_rejects_zero_limit() {
+        let limits = FormatLimits::default();
+        // Encoding with default limits must succeed for a simple value.
+        let cv = CanonicalValue::Null;
+        assert!(encode_canonical_value(&cv, &limits).is_ok());
+
+        // Allocation checks happen before allocation: a value exceeding
+        // node count must be rejected before full encoding completes.
+        let tight = FormatLimits::new(64, 1, 1_048_576).unwrap();
+        let arr = CanonicalValue::Array(vec![CanonicalValue::Null, CanonicalValue::Null]);
+        let result = encode_canonical_value(&arr, &tight);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::NodeCountExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn allocation_check_before_allocation() {
+        // Prove that depth/node limits are checked BEFORE string allocation.
+        // Construct a degenerate map with many keys that would require large
+        // allocation — the node limit must trigger before the allocation.
+        let tight = FormatLimits::new(64, 2, 1_048_576).unwrap();
+        // A map with 2 entries = 5 nodes (1 map + 2 keys + 2 values).
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("a".to_string(), CanonicalValue::Null);
+        map.insert("b".to_string(), CanonicalValue::Null);
+        let cv = CanonicalValue::Map(map);
+        let result = encode_canonical_value(&cv, &tight);
+        assert!(matches!(
+            result,
+            Err(CanonicalEncodeError::NodeCountExceeded { .. })
+        ));
     }
 
     #[test]
