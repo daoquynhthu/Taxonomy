@@ -279,6 +279,8 @@ pub enum SignedRecordError {
     },
     /// The payload field (key 1) is not a CBOR map.
     PayloadNotAMap,
+    /// The payload map contains duplicate keys after sorting.
+    DuplicatePayloadKey,
     /// Wrapped underlying decoder error.
     Decode(DecodeError),
     /// The encoded envelope exceeds `max_metadata_bytes`.
@@ -1099,13 +1101,11 @@ impl KeySlot {
             }
             _ => unreachable!(),
         }
-        if wrapped_secret.len() < 16 {
-            return Err(PayloadError::UnsupportedValue {
+        if wrapped_secret.len() != 48 {
+            return Err(PayloadError::WrongLength {
                 key: 8,
-                detail: format!(
-                    "wrapped_secret must be at least 16 bytes (AEAD tag), got {}",
-                    wrapped_secret.len()
-                ),
+                expected: 48,
+                actual: wrapped_secret.len(),
             });
         }
         Ok(Self {
@@ -1520,12 +1520,20 @@ impl SignedRecord<Value> {
     /// The payload is embedded as a nested CBOR value (not wrapped in bytes).
     /// The output is checked against `limits.max_metadata_bytes()`.
     pub fn encode(&self, limits: &FormatLimits) -> Result<Vec<u8>, SignedRecordError> {
-        if !matches!(self.payload, Value::Map(_)) {
-            return Err(SignedRecordError::PayloadNotAMap);
+        // Canonicalize payload map: sort keys, reject duplicates
+        let mut pairs = match self.payload.clone() {
+            Value::Map(pairs) => pairs,
+            _ => return Err(SignedRecordError::PayloadNotAMap),
+        };
+        pairs.sort_by(|a, b| a.0.reencode().cmp(&b.0.reencode()));
+        for w in pairs.windows(2) {
+            if w[0].0.reencode() == w[1].0.reencode() {
+                return Err(SignedRecordError::DuplicatePayloadKey);
+            }
         }
         let envelope = Value::Map(vec![
-            (Value::U64(0), Value::U64(1)),        // envelope_version
-            (Value::U64(1), self.payload.clone()), // payload
+            (Value::U64(0), Value::U64(1)),     // envelope_version
+            (Value::U64(1), Value::Map(pairs)), // payload (canonical)
             (
                 Value::U64(2),
                 Value::Bytes(self.record_id.as_bytes().to_vec()),
@@ -1965,6 +1973,114 @@ mod tests {
         ));
     }
 
+    // -----------------------------------------------------------------------
+    // field_int direct unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn field_int_accepts_u64_zero() {
+        let v = Value::U64(0);
+        let fields = [Some(&v)];
+        assert_eq!(field_int(&fields, 0).unwrap(), 0i64);
+    }
+
+    #[test]
+    fn field_int_accepts_u64_positive() {
+        let v = Value::U64(42);
+        let fields = [Some(&v)];
+        assert_eq!(field_int(&fields, 0).unwrap(), 42i64);
+    }
+
+    #[test]
+    fn field_int_accepts_u64_at_i64_max() {
+        let v = Value::U64(i64::MAX as u64);
+        let fields = [Some(&v)];
+        assert_eq!(field_int(&fields, 0).unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn field_int_rejects_u64_above_i64_max() {
+        let v = Value::U64(i64::MAX as u64 + 1);
+        let fields = [Some(&v)];
+        let err = field_int(&fields, 0).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn field_int_accepts_i64_negative() {
+        let v = Value::I64(-1);
+        let fields = [Some(&v)];
+        assert_eq!(field_int(&fields, 0).unwrap(), -1i64);
+    }
+
+    #[test]
+    fn field_int_rejects_non_int_type() {
+        let v = Value::Text("boom".into());
+        let fields = [Some(&v)];
+        let err = field_int(&fields, 0).unwrap_err();
+        assert!(matches!(err, PayloadError::FieldType { key: 0, .. }));
+    }
+
+    #[test]
+    fn field_int_rejects_missing_field() {
+        let fields: [Option<&Value>; 1] = [None];
+        let err = field_int(&fields, 0).unwrap_err();
+        assert_eq!(err, PayloadError::MissingField(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // SignedRecord::encode canonicalization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_canonicalizes_unsorted_payload_keys() {
+        let limits = FormatLimits::default();
+        // Payload with keys in reverse order
+        let payload = Value::Map(vec![
+            (Value::U64(2), Value::U64(42)),
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes(vec![0x99u8; 32])),
+        ]);
+        let record = SignedRecord::new(
+            payload,
+            RecordId::new([0x11u8; 32]),
+            KeyId::new([0x22u8; 32]),
+            Signature::new([0x33u8; 64]),
+        );
+        let encoded = record.encode(&limits).expect("encode");
+        let decoded = SignedRecord::<Value>::decode(&encoded, &limits).expect("decode");
+        // After encode→decode the payload keys should be in sorted order
+        match decoded.payload() {
+            Value::Map(pairs) => {
+                assert_eq!(pairs[0].0, Value::U64(0));
+                assert_eq!(pairs[1].0, Value::U64(1));
+                assert_eq!(pairs[2].0, Value::U64(2));
+            }
+            _ => panic!("payload must be a map"),
+        }
+    }
+
+    #[test]
+    fn encode_rejects_duplicate_payload_keys() {
+        let limits = FormatLimits::default();
+        let payload = Value::Map(vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(0), Value::U64(99)), // duplicate key
+        ]);
+        let record = SignedRecord::new(
+            payload,
+            RecordId::new([0x11u8; 32]),
+            KeyId::new([0x22u8; 32]),
+            Signature::new([0x33u8; 64]),
+        );
+        let result = record.encode(&limits);
+        assert_eq!(result, Err(SignedRecordError::DuplicatePayloadKey));
+    }
+
+    // -----------------------------------------------------------------------
+    // CBOR byte roundtrip helper
+    // -----------------------------------------------------------------------
+
     /// Roundtrip a typed payload through Value → CBOR bytes → CanonicalDecoder → Value → TryFrom.
     /// This catches `field_int` rejecting `Value::U64` produced by CBOR decode of a non-negative i64.
     fn cbor_roundtrip<T>(make: impl Fn() -> T) -> T
@@ -1983,6 +2099,10 @@ mod tests {
         assert_eq!(typed, original);
         typed
     }
+
+    // -----------------------------------------------------------------------
+    // KeySlot CBOR roundtrip (covers field_int via created_at_ns)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn key_slot_cbor_roundtrip_created_at_ns_zero() {
@@ -2041,17 +2161,128 @@ mod tests {
         });
     }
 
+    // -----------------------------------------------------------------------
+    // PolicyRecordPayload CBOR roundtrip (covers field_int via created_at_ns)
+    // -----------------------------------------------------------------------
+
+    fn genesis_key_id() -> [u8; 32] {
+        compute_key_id(1, &[0x04u8; 32])
+    }
+
+    fn make_genesis_with_ns(ns: i64) -> RepositoryGenesisPayload {
+        RepositoryGenesisPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 16],
+            genesis_key_id(),
+            [0x04u8; 32],
+            [0x05u8; 32],
+            [0x06u8; 32],
+            ns,
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn signed_record_encode_rejects_non_map_payload() {
-        let limits = FormatLimits::default();
-        let record = SignedRecord::new(
-            Value::U64(42),
-            RecordId::new([0x11u8; 32]),
-            KeyId::new([0x22u8; 32]),
-            Signature::new([0x33u8; 64]),
-        );
-        let result = record.encode(&limits);
-        assert_eq!(result, Err(SignedRecordError::PayloadNotAMap));
+    fn genesis_cbor_roundtrip_ns_zero() {
+        cbor_roundtrip(|| make_genesis_with_ns(0));
+    }
+
+    #[test]
+    fn genesis_cbor_roundtrip_ns_positive() {
+        cbor_roundtrip(|| make_genesis_with_ns(42));
+    }
+
+    #[test]
+    fn genesis_cbor_roundtrip_ns_negative() {
+        cbor_roundtrip(|| make_genesis_with_ns(-1));
+    }
+
+    // -----------------------------------------------------------------------
+    // PolicyRecordPayload CBOR roundtrip (covers field_int via created_at_ns)
+    // -----------------------------------------------------------------------
+
+    fn make_policy_with_ns(ns: i64) -> PolicyRecordPayload {
+        let k1_key_id = compute_key_id(1, &[0x20u8; 32]);
+        let k2_key_id = compute_key_id(2, &[0x21u8; 32]);
+        PolicyRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            Some([0xAAu8; 32]),
+            3,
+            vec![
+                PublicKeyEntry::new(k1_key_id, 1, [0x20u8; 32], "key1".into()).unwrap(),
+                PublicKeyEntry::new(k2_key_id, 2, [0x21u8; 32], "key2".into()).unwrap(),
+            ],
+            vec![[0xA0u8; 32], [0xA1u8; 32]],
+            vec![[0xB0u8; 32], [0xB1u8; 32]],
+            vec![
+                RefPermissionEntry::new(
+                    RefPattern::new("refs/heads/a").unwrap(),
+                    vec![[0xC0u8; 32]],
+                )
+                .unwrap(),
+                RefPermissionEntry::new(
+                    RefPattern::new("refs/heads/b").unwrap(),
+                    vec![[0xC1u8; 32]],
+                )
+                .unwrap(),
+            ],
+            vec![[0xD0u8; 32]],
+            vec![[0xE0u8; 32]],
+            ns,
+            [0xFFu8; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn policy_cbor_roundtrip_ns_zero() {
+        cbor_roundtrip(|| make_policy_with_ns(0));
+    }
+
+    #[test]
+    fn policy_cbor_roundtrip_ns_positive() {
+        cbor_roundtrip(|| make_policy_with_ns(42));
+    }
+
+    #[test]
+    fn policy_cbor_roundtrip_ns_negative() {
+        cbor_roundtrip(|| make_policy_with_ns(-1));
+    }
+
+    // -----------------------------------------------------------------------
+    // KeyringRecordPayload CBOR roundtrip (covers field_int via created_at_ns)
+    // -----------------------------------------------------------------------
+
+    fn make_keyring_with_ns(ns: i64) -> KeyringRecordPayload {
+        KeyringRecordPayload::new(
+            1,
+            [0x01u8; 16],
+            Some([0xAAu8; 32]),
+            5,
+            vec![make_key_slot_password()],
+            vec![make_wrapped_dek()],
+            vec![1, 3],
+            ns,
+            [0xFFu8; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn keyring_cbor_roundtrip_ns_zero() {
+        cbor_roundtrip(|| make_keyring_with_ns(0));
+    }
+
+    #[test]
+    fn keyring_cbor_roundtrip_ns_positive() {
+        cbor_roundtrip(|| make_keyring_with_ns(42));
+    }
+
+    #[test]
+    fn keyring_cbor_roundtrip_ns_negative() {
+        cbor_roundtrip(|| make_keyring_with_ns(-1));
     }
 
     fn compute_key_id(algorithm: u8, public_key: &[u8; 32]) -> [u8; 32] {
@@ -2984,11 +3215,68 @@ mod tests {
             None,
             1,
             [0x10u8; 24],
-            vec![0xAAu8; 15], // only 15 bytes, less than 16-byte AEAD tag
+            vec![0xAAu8; 0],
             0,
         )
         .unwrap_err();
-        assert!(matches!(err, PayloadError::UnsupportedValue { key: 8, .. }));
+        assert_eq!(
+            err,
+            PayloadError::WrongLength {
+                key: 8,
+                expected: 48,
+                actual: 0
+            }
+        );
+    }
+
+    #[test]
+    fn key_slot_rejects_too_short_wrapped_secret() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "test".into(),
+            Some(make_password_kdf()),
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 47],
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            PayloadError::WrongLength {
+                key: 8,
+                expected: 48,
+                actual: 47
+            }
+        );
+    }
+
+    #[test]
+    fn key_slot_rejects_too_long_wrapped_secret() {
+        let err = KeySlot::new(
+            [0x01u8; 16],
+            1,
+            "test".into(),
+            Some(make_password_kdf()),
+            None,
+            None,
+            1,
+            [0x10u8; 24],
+            vec![0xAAu8; 49],
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            PayloadError::WrongLength {
+                key: 8,
+                expected: 48,
+                actual: 49
+            }
+        );
     }
 
     // -----------------------------------------------------------------------
