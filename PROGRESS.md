@@ -1,5 +1,15 @@
 # Progress
 
+## F3.1 — Implement SignedRecord envelope
+
+- Status: GREEN
+- Commit: SELF
+- Completed: SignedRecord<P> envelope (default P=Value) per FORMAT.md §4.6 / ARCHITECTURE.md §4.3. Payload uses Value::Map with unsigned integer field keys (required by F3.2+ record schemas). encode() checks output against max_metadata_bytes. Decode validates envelope_version=1, record_id=32B, signer_key_id=32B, signature=64B, payload is map.
+- Tests: 266 (`cargo test --workspace --all-features`: 265 unit + 1 integration); 13 new tests in record module: roundtrip, re-encode identity, decode roundtrip stability, unsigned integer payload key preservation, 5 malformed-length rejections, non-map payload, wrong version, missing fields, empty input, payload-ID-signature-independence, oversized payload rejection
+- Evidence: `record.rs` — `signed_record_encode_decode_roundtrip`, `signed_record_reencodes_identically`, `signed_record_decode_roundtrip_byte_stable`, `signed_record_unsigned_integer_payload_keys_roundtrip`, `signed_record_rejects_wrong_record_id_length`, `signed_record_rejects_wrong_signer_key_id_length`, `signed_record_rejects_wrong_signature_length`, `signed_record_rejects_non_map_payload`, `signed_record_rejects_wrong_version`, `signed_record_rejects_missing_fields`, `signed_record_rejects_empty_input`, `signed_record_payload_id_excludes_signature`, `signed_record_encode_rejects_oversized_payload`
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
+- Follow-up: F3.2 Repository authority payload schemas
+
 ## F2.9 — Freeze format primitives
 
 - Status: GREEN
