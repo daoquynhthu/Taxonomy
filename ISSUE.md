@@ -1,5 +1,17 @@
 # Issues
 
+## ISSUE-0013 — F2.8 fuzz targets incomplete: missing CI job, lossy UTF-8, partial decoder coverage, ledger corruption
+
+- Status: RESOLVED
+- Severity: BLOCKER
+- Discovered in: F2.8 review 2026-06-26
+- Affected scope: fuzz/targets/cbor.rs, fuzz/targets/names.rs, scripts/plan-ledger.json, CI gate
+- Evidence: (1) plan-ledger.json written as `null` by ConvertTo-Json with uninitialized variable; (2) no CI job builds or runs fuzz targets; (3) names target uses `String::from_utf8_lossy` instead of strict `std::str::from_utf8`; (4) cbor target only tests `decode_canonical_value`, missing lower-level `decode()` path; (5) no explicit `-max_len`, `-timeout`, `-rss_limit_mb` in fuzz arguments.
+- Violated invariant: F2.8 requires "bounded smoke fuzz job completes without panic, timeout, or unbounded allocation" with a reproducible, verifiable gate.
+- Required decision: Restore ledger, fix fuzz targets, add fuzz-smoke CI script with explicit resource bounds.
+- Work stopped: F2.9
+- Resolution: Fixed in commit `8521932`. plan-ledger.json restored from parent commit. cbor target now tests both `decode()` and `decode_canonical_value()` with encode round-trip. names target uses strict `std::str::from_utf8` with Display→FromStr round-trip. fuzz-smoke.ps1 script added with explicit `-max_len=65536 -timeout=2 -rss_limit_mb=512 -runs=50000`. Both targets pass 50 000 runs, zero crashes, bounded memory (≤66 MiB). 249 workspace tests pass, ledger checker passes.
+
 ## ISSUE-0012 — F2.7 implementation incomplete: FormatLimits not a complete limits type
 
 - Status: RESOLVED

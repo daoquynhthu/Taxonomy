@@ -1,1 +1,1789 @@
-null
+{
+  "version": 1,
+  "plan": "PLAN.md",
+  "description": "Machine-readable task ledger for EternalCore v4",
+  "phases": [
+    {
+      "id": "P0",
+      "name": "Specification and repository control",
+      "tasks": [
+        {
+          "id": "P0.1",
+          "status": "GREEN",
+          "depends_on": []
+        },
+        {
+          "id": "P0.2",
+          "status": "GREEN",
+          "depends_on": [
+            "P0.1"
+          ]
+        },
+        {
+          "id": "P0.3",
+          "status": "GREEN",
+          "depends_on": [
+            "P0.1"
+          ]
+        },
+        {
+          "id": "P0.4",
+          "status": "GREEN",
+          "depends_on": [
+            "P0.1",
+            "P0.2",
+            "P0.3"
+          ]
+        },
+        {
+          "id": "P0.5",
+          "status": "GREEN",
+          "depends_on": [
+            "P0.2",
+            "P0.3",
+            "P0.4"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P1",
+      "name": "Workspace and CI baseline",
+      "tasks": [
+        {
+          "id": "P1.1",
+          "status": "GREEN",
+          "depends_on": [
+            "P0.5"
+          ]
+        },
+        {
+          "id": "P1.2",
+          "status": "GREEN",
+          "depends_on": [
+            "P1.1"
+          ]
+        },
+        {
+          "id": "P1.3",
+          "status": "GREEN",
+          "depends_on": [
+            "P1.1"
+          ]
+        },
+        {
+          "id": "P1.4",
+          "status": "GREEN",
+          "depends_on": [
+            "P1.1"
+          ]
+        },
+        {
+          "id": "P1.5",
+          "status": "GREEN",
+          "depends_on": [
+            "P1.2",
+            "P1.3",
+            "P1.4"
+          ]
+        },
+        {
+          "id": "P1.6",
+          "status": "GREEN",
+          "depends_on": [
+            "P1.5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "name": "Canonical format primitives",
+      "tasks": [
+        {
+          "id": "F2.1",
+          "status": "GREEN",
+          "depends_on": [
+            "P1.6"
+          ]
+        },
+        {
+          "id": "F2.2",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.1"
+          ]
+        },
+        {
+          "id": "F2.3",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.1"
+          ]
+        },
+        {
+          "id": "F2.4",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.3"
+          ]
+        },
+        {
+          "id": "F2.5",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.3",
+            "F2.4"
+          ]
+        },
+        {
+          "id": "F2.6",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.5"
+          ]
+        },
+        {
+          "id": "F2.7",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.5"
+          ]
+        },
+        {
+          "id": "F2.8",
+          "status": "GREEN",
+          "depends_on": [
+            "F2.4",
+            "F2.6"
+          ]
+        },
+        {
+          "id": "F2.9",
+          "status": "RED",
+          "depends_on": [
+            "F2.2",
+            "F2.3",
+            "F2.4",
+            "F2.5",
+            "F2.6",
+            "F2.7",
+            "F2.8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "name": "Record schemas and complete format fixtures",
+      "tasks": [
+        {
+          "id": "F3.1",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.2",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.3",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.4",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.5",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.6",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.7",
+          "status": "RED",
+          "depends_on": [
+            "F2.9"
+          ]
+        },
+        {
+          "id": "F3.8",
+          "status": "RED",
+          "depends_on": [
+            "F3.1",
+            "F3.2",
+            "F3.3",
+            "F3.4",
+            "F3.5",
+            "F3.6",
+            "F3.7"
+          ]
+        },
+        {
+          "id": "F3.9",
+          "status": "RED",
+          "depends_on": [
+            "F3.8"
+          ]
+        },
+        {
+          "id": "F3.10",
+          "status": "RED",
+          "depends_on": [
+            "F3.8"
+          ]
+        },
+        {
+          "id": "F3.11",
+          "status": "RED",
+          "depends_on": [
+            "F3.8",
+            "F3.9",
+            "F3.10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "name": "Active segment and recovery",
+      "tasks": [
+        {
+          "id": "S4.1",
+          "status": "RED",
+          "depends_on": [
+            "F3.11"
+          ]
+        },
+        {
+          "id": "S4.2",
+          "status": "RED",
+          "depends_on": [
+            "S4.1"
+          ]
+        },
+        {
+          "id": "S4.3",
+          "status": "RED",
+          "depends_on": [
+            "F3.11"
+          ]
+        },
+        {
+          "id": "S4.4",
+          "status": "RED",
+          "depends_on": [
+            "S4.3"
+          ]
+        },
+        {
+          "id": "S4.5",
+          "status": "RED",
+          "depends_on": [
+            "F3.11"
+          ]
+        },
+        {
+          "id": "S4.6",
+          "status": "RED",
+          "depends_on": [
+            "S4.4",
+            "S4.5"
+          ]
+        },
+        {
+          "id": "S4.7",
+          "status": "RED",
+          "depends_on": [
+            "S4.4",
+            "S4.5",
+            "S4.6"
+          ]
+        },
+        {
+          "id": "S4.8",
+          "status": "RED",
+          "depends_on": [
+            "S4.7",
+            "S4.2"
+          ]
+        },
+        {
+          "id": "S4.9",
+          "status": "RED",
+          "depends_on": [
+            "S4.8"
+          ]
+        },
+        {
+          "id": "S4.10",
+          "status": "RED",
+          "depends_on": [
+            "S4.2",
+            "S4.4",
+            "S4.5",
+            "S4.6",
+            "S4.7",
+            "S4.8",
+            "S4.9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "name": "Sealed pack and external index",
+      "tasks": [
+        {
+          "id": "S5.1",
+          "status": "RED",
+          "depends_on": [
+            "S4.10"
+          ]
+        },
+        {
+          "id": "S5.2",
+          "status": "RED",
+          "depends_on": [
+            "S4.10"
+          ]
+        },
+        {
+          "id": "S5.3",
+          "status": "RED",
+          "depends_on": [
+            "S5.1",
+            "S5.2"
+          ]
+        },
+        {
+          "id": "S5.4",
+          "status": "RED",
+          "depends_on": [
+            "S5.3"
+          ]
+        },
+        {
+          "id": "S5.5",
+          "status": "RED",
+          "depends_on": [
+            "S5.3"
+          ]
+        },
+        {
+          "id": "S5.6",
+          "status": "RED",
+          "depends_on": [
+            "S5.4"
+          ]
+        },
+        {
+          "id": "S5.7",
+          "status": "RED",
+          "depends_on": [
+            "S5.1",
+            "S5.2",
+            "S5.3",
+            "S5.4",
+            "S5.5",
+            "S5.6"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "name": "StoreManifest and physical generations",
+      "tasks": [
+        {
+          "id": "S6.1",
+          "status": "RED",
+          "depends_on": [
+            "S5.7"
+          ]
+        },
+        {
+          "id": "S6.2",
+          "status": "RED",
+          "depends_on": [
+            "S5.7"
+          ]
+        },
+        {
+          "id": "S6.3",
+          "status": "RED",
+          "depends_on": [
+            "S6.2"
+          ]
+        },
+        {
+          "id": "S6.4",
+          "status": "RED",
+          "depends_on": [
+            "S6.2",
+            "S6.3"
+          ]
+        },
+        {
+          "id": "S6.5",
+          "status": "RED",
+          "depends_on": [
+            "S6.4"
+          ]
+        },
+        {
+          "id": "S6.6",
+          "status": "RED",
+          "depends_on": [
+            "S6.3",
+            "S6.5"
+          ]
+        },
+        {
+          "id": "S6.7",
+          "status": "RED",
+          "depends_on": [
+            "S6.6"
+          ]
+        },
+        {
+          "id": "S6.8",
+          "status": "RED",
+          "depends_on": [
+            "S6.6"
+          ]
+        },
+        {
+          "id": "S6.9",
+          "status": "RED",
+          "depends_on": [
+            "S6.1",
+            "S6.2",
+            "S6.3",
+            "S6.4",
+            "S6.5",
+            "S6.6",
+            "S6.7",
+            "S6.8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C7",
+      "name": "Unencrypted content storage",
+      "tasks": [
+        {
+          "id": "C7.1",
+          "status": "RED",
+          "depends_on": [
+            "S6.9"
+          ]
+        },
+        {
+          "id": "C7.2",
+          "status": "RED",
+          "depends_on": [
+            "C7.1"
+          ]
+        },
+        {
+          "id": "C7.3",
+          "status": "RED",
+          "depends_on": [
+            "C7.2"
+          ]
+        },
+        {
+          "id": "C7.4",
+          "status": "RED",
+          "depends_on": [
+            "S6.9"
+          ]
+        },
+        {
+          "id": "C7.5",
+          "status": "RED",
+          "depends_on": [
+            "C7.4",
+            "C7.3",
+            "S6.9"
+          ]
+        },
+        {
+          "id": "C7.6",
+          "status": "RED",
+          "depends_on": [
+            "C7.3",
+            "C7.4"
+          ]
+        },
+        {
+          "id": "C7.7",
+          "status": "RED",
+          "depends_on": [
+            "C7.5",
+            "C7.6",
+            "S6.6"
+          ]
+        },
+        {
+          "id": "C7.8",
+          "status": "RED",
+          "depends_on": [
+            "C7.7",
+            "S6.5"
+          ]
+        },
+        {
+          "id": "C7.9",
+          "status": "RED",
+          "depends_on": [
+            "C7.7"
+          ]
+        },
+        {
+          "id": "C7.10",
+          "status": "RED",
+          "depends_on": [
+            "C7.8",
+            "C7.9"
+          ]
+        },
+        {
+          "id": "C7.11",
+          "status": "RED",
+          "depends_on": [
+            "C7.2",
+            "C7.5",
+            "C7.6",
+            "C7.7",
+            "C7.8",
+            "C7.9",
+            "C7.10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "K8",
+      "name": "Signing and repository bootstrap",
+      "tasks": [
+        {
+          "id": "K8.1",
+          "status": "RED",
+          "depends_on": [
+            "C7.11"
+          ]
+        },
+        {
+          "id": "K8.2",
+          "status": "RED",
+          "depends_on": [
+            "K8.1"
+          ]
+        },
+        {
+          "id": "K8.3",
+          "status": "RED",
+          "depends_on": [
+            "K8.2"
+          ]
+        },
+        {
+          "id": "K8.4",
+          "status": "RED",
+          "depends_on": [
+            "K8.1"
+          ]
+        },
+        {
+          "id": "K8.5",
+          "status": "RED",
+          "depends_on": [
+            "K8.4"
+          ]
+        },
+        {
+          "id": "K8.6",
+          "status": "RED",
+          "depends_on": [
+            "K8.4"
+          ]
+        },
+        {
+          "id": "K8.7",
+          "status": "RED",
+          "depends_on": [
+            "K8.5",
+            "K8.6"
+          ]
+        },
+        {
+          "id": "K8.8",
+          "status": "RED",
+          "depends_on": [
+            "K8.1",
+            "K8.2",
+            "K8.3",
+            "K8.4",
+            "K8.5",
+            "K8.6",
+            "K8.7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A9",
+      "name": "Policy and keyring authorization",
+      "tasks": [
+        {
+          "id": "A9.1",
+          "status": "RED",
+          "depends_on": [
+            "K8.7"
+          ]
+        },
+        {
+          "id": "A9.2",
+          "status": "RED",
+          "depends_on": [
+            "A9.1"
+          ]
+        },
+        {
+          "id": "A9.3",
+          "status": "RED",
+          "depends_on": [
+            "A9.1"
+          ]
+        },
+        {
+          "id": "A9.4",
+          "status": "RED",
+          "depends_on": [
+            "A9.3"
+          ]
+        },
+        {
+          "id": "A9.5",
+          "status": "RED",
+          "depends_on": [
+            "A9.3"
+          ]
+        },
+        {
+          "id": "A9.6",
+          "status": "RED",
+          "depends_on": [
+            "A9.3",
+            "A9.2"
+          ]
+        },
+        {
+          "id": "A9.7",
+          "status": "RED",
+          "depends_on": [
+            "A9.3"
+          ]
+        },
+        {
+          "id": "A9.8",
+          "status": "RED",
+          "depends_on": [
+            "A9.3"
+          ]
+        },
+        {
+          "id": "A9.9",
+          "status": "RED",
+          "depends_on": [
+            "A9.5",
+            "A9.6",
+            "A9.7"
+          ]
+        },
+        {
+          "id": "A9.10",
+          "status": "RED",
+          "depends_on": [
+            "A9.1",
+            "A9.2",
+            "A9.3",
+            "A9.4",
+            "A9.5",
+            "A9.6",
+            "A9.7",
+            "A9.8",
+            "A9.9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "name": "Sparse Merkle Tree",
+      "tasks": [
+        {
+          "id": "M10.1",
+          "status": "RED",
+          "depends_on": [
+            "A9.10"
+          ]
+        },
+        {
+          "id": "M10.2",
+          "status": "RED",
+          "depends_on": [
+            "M10.1"
+          ]
+        },
+        {
+          "id": "M10.3",
+          "status": "RED",
+          "depends_on": [
+            "M10.2"
+          ]
+        },
+        {
+          "id": "M10.4",
+          "status": "RED",
+          "depends_on": [
+            "M10.3"
+          ]
+        },
+        {
+          "id": "M10.5",
+          "status": "RED",
+          "depends_on": [
+            "M10.4"
+          ]
+        },
+        {
+          "id": "M10.6",
+          "status": "RED",
+          "depends_on": [
+            "M10.5"
+          ]
+        },
+        {
+          "id": "M10.7",
+          "status": "RED",
+          "depends_on": [
+            "M10.2",
+            "M10.4"
+          ]
+        },
+        {
+          "id": "M10.8",
+          "status": "RED",
+          "depends_on": [
+            "M10.6",
+            "M10.7"
+          ]
+        },
+        {
+          "id": "M10.9",
+          "status": "RED",
+          "depends_on": [
+            "M10.6",
+            "M10.7"
+          ]
+        },
+        {
+          "id": "M10.10",
+          "status": "RED",
+          "depends_on": [
+            "M10.2",
+            "M10.3",
+            "M10.4",
+            "M10.5",
+            "M10.6",
+            "M10.7",
+            "M10.8",
+            "M10.9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T11",
+      "name": "Commits, refs, and logical transactions",
+      "tasks": [
+        {
+          "id": "T11.1",
+          "status": "RED",
+          "depends_on": [
+            "M10.10",
+            "A9.10"
+          ]
+        },
+        {
+          "id": "T11.2",
+          "status": "RED",
+          "depends_on": [
+            "T11.1"
+          ]
+        },
+        {
+          "id": "T11.3",
+          "status": "RED",
+          "depends_on": [
+            "M10.10"
+          ]
+        },
+        {
+          "id": "T11.4",
+          "status": "RED",
+          "depends_on": [
+            "T11.3"
+          ]
+        },
+        {
+          "id": "T11.5",
+          "status": "RED",
+          "depends_on": [
+            "T11.2"
+          ]
+        },
+        {
+          "id": "T11.6",
+          "status": "RED",
+          "depends_on": [
+            "T11.5"
+          ]
+        },
+        {
+          "id": "T11.7",
+          "status": "RED",
+          "depends_on": [
+            "T11.5"
+          ]
+        },
+        {
+          "id": "T11.8",
+          "status": "RED",
+          "depends_on": [
+            "T11.6",
+            "T11.7"
+          ]
+        },
+        {
+          "id": "T11.9",
+          "status": "RED",
+          "depends_on": [
+            "T11.8",
+            "S6.6"
+          ]
+        },
+        {
+          "id": "T11.10",
+          "status": "RED",
+          "depends_on": [
+            "T11.9"
+          ]
+        },
+        {
+          "id": "T11.11",
+          "status": "RED",
+          "depends_on": [
+            "T11.4",
+            "A9.6"
+          ]
+        },
+        {
+          "id": "T11.12",
+          "status": "RED",
+          "depends_on": [
+            "T11.11"
+          ]
+        },
+        {
+          "id": "T11.13",
+          "status": "RED",
+          "depends_on": [
+            "K8.7",
+            "T11.2",
+            "T11.3",
+            "T11.4",
+            "T11.9"
+          ]
+        },
+        {
+          "id": "T11.14",
+          "status": "RED",
+          "depends_on": [
+            "T11.13"
+          ]
+        },
+        {
+          "id": "T11.15",
+          "status": "RED",
+          "depends_on": [
+            "T11.2",
+            "T11.3",
+            "T11.4",
+            "T11.6",
+            "T11.7",
+            "T11.8",
+            "T11.9",
+            "T11.10",
+            "T11.11",
+            "T11.12",
+            "T11.13",
+            "T11.14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "O12",
+      "name": "Object operations and merge",
+      "tasks": [
+        {
+          "id": "O12.1",
+          "status": "RED",
+          "depends_on": [
+            "T11.15"
+          ]
+        },
+        {
+          "id": "O12.2",
+          "status": "RED",
+          "depends_on": [
+            "O12.1"
+          ]
+        },
+        {
+          "id": "O12.3",
+          "status": "RED",
+          "depends_on": [
+            "T11.15"
+          ]
+        },
+        {
+          "id": "O12.4",
+          "status": "RED",
+          "depends_on": [
+            "O12.3"
+          ]
+        },
+        {
+          "id": "O12.5",
+          "status": "RED",
+          "depends_on": [
+            "O12.1"
+          ]
+        },
+        {
+          "id": "O12.6",
+          "status": "RED",
+          "depends_on": [
+            "O12.1"
+          ]
+        },
+        {
+          "id": "O12.7",
+          "status": "RED",
+          "depends_on": [
+            "O12.4"
+          ]
+        },
+        {
+          "id": "O12.8",
+          "status": "RED",
+          "depends_on": [
+            "O12.4"
+          ]
+        },
+        {
+          "id": "O12.9",
+          "status": "RED",
+          "depends_on": [
+            "O12.4"
+          ]
+        },
+        {
+          "id": "O12.10",
+          "status": "RED",
+          "depends_on": [
+            "O12.9"
+          ]
+        },
+        {
+          "id": "O12.11",
+          "status": "RED",
+          "depends_on": [
+            "O12.10"
+          ]
+        },
+        {
+          "id": "O12.12",
+          "status": "RED",
+          "depends_on": [
+            "O12.10"
+          ]
+        },
+        {
+          "id": "O12.13",
+          "status": "RED",
+          "depends_on": [
+            "O12.4",
+            "O12.5",
+            "O12.6",
+            "O12.7",
+            "O12.8",
+            "O12.12"
+          ]
+        },
+        {
+          "id": "O12.14",
+          "status": "RED",
+          "depends_on": [
+            "O12.1",
+            "O12.2",
+            "O12.3",
+            "O12.4",
+            "O12.5",
+            "O12.6",
+            "O12.7",
+            "O12.8",
+            "O12.9",
+            "O12.10",
+            "O12.11",
+            "O12.12",
+            "O12.13"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "V13",
+      "name": "Verification, cache, compaction, and GC",
+      "tasks": [
+        {
+          "id": "V13.1",
+          "status": "RED",
+          "depends_on": [
+            "O12.14"
+          ]
+        },
+        {
+          "id": "V13.2",
+          "status": "RED",
+          "depends_on": [
+            "V13.1"
+          ]
+        },
+        {
+          "id": "V13.3",
+          "status": "RED",
+          "depends_on": [
+            "O12.14"
+          ]
+        },
+        {
+          "id": "V13.4",
+          "status": "RED",
+          "depends_on": [
+            "O12.14"
+          ]
+        },
+        {
+          "id": "V13.5",
+          "status": "RED",
+          "depends_on": [
+            "V13.4"
+          ]
+        },
+        {
+          "id": "V13.6",
+          "status": "RED",
+          "depends_on": [
+            "O12.14"
+          ]
+        },
+        {
+          "id": "V13.7",
+          "status": "RED",
+          "depends_on": [
+            "V13.6"
+          ]
+        },
+        {
+          "id": "V13.8",
+          "status": "RED",
+          "depends_on": [
+            "V13.7"
+          ]
+        },
+        {
+          "id": "V13.9",
+          "status": "RED",
+          "depends_on": [
+            "V13.8",
+            "S6.7",
+            "S6.5"
+          ]
+        },
+        {
+          "id": "V13.10",
+          "status": "RED",
+          "depends_on": [
+            "V13.9"
+          ]
+        },
+        {
+          "id": "V13.11",
+          "status": "RED",
+          "depends_on": [
+            "V13.1"
+          ]
+        },
+        {
+          "id": "V13.12",
+          "status": "RED",
+          "depends_on": [
+            "V13.2",
+            "V13.3",
+            "V13.4",
+            "V13.5",
+            "V13.6",
+            "V13.7",
+            "V13.8",
+            "V13.9",
+            "V13.10",
+            "V13.11"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "U14",
+      "name": "Local CLI",
+      "tasks": [
+        {
+          "status": "RED",
+          "id": "U14.1",
+          "depends_on": [
+            "V13.12"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.2",
+          "depends_on": [
+            "U14.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.3",
+          "depends_on": [
+            "U14.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.4",
+          "depends_on": [
+            "U14.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.5",
+          "depends_on": [
+            "U14.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.6",
+          "depends_on": [
+            "U14.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.7",
+          "depends_on": [
+            "U14.6"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "U14.8",
+          "depends_on": [
+            "U14.2",
+            "U14.3",
+            "U14.4",
+            "U14.5",
+            "U14.6",
+            "U14.7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Y15",
+      "name": "Local filesystem synchronization",
+      "tasks": [
+        {
+          "status": "RED",
+          "id": "Y15.1",
+          "depends_on": [
+            "U14.8"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.2",
+          "depends_on": [
+            "Y15.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.3",
+          "depends_on": [
+            "Y15.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.4",
+          "depends_on": [
+            "Y15.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.5",
+          "depends_on": [
+            "Y15.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.6",
+          "depends_on": [
+            "Y15.5"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.7",
+          "depends_on": [
+            "Y15.3"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.8",
+          "depends_on": [
+            "Y15.3"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.9",
+          "depends_on": [
+            "Y15.3"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.10",
+          "depends_on": [
+            "Y15.3"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.11",
+          "depends_on": [
+            "Y15.10"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.12",
+          "depends_on": [
+            "Y15.4",
+            "Y15.5",
+            "Y15.8",
+            "Y15.6"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.13",
+          "depends_on": [
+            "Y15.8",
+            "Y15.10"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.14",
+          "depends_on": [
+            "Y15.12",
+            "Y15.13"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.15",
+          "depends_on": [
+            "Y15.14"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "Y15.16",
+          "depends_on": [
+            "Y15.2",
+            "Y15.4",
+            "Y15.5",
+            "Y15.6",
+            "Y15.7",
+            "Y15.8",
+            "Y15.9",
+            "Y15.10",
+            "Y15.11",
+            "Y15.12",
+            "Y15.13",
+            "Y15.14",
+            "Y15.15"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "N16",
+      "name": "TLS network synchronization",
+      "tasks": [
+        {
+          "status": "RED",
+          "id": "N16.1",
+          "depends_on": [
+            "Y15.16"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.2",
+          "depends_on": [
+            "N16.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.3",
+          "depends_on": [
+            "N16.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.4",
+          "depends_on": [
+            "N16.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.5",
+          "depends_on": [
+            "N16.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.6",
+          "depends_on": [
+            "N16.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.7",
+          "depends_on": [
+            "N16.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.8",
+          "depends_on": [
+            "N16.5",
+            "N16.6"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "N16.9",
+          "depends_on": [
+            "N16.1",
+            "N16.2",
+            "N16.3",
+            "N16.4",
+            "N16.5",
+            "N16.6",
+            "N16.7",
+            "N16.8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R17",
+      "name": "Resume, partial clone, bootstrap clone",
+      "tasks": [
+        {
+          "status": "RED",
+          "id": "R17.1",
+          "depends_on": [
+            "N16.9"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.2",
+          "depends_on": [
+            "R17.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.3",
+          "depends_on": [
+            "R17.2"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.4",
+          "depends_on": [
+            "R17.2"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.5",
+          "depends_on": [
+            "R17.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.6",
+          "depends_on": [
+            "R17.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.7",
+          "depends_on": [
+            "R17.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.8",
+          "depends_on": [
+            "R17.4"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.9",
+          "depends_on": [
+            "R17.4"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.10",
+          "depends_on": [
+            "R17.4"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.11",
+          "depends_on": [
+            "R17.8",
+            "R17.9",
+            "R17.10"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "R17.12",
+          "depends_on": [
+            "R17.1",
+            "R17.2",
+            "R17.3",
+            "R17.4",
+            "R17.5",
+            "R17.6",
+            "R17.7",
+            "R17.8",
+            "R17.9",
+            "R17.10",
+            "R17.11"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E18",
+      "name": "Encrypted content and key operations",
+      "tasks": [
+        {
+          "status": "RED",
+          "id": "E18.1",
+          "depends_on": [
+            "C7.11",
+            "A9.10",
+            "T11.15"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.2",
+          "depends_on": [
+            "E18.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.3",
+          "depends_on": [
+            "E18.2"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.4",
+          "depends_on": [
+            "E18.2"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.5",
+          "depends_on": [
+            "E18.2"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.6",
+          "depends_on": [
+            "E18.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.7",
+          "depends_on": [
+            "E18.3",
+            "E18.4"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.8",
+          "depends_on": [
+            "E18.5"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.9",
+          "depends_on": [
+            "E18.5"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.10",
+          "depends_on": [
+            "E18.5"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.11",
+          "depends_on": [
+            "E18.5"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.12",
+          "depends_on": [
+            "E18.5"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.13",
+          "depends_on": [
+            "E18.7",
+            "E18.8",
+            "E18.9",
+            "E18.10",
+            "E18.11",
+            "E18.12"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "E18.14",
+          "depends_on": [
+            "E18.1",
+            "E18.2",
+            "E18.3",
+            "E18.4",
+            "E18.5",
+            "E18.6",
+            "E18.7",
+            "E18.8",
+            "E18.9",
+            "E18.10",
+            "E18.11",
+            "E18.12",
+            "E18.13"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "H19",
+      "name": "Hardening, interoperability, and release",
+      "tasks": [
+        {
+          "status": "RED",
+          "id": "H19.1",
+          "depends_on": [
+            "R17.12",
+            "E18.14"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.2",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.3",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.4",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.5",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.6",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.7",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.8",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.9",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.10",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.11",
+          "depends_on": [
+            "H19.1"
+          ]
+        },
+        {
+          "status": "RED",
+          "id": "H19.12",
+          "depends_on": [
+            "H19.1",
+            "H19.2",
+            "H19.3",
+            "H19.4",
+            "H19.5",
+            "H19.6",
+            "H19.7",
+            "H19.8",
+            "H19.9",
+            "H19.10",
+            "H19.11"
+          ]
+        }
+      ]
+    }
+  ]
+}

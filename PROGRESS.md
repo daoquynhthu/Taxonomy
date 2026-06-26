@@ -4,9 +4,9 @@
 
 - Status: GREEN
 - Commit: SELF
-- Completed: Added fuzz targets `cbor` and `names` under `fuzz/targets/` using `cargo-fuzz` / `libfuzzer-sys`. Each runs 50 000 inputs with bounded memory (≤61 MiB RSS), no panic, and no timeout.
-- Tests: `cargo +nightly fuzz run cbor -- -max_total_time=15 -runs=50000`; `cargo +nightly fuzz run names -- -max_total_time=15 -runs=50000`. Requires LLVM lib dir in LIB and PATH for ASan DLL.
-- Evidence: cbor: 413 cov, 267 corpus entries; names: 231 cov, 203 corpus entries. Zero crashes, zero timeouts, bounded RSS.
+- Completed: Fuzz targets `cbor` and `names` under `fuzz/targets/` using `cargo-fuzz` / `libfuzzer-sys`. cbor target exercises both `decode()` and `decode_canonical_value()` with encoded round-trip verification. names target uses strict `std::str::from_utf8` with Display→FromStr round-trip. Script `scripts/fuzz-smoke.ps1` runs both with explicit `-max_len=65536 -timeout=2 -rss_limit_mb=512 -runs=50000` and produces `fuzz-smoke-report.json`. Each target completed 50 000 inputs with zero crashes, zero timeouts, bounded RSS (cbor: 66 MiB, names: 54 MiB).
+- Tests: `scripts/fuzz-smoke.ps1`; `scripts/check-plan-ledger.ps1`; `cargo test --workspace --all-features` (249 tests)
+- Evidence: cbor: 624 cov, 359 corpus entries; names: 298 cov, 198 corpus entries. plan-ledger.json validates correctly.
 - Follow-up: None (GREEN)
 
 ## F2.7 — Implement normative limits
