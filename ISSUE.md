@@ -26,7 +26,7 @@
 
 ## ISSUE-0002 — G1 lacks machine-readable CI gate artifact
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: Audit 2026-06-25
 - Affected scope: CI workflows, scripts/generate-gate-report.ps1, G1
@@ -34,7 +34,12 @@
 - Violated invariant: G1 requires verifiable CI evidence.
 - Required decision: Add gate-report.json generation to CI and upload as artifact.
 - Work stopped: G1, all downstream gates
-- Resolution: PENDING — script fixes applied (use $totalIgnored, fixture checksum null → hard fail), CI upload configured. Remaining: push to GitHub, verify CI artifact contains exact evidence, then close.
+- Resolution: RESOLVED — CI artifact verified on GitHub run 28212653235 (commit eaa52bc):
+   1. All 9 steps exit 0
+   2. test_counts: passed=224, failed=0, ignored=0
+   3. fixture_checksum: sha256=9b133f154b74ad346cd80fcc59500e18ebead1113d78851854733e92342434ba
+   4. artifact uploaded: gate-report.zip (ID 7895510237, 5487 bytes)
+   5. Evidence: https://github.com/daoquynhthu/Taxonomy/actions/runs/28212653235
 
 ## ISSUE-0003 — DomainHash silently truncates tags longer than u16::MAX
 
@@ -98,7 +103,7 @@
 
 ## ISSUE-0008 — F2.5 lacks JSON conversion adapter required by GREEN criteria
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: Audit 2026-06-25
 - Affected scope: crates/eternal-format/src/canonical.rs, F2.5
@@ -106,11 +111,7 @@
 - Violated invariant: CanonicalValue must provide JSON→CV conversion with float rejection and proper limits.
 - Required decision: Implement encode_canonical_value() with depth ≤ 64, nodes ≤ 1,000,000, string ≤ 1,048,576, NUL rejection. TryFrom<serde_json::Value> must also enforce these limits and remove false duplicate-key detection.
 - Work stopped: F2.5
-- Resolution: PENDING — F2.5 code-level issues resolved (commits 5b3593b, b99af6f). Blocked on G1 (ISSUE-0002): CI artifact must be verified on GitHub before F2.5 can close.
-    1. CRITICAL (integer type unification): FIXED — `visit_u64` returns I64 for v ≤ i64::MAX, U64 for larger; two-entry equivalence tests verify identical CanonicalValue and CBOR bytes.
-    2. HIGH (TrailingData unreachable): FIXED — `de.end()` error explicitly returns `CanonicalEncodeError::TrailingData`.
-    3. HIGH (string allocation claim): CORRECTION — 16 MiB raw input limit bounds total allocation; per-string 1 MiB limit enforced after Serde decode.
-    4. Missing tests: ADDED — invalid UTF-8 byte, `\uXXXX`-escaped oversized string, two-entry equivalence (×3), TrailingData (×3), integer boundary (×3).
+- Resolution: RESOLVED — all findings addressed. Commits 5b3593b, b99af6f, 0b95235, eaa52bc. G1 CI artifact verified (run 28212653235). plan-ledger P1.6 + F2.5 promoted to GREEN.
 
 ## ISSUE-0009 — PROGRESS.md PENDING commit references are self-referential
 

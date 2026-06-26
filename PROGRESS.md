@@ -9,6 +9,15 @@
 - Evidence: ObjectId rejects all invalid forms; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering correct; bare `refs/heads/` rejected; all constrained types enforce bounds.
 - Follow-up: None (GREEN)
 
+## F2.5 — Implement CanonicalValue tagged union
+
+- Status: GREEN
+- Commit: eaa52bc
+- Completed: CanonicalValue enum (Null/Bool/I64/U64/Text/Bytes/Array/Map) with FORMAT.md §4.5 tagged-array encoder and decoder. TryFrom<serde_json::Value> with float rejection. JsonParser deleted, replaced with serde_json::Deserializer + custom Visitor. Integer type unified (v ≤ i64::MAX → I64). TrailingData reachable. Depth, node count, NUL rejection, string length limit enforced. G1 CI artifact verified (run 28212653235, 224 pass 0 fail 0 ignored).
+- Tests: `cargo test --workspace --all-features` (224 tests)
+- Evidence: 224 tests pass. Two JSON entry points produce identical CanonicalValue and identical CBOR bytes. All audit findings addressed. CI artifact verified on GitHub.
+- Follow-up: None (GREEN)
+
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
 - Status: GREEN
@@ -43,6 +52,15 @@
 - Completed: Private-field wrappers for UUID (16 bytes), 14 hash-id types (32 bytes each), Signature (64 bytes), PublicKey (32 bytes), Timestamp (i64), and BoundedLength (u64 with max bound). All hash IDs via hash_id! macro. Audit fix: BoundedLength::new_unchecked changed from pub to pub(crate) to prevent bypass of max bound.
 - Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: Round-trip bytes and display/parse; malformed length rejection; bound rejection; distinct-type compile check; no external access to unchecked construction.
+- Follow-up: None (GREEN)
+
+## P1.6 — Freeze workspace baseline
+
+- Status: GREEN
+- Commit: eaa52bc
+- Completed: G1 hard gate passes locally and in CI. generate-gate-report.ps1 produces machine-readable artifact with all PLAN.md §4.3 fields. CI artifact verified on GitHub (run 28212653235): 9 steps exit 0, 224 test pass 0 fail 0 ignored, fixture checksum non-null.
+- Tests: Full G1 gate via CI: `cargo fmt --all -- --check`; `cargo clippy -D warnings`; `cargo check --all-targets`; `cargo test --workspace` (224 pass); `cargo test --doc`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-plan-ledger.ps1`
+- Evidence: https://github.com/daoquynhthu/Taxonomy/actions/runs/28212653235 — gate-report artifact contains commit eaa52bc, rustc 1.96.0, Linux x86_64, passed=224 failed=0 ignored=0, fixture checksum 9b133f...
 - Follow-up: None (GREEN)
 
 ## P0/P1 — post-audit fixes
