@@ -4,9 +4,9 @@
 
 - Status: GREEN
 - Commit: SELF
-- Completed: FormatLimits zero-value rejection (new/with_* all 3 fields). CanonicalDecoder::from_limits(&FormatLimits). CanonicalValue::from_json_value(value, &FormatLimits). decode_canonical_value() uses self.max_item_count instead of hardcoded 1_000_000. 12 tests added for zero rejection, limits reference acceptance, and allocation-before-check proof.
-- Tests: `cargo test --workspace --all-features` (236 tests)
-- Evidence: All 3 green criteria satisfied: every parser accepts &FormatLimits, zero/overflow-inducing limits rejected, allocation checks proven before allocation.
+- Completed: Full FormatLimits in dedicated limits.rs with all 17 FORMAT §20 limits (record payload, chunk plaintext, metadata bytes, parents, relations, changes, policy keys, permissions, key slots, manifest chunks, pack records, pack size, segment size, plus existing depth/nodes/string). Zero-value and overflow rejection in new() and all with_* builders. CanonicalDecoder::from_limits(&FormatLimits) replaces raw new(). CanonicalValue::from_json_value(value, &FormatLimits). Hardcoded MAX_RAW_INPUT replaced by limits.max_metadata_bytes(). 11 allocation-before-check proof tests: oversized string/array/map/text CBOR headers with no payload reject before read, JSON metadata limit rejects before parse. 16 limits.rs construction tests.
+- Tests: `cargo test --workspace --all-features` (247 tests)
+- Evidence: All 3 green criteria satisfied. FormatLimits is the single limits type; CanonicalDecoder::new() removed; all parsers accept &FormatLimits; allocation-before-check proven with malicious zero-payload CBOR headers.
 - Follow-up: None (GREEN)
 
 ## F2.6 — Implement constrained names

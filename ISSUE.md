@@ -1,5 +1,17 @@
 # Issues
 
+## ISSUE-0012 — F2.7 implementation incomplete: FormatLimits not a complete limits type
+
+- Status: RESOLVED
+- Severity: BLOCKER
+- Discovered in: F2.7 review 2026-06-26
+- Affected scope: crates/eternal-format/src/limits.rs, crates/eternal-format/src/canonical.rs, FORMAT.md §20, F2.7
+- Evidence: Current FormatLimits only covers 3 CanonicalValue limits (max_depth, max_nodes, max_string_bytes). FORMAT §20 defines many more.
+- Violated invariant: F2.7 requires "one limits type with the exact format defaults and checked override validation."
+- Required decision: Migrate FormatLimits to limits.rs with all FORMAT §20 limits. Delete CanonicalDecoder::new(). Replace hardcoded MAX_RAW_INPUT. Write proper before-allocation proof tests.
+- Work stopped: F2.7, F2.8
+- Resolution: RESOLVED — FormatLimits moved to limits.rs with all 17 FORMAT §20 limits. Zero-value and overflow rejection. CanonicalDecoder::new() removed, from_limits() is sole constructor. CanonicalValue::from_json_value(value, &FormatLimits). MAX_RAW_INPUT replaced by limits.max_metadata_bytes(). 5 proper allocation-before-check tests using malicious CBOR length headers with zero payload. 247 tests pass. All 3 green criteria satisfied.
+
 ## ISSUE-0011 — Multi-task commit violates Agent.md single-task discipline
 
 - Status: RESOLVED
