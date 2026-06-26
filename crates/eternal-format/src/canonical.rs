@@ -1409,13 +1409,12 @@ impl<'a> CanonicalDecoder<'a> {
         if depth > self.max_depth {
             return Err(DecodeError::DepthExceeded);
         }
-        *node_count += 1;
-        if *node_count > self.max_item_count {
-            return Err(DecodeError::ValueTooLarge {
-                requested: *node_count,
+        *node_count = node_count
+            .checked_add(1)
+            .ok_or(DecodeError::ValueTooLarge {
+                requested: u64::MAX,
                 max: self.max_item_count,
-            });
-        }
+            })?;
 
         // The outer structure is always a CBOR array
         let byte = self.read_byte()?;
@@ -3211,5 +3210,278 @@ mod tests {
         let bytes_slice = encode_canonical_value(&from_slice, &FormatLimits::default()).unwrap();
         let bytes_value = encode_canonical_value(&from_value, &FormatLimits::default()).unwrap();
         assert_eq!(bytes_slice, bytes_value, "CBOR bytes mismatch for array");
+    }
+
+    // -------------------------------------------------------------------
+    // G2: Freeze format primitives — Hard Gate G2
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn g2_encoder_byte_stability() {
+        // Encode the same logical data twice — must produce identical bytes
+        let limits = FormatLimits::default();
+
+        let cv = CanonicalValue::Map({
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("number".into(), CanonicalValue::I64(-42));
+            m.insert("text".into(), CanonicalValue::Text("hello".into()));
+            m.insert("bytes".into(), CanonicalValue::Bytes(vec![0xde, 0xad]));
+            m.insert(
+                "nested".into(),
+                CanonicalValue::Array(vec![
+                    CanonicalValue::Null,
+                    CanonicalValue::Bool(true),
+                    CanonicalValue::U64(u64::MAX),
+                ]),
+            );
+            m
+        });
+
+        let bytes_a = encode_canonical_value(&cv, &limits).unwrap();
+        let bytes_b = encode_canonical_value(&cv, &limits).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "encode_canonical_value must be byte-stable"
+        );
+    }
+
+    #[test]
+    fn g2_rejects_all_non_canonical_cbor() {
+        // Comprehensive rejection suite matching FORMAT.md §4.
+        // Every test in this function checks that the decoder rejects a
+        // specific non-canonical encoding that the spec forbids.
+        let limits = FormatLimits::default();
+
+        // Non-shortest integer: 0 encoded as 0x18 0x00 (1-byte uint) instead of 0x00
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0x18, 0x00], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::NonShortestInteger
+        );
+
+        // Non-shortest negative: -1 encoded as 0x38 0x00 (1-byte) instead of 0x20
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0x38, 0x00], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::NonShortestInteger
+        );
+
+        // Indefinite-length array
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0x9f], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::IndefiniteLengthUnsupported
+        );
+
+        // Indefinite-length map
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xbf], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::IndefiniteLengthUnsupported
+        );
+
+        // Indefinite-length byte string
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0x5f], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::IndefiniteLengthUnsupported
+        );
+
+        // Indefinite-length text string
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0x7f], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::IndefiniteLengthUnsupported
+        );
+
+        // Float16
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf9, 0x00, 0x00], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::FloatUnsupported
+        );
+
+        // Float32
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xfa, 0x00, 0x00, 0x00, 0x00], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::FloatUnsupported
+        );
+
+        // Float64
+        assert_eq!(
+            CanonicalDecoder::from_limits(
+                &[0xfb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                &limits
+            )
+            .decode()
+            .unwrap_err(),
+            DecodeError::FloatUnsupported
+        );
+
+        // CBOR tag
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xc0, 0x00], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::TagUnsupported
+        );
+
+        // Undefined
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf7], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::SimpleValueUnsupported(23)
+        );
+
+        // Simple value 24 (not false/true/null)
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf8, 0x18], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::SimpleValueUnsupported(24)
+        );
+
+        // Non-shortest simple value: false encoded as 0xf8 0x14 instead of 0xf4
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf8, 0x14], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::SimpleValueUnsupported(20)
+        );
+
+        // Non-shortest simple value: true encoded as 0xf8 0x15 instead of 0xf5
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf8, 0x15], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::SimpleValueUnsupported(21)
+        );
+
+        // Non-shortest simple value: null encoded as 0xf8 0x16 instead of 0xf6
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf8, 0x16], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::SimpleValueUnsupported(22)
+        );
+
+        // Reserved additional info 16 (major 7, addl 0–19 reserved)
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf0], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::ReservedAdditionalInfo(16)
+        );
+
+        // Reserved additional info 19
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xf3], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::ReservedAdditionalInfo(19)
+        );
+
+        // Invalid UTF-8
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0x62, 0xff, 0xfe], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::InvalidUtf8
+        );
+
+        // Duplicate map key
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xa2, 0x00, 0x01, 0x00, 0x02], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::DuplicateMapKey
+        );
+
+        // Unsorted map key
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[0xa2, 0x01, 0x01, 0x00, 0x02], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::UnsortedMapKey
+        );
+
+        // Depth exceeded (65 nested arrays, max_depth=64)
+        {
+            let mut inner = vec![0x01u8];
+            for _ in 0..65 {
+                let mut outer = vec![0x81u8];
+                outer.extend_from_slice(&inner);
+                inner = outer;
+            }
+            assert_eq!(
+                CanonicalDecoder::from_limits(&inner, &limits)
+                    .decode()
+                    .unwrap_err(),
+                DecodeError::DepthExceeded
+            );
+        }
+
+        // Oversized string
+        {
+            let mut bytes = vec![0x7au8, 0x00, 0x20, 0x00, 0x00];
+            bytes.extend(std::iter::repeat_n(0x61u8, 100));
+            assert_eq!(
+                CanonicalDecoder::from_limits(&bytes, &limits)
+                    .decode()
+                    .unwrap_err(),
+                DecodeError::ValueTooLarge {
+                    requested: 0x200000,
+                    max: 1_048_576
+                }
+            );
+        }
+
+        // Unexpected EOF
+        assert_eq!(
+            CanonicalDecoder::from_limits(&[], &limits)
+                .decode()
+                .unwrap_err(),
+            DecodeError::UnexpectedEof
+        );
+
+        // Trailing data
+        {
+            let mut enc = CanonicalEncoder::new();
+            enc.u64(42);
+            let mut bytes = enc.into_bytes();
+            bytes.push(0x00);
+            assert_eq!(
+                CanonicalDecoder::from_limits(&bytes, &limits)
+                    .decode()
+                    .unwrap_err(),
+                DecodeError::TrailingData
+            );
+        }
+    }
+
+    #[test]
+    fn g2_encode_canonical_value_is_deterministic() {
+        let limits = FormatLimits::default();
+        let cv = CanonicalValue::Array(vec![
+            CanonicalValue::I64(-1),
+            CanonicalValue::U64(0),
+            CanonicalValue::Text("hello".into()),
+            CanonicalValue::Bytes(vec![0xff]),
+            CanonicalValue::Null,
+            CanonicalValue::Bool(true),
+        ]);
+        let bytes_a = encode_canonical_value(&cv, &limits).unwrap();
+        let bytes_b = encode_canonical_value(&cv, &limits).unwrap();
+        assert_eq!(bytes_a, bytes_b);
     }
 }

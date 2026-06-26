@@ -1,5 +1,15 @@
 # Progress
 
+## F2.9 — Freeze format primitives
+
+- Status: GREEN
+- Commit: SELF
+- Completed: Hard Gate G2. All FORMAT.md §21 primitive vectors match (CBOR golden vector, DomainHash empty-payload vectors, fixture manifest checksums). Encoder output verified byte-stable (deterministic across independent calls and separate encode_canonical_value invocations). Decoder rejects all 16 FORMAT.md §4 non-canonical cases (non-shortest integers, indefinite-length items, floats, tags, undefined, invalid UTF-8, duplicate/unsorted map keys, depth exceeded, oversized strings, unexpected EOF, trailing data) plus non-shortest simple values (false/true/null) and reserved simple values. `eternal-format` dependencies confirmed: serde, serde_json, ciborium, sha2 only — no filesystem, network, policy, or key-store crate.
+- Tests: 253 (`cargo test --workspace --all-features`: 252 unit + 1 integration); `cargo test --doc --workspace --all-features`; `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- Evidence: `g2_rejects_all_non_canonical_cbor`, `g2_encoder_byte_stability`, `g2_encode_canonical_value_is_deterministic` (canonical.rs); `g2_no_forbidden_dependencies` (tests/g2_dependency_check.rs)
+- Follow-up: F3 unlocked.
+- Audit: Parallel audit found and fixed 3 issues: unchecked `*node_count += 1` in `decode_cv_inner` replaced with `checked_add` (canonical.rs:1412); missing non-shortest simple-value and reserved-simple rejection assertions added to `g2_rejects_all_non_canonical_cbor`; `g2_no_forbidden_dependencies` rewritten to parse Cargo.toml via `include_str!` with explicit forbidden-crate check (was vacuous).
+
 ## F2.8 — Fuzz primitive decoding
 
 - Status: GREEN
