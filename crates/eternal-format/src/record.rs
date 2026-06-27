@@ -1928,8 +1928,14 @@ pub struct ChunkingDescriptor {
     gear_table_id: [u8; 32],
 }
 
+/// Normative FastCDC v1 gear table ID per FORMAT.md §7.4.
+pub const FASTCDC_V1_GEAR_TABLE_ID: [u8; 32] = [
+    0x7c, 0xcf, 0xcc, 0x31, 0xcb, 0x8f, 0xa9, 0xc9, 0xe7, 0x7c, 0x5b, 0x46, 0xc6, 0x13, 0x79, 0x35,
+    0xc4, 0xc0, 0x4a, 0xc1, 0x8f, 0xfb, 0x2d, 0xad, 0x4a, 0x1b, 0x26, 0xbf, 0x50, 0x4c, 0x35, 0x30,
+];
+
 impl ChunkingDescriptor {
-    pub fn new_v1(gear_table_id: [u8; 32]) -> Self {
+    pub fn new_v1() -> Self {
         Self {
             algorithm: 1,
             version: 1,
@@ -1937,7 +1943,7 @@ impl ChunkingDescriptor {
             average_size: 4_194_304,
             maximum_size: 8_388_608,
             normalization: 2,
-            gear_table_id,
+            gear_table_id: FASTCDC_V1_GEAR_TABLE_ID,
         }
     }
 
@@ -1984,6 +1990,12 @@ impl ChunkingDescriptor {
             return Err(PayloadError::UnsupportedValue {
                 key: 5,
                 detail: format!("fixed normalization must be 2, got {normalization}"),
+            });
+        }
+        if gear_table_id != FASTCDC_V1_GEAR_TABLE_ID {
+            return Err(PayloadError::UnsupportedValue {
+                key: 6,
+                detail: "fixed gear_table_id must be the normative FastCDC v1 table ID".into(),
             });
         }
         Ok(Self {
@@ -2067,7 +2079,7 @@ pub struct ContentManifestChunkEntry {
 }
 
 impl ContentManifestChunkEntry {
-    pub fn new(chunk_id: [u8; 32], plaintext_length: u64) -> Result<Self, PayloadError> {
+    pub fn new(chunk_id: ChunkId, plaintext_length: u64) -> Result<Self, PayloadError> {
         if plaintext_length == 0 {
             return Err(PayloadError::UnsupportedValue {
                 key: 1,
@@ -2075,7 +2087,7 @@ impl ContentManifestChunkEntry {
             });
         }
         Ok(Self {
-            chunk_id: ChunkId::new(chunk_id),
+            chunk_id,
             plaintext_length,
         })
     }
@@ -2098,7 +2110,7 @@ impl TryFrom<Value> for ContentManifestChunkEntry {
         reject_unknown_keys(pairs, 2)?;
         let fields = parse_fields(pairs, 2);
         Self::new(
-            field_bytes_exact::<32>(&fields, 0)?,
+            ChunkId::new(field_bytes_exact::<32>(&fields, 0)?),
             field_uint(&fields, 1)?,
         )
     }
@@ -2132,7 +2144,7 @@ impl EncodedChunkPayload {
     pub fn new(
         format_version: u64,
         repository_id: [u8; 16],
-        chunk_id: [u8; 32],
+        chunk_id: ChunkId,
         plaintext_length: u64,
         codec: CodecDescriptor,
         encryption: Option<EncryptionDescriptor>,
@@ -2169,7 +2181,7 @@ impl EncodedChunkPayload {
         Ok(Self {
             format_version,
             repository_id,
-            chunk_id: ChunkId::new(chunk_id),
+            chunk_id,
             plaintext_length,
             codec,
             encryption,
@@ -2243,7 +2255,7 @@ impl TryFrom<Value> for EncodedChunkPayload {
         Self::new(
             field_uint(&fields, 0)?,
             field_bytes_exact::<16>(&fields, 1)?,
-            field_bytes_exact::<32>(&fields, 2)?,
+            ChunkId::new(field_bytes_exact::<32>(&fields, 2)?),
             field_uint(&fields, 3)?,
             codec,
             encryption,
@@ -3060,7 +3072,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_password_kdf() -> PasswordKdfDescriptor {
-        PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65536, 3, 1).unwrap()
+        PasswordKdfDescriptor::new(1, 0x13, FASTCDC_V1_GEAR_TABLE_ID.to_vec(), 65536, 3, 1).unwrap()
     }
 
     #[test]
@@ -3087,13 +3099,16 @@ mod tests {
 
     #[test]
     fn password_kdf_rejects_bad_algorithm() {
-        let err = PasswordKdfDescriptor::new(2, 0x13, vec![0xABu8; 32], 65536, 3, 1).unwrap_err();
+        let err =
+            PasswordKdfDescriptor::new(2, 0x13, FASTCDC_V1_GEAR_TABLE_ID.to_vec(), 65536, 3, 1)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
     }
 
     #[test]
     fn password_kdf_rejects_bad_version() {
-        let err = PasswordKdfDescriptor::new(1, 10, vec![0xABu8; 32], 65536, 3, 1).unwrap_err();
+        let err = PasswordKdfDescriptor::new(1, 10, FASTCDC_V1_GEAR_TABLE_ID.to_vec(), 65536, 3, 1)
+            .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
     }
 
@@ -3105,19 +3120,25 @@ mod tests {
 
     #[test]
     fn password_kdf_rejects_low_memory() {
-        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65535, 3, 1).unwrap_err();
+        let err =
+            PasswordKdfDescriptor::new(1, 0x13, FASTCDC_V1_GEAR_TABLE_ID.to_vec(), 65535, 3, 1)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
     }
 
     #[test]
     fn password_kdf_rejects_zero_iterations() {
-        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65536, 0, 1).unwrap_err();
+        let err =
+            PasswordKdfDescriptor::new(1, 0x13, FASTCDC_V1_GEAR_TABLE_ID.to_vec(), 65536, 0, 1)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
     }
 
     #[test]
     fn password_kdf_rejects_bad_parallelism() {
-        let err = PasswordKdfDescriptor::new(1, 0x13, vec![0xABu8; 32], 65536, 3, 0).unwrap_err();
+        let err =
+            PasswordKdfDescriptor::new(1, 0x13, FASTCDC_V1_GEAR_TABLE_ID.to_vec(), 65536, 3, 0)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
     }
 
@@ -3132,7 +3153,10 @@ mod tests {
         let value = Value::Map(vec![
             (Value::U64(0), Value::Text("x".into())),
             (Value::U64(1), Value::U64(0x13)),
-            (Value::U64(2), Value::Bytes(vec![0xABu8; 32])),
+            (
+                Value::U64(2),
+                Value::Bytes(FASTCDC_V1_GEAR_TABLE_ID.to_vec()),
+            ),
             (Value::U64(3), Value::U64(65536)),
             (Value::U64(4), Value::U64(3)),
             (Value::U64(5), Value::U64(1)),
@@ -3146,7 +3170,10 @@ mod tests {
         let value = Value::Map(vec![
             (Value::U64(0), Value::U64(1)),
             (Value::U64(1), Value::U64(0x13)),
-            (Value::U64(2), Value::Bytes(vec![0xABu8; 32])),
+            (
+                Value::U64(2),
+                Value::Bytes(FASTCDC_V1_GEAR_TABLE_ID.to_vec()),
+            ),
             (Value::U64(3), Value::U64(65536)),
             (Value::U64(4), Value::U64(3)),
             (Value::U64(5), Value::U64(1)),
@@ -4434,7 +4461,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_chunking_v1() -> ChunkingDescriptor {
-        ChunkingDescriptor::new_v1([0xABu8; 32])
+        ChunkingDescriptor::new_v1()
     }
 
     #[test]
@@ -4457,15 +4484,31 @@ mod tests {
 
     #[test]
     fn chunking_descriptor_rejects_unknown_algorithm() {
-        let err =
-            ChunkingDescriptor::new(99, 1, 1048576, 4194304, 8388608, 2, [0xABu8; 32]).unwrap_err();
+        let err = ChunkingDescriptor::new(
+            99,
+            1,
+            1048576,
+            4194304,
+            8388608,
+            2,
+            FASTCDC_V1_GEAR_TABLE_ID,
+        )
+        .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
     }
 
     #[test]
     fn chunking_descriptor_rejects_unknown_version() {
-        let err =
-            ChunkingDescriptor::new(1, 99, 1048576, 4194304, 8388608, 2, [0xABu8; 32]).unwrap_err();
+        let err = ChunkingDescriptor::new(
+            1,
+            99,
+            1048576,
+            4194304,
+            8388608,
+            2,
+            FASTCDC_V1_GEAR_TABLE_ID,
+        )
+        .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
     }
 
@@ -4490,7 +4533,10 @@ mod tests {
             (Value::U64(3), Value::U64(4194304)),
             (Value::U64(4), Value::U64(8388608)),
             (Value::U64(5), Value::U64(2)),
-            (Value::U64(6), Value::Bytes([0xABu8; 32].to_vec())),
+            (
+                Value::U64(6),
+                Value::Bytes(FASTCDC_V1_GEAR_TABLE_ID.to_vec()),
+            ),
             (Value::U64(99), Value::U64(0)),
         ]);
         let err = ChunkingDescriptor::try_from(value).unwrap_err();
@@ -4502,7 +4548,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_chunk_entry() -> ContentManifestChunkEntry {
-        ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap()
+        ContentManifestChunkEntry::new(ChunkId::new([0xCCu8; 32]), 65536).unwrap()
     }
 
     #[test]
@@ -4542,7 +4588,7 @@ mod tests {
         EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             1024,
             make_codec_none(),
             None,
@@ -4555,7 +4601,7 @@ mod tests {
         EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             1024,
             make_codec_zstd(),
             Some(make_encryption()),
@@ -4583,7 +4629,7 @@ mod tests {
         let err = EncodedChunkPayload::new(
             99,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             1024,
             make_codec_none(),
             None,
@@ -4598,7 +4644,7 @@ mod tests {
         let err = EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             1024,
             make_codec_none(),
             None,
@@ -4613,7 +4659,7 @@ mod tests {
         let err = EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             0,
             make_codec_none(),
             None,
@@ -4628,7 +4674,7 @@ mod tests {
         let err = EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             8_388_609,
             make_codec_none(),
             None,
@@ -4690,7 +4736,7 @@ mod tests {
 
     #[test]
     fn compute_content_root_single_leaf() {
-        let entry = ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap();
+        let entry = ContentManifestChunkEntry::new(ChunkId::new([0xCCu8; 32]), 65536).unwrap();
         let root = compute_content_root(&[entry]).unwrap();
         // Single leaf: leaf is the root
         let mut preimage = Vec::with_capacity(40);
@@ -4702,8 +4748,8 @@ mod tests {
 
     #[test]
     fn compute_content_root_two_leaves() {
-        let e1 = ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap();
-        let e2 = ContentManifestChunkEntry::new([0xDDu8; 32], 131072).unwrap();
+        let e1 = ContentManifestChunkEntry::new(ChunkId::new([0xCCu8; 32]), 65536).unwrap();
+        let e2 = ContentManifestChunkEntry::new(ChunkId::new([0xDDu8; 32]), 131072).unwrap();
         let root = compute_content_root(&[e1, e2]).unwrap();
         // Two leaves produce a parent node
         let mut preimage1 = Vec::with_capacity(40);
@@ -4732,8 +4778,8 @@ mod tests {
 
     fn make_manifest_with_chunks() -> ContentManifestPayload {
         let chunks = vec![
-            ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap(),
-            ContentManifestChunkEntry::new([0xDDu8; 32], 131072).unwrap(),
+            ContentManifestChunkEntry::new(ChunkId::new([0xCCu8; 32]), 65536).unwrap(),
+            ContentManifestChunkEntry::new(ChunkId::new([0xDDu8; 32]), 131072).unwrap(),
         ];
         let root = compute_content_root(&chunks).unwrap();
         ContentManifestPayload::new(
@@ -4786,7 +4832,8 @@ mod tests {
 
     #[test]
     fn content_manifest_rejects_bad_content_root() {
-        let chunks = vec![ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap()];
+        let chunks =
+            vec![ContentManifestChunkEntry::new(ChunkId::new([0xCCu8; 32]), 65536).unwrap()];
         let err = ContentManifestPayload::new(
             1,
             [0x01u8; 16],
@@ -4855,34 +4902,65 @@ mod tests {
     #[test]
     fn chunking_descriptor_rejects_wrong_minimum_size() {
         let err =
-            ChunkingDescriptor::new(1, 1, 1, 4_194_304, 8_388_608, 2, [0xABu8; 32]).unwrap_err();
+            ChunkingDescriptor::new(1, 1, 1, 4_194_304, 8_388_608, 2, FASTCDC_V1_GEAR_TABLE_ID)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 2, .. }));
     }
 
     #[test]
     fn chunking_descriptor_rejects_wrong_average_size() {
         let err =
-            ChunkingDescriptor::new(1, 1, 1_048_576, 2, 8_388_608, 2, [0xABu8; 32]).unwrap_err();
+            ChunkingDescriptor::new(1, 1, 1_048_576, 2, 8_388_608, 2, FASTCDC_V1_GEAR_TABLE_ID)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
     }
 
     #[test]
     fn chunking_descriptor_rejects_wrong_maximum_size() {
         let err =
-            ChunkingDescriptor::new(1, 1, 1_048_576, 4_194_304, 3, 2, [0xABu8; 32]).unwrap_err();
+            ChunkingDescriptor::new(1, 1, 1_048_576, 4_194_304, 3, 2, FASTCDC_V1_GEAR_TABLE_ID)
+                .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
     }
 
     #[test]
     fn chunking_descriptor_rejects_wrong_normalization() {
-        let err = ChunkingDescriptor::new(1, 1, 1_048_576, 4_194_304, 8_388_608, 99, [0xABu8; 32])
-            .unwrap_err();
+        let err = ChunkingDescriptor::new(
+            1,
+            1,
+            1_048_576,
+            4_194_304,
+            8_388_608,
+            99,
+            FASTCDC_V1_GEAR_TABLE_ID,
+        )
+        .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
     }
 
     #[test]
+    fn chunking_descriptor_rejects_wrong_gear_table_id() {
+        let err = ChunkingDescriptor::new(1, 1, 1_048_576, 4_194_304, 8_388_608, 2, [0xABu8; 32])
+            .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 6, .. }));
+    }
+
+    #[test]
+    fn chunking_descriptor_new_v1_uses_normative_gear_table_id() {
+        let c = ChunkingDescriptor::new_v1();
+        assert_eq!(c.gear_table_id(), &FASTCDC_V1_GEAR_TABLE_ID);
+        // Verify it matches the normative fixture value
+        let expected: [u8; 32] = [
+            0x7c, 0xcf, 0xcc, 0x31, 0xcb, 0x8f, 0xa9, 0xc9, 0xe7, 0x7c, 0x5b, 0x46, 0xc6, 0x13,
+            0x79, 0x35, 0xc4, 0xc0, 0x4a, 0xc1, 0x8f, 0xfb, 0x2d, 0xad, 0x4a, 0x1b, 0x26, 0xbf,
+            0x50, 0x4c, 0x35, 0x30,
+        ];
+        assert_eq!(*c.gear_table_id(), expected);
+    }
+
+    #[test]
     fn chunk_entry_rejects_zero_plaintext_length() {
-        let err = ContentManifestChunkEntry::new([0xCCu8; 32], 0).unwrap_err();
+        let err = ContentManifestChunkEntry::new(ChunkId::new([0xCCu8; 32]), 0).unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
     }
 
@@ -4891,7 +4969,7 @@ mod tests {
         let err = EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             1024,
             make_codec_none(),
             None,
@@ -4906,7 +4984,7 @@ mod tests {
         let p = EncodedChunkPayload::new(
             1,
             [0x01u8; 16],
-            [0x02u8; 32],
+            ChunkId::new([0x02u8; 32]),
             1024,
             make_codec_none(),
             None,
