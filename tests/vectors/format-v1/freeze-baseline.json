@@ -1,0 +1,48 @@
+{
+  "description": "F3.11 format-v1 freeze baseline — do not edit without reopening G3",
+  "g3_reopen_required": "To change v1 bytes, set F3.11/G3 to RED, update baseline, re-run full gate",
+  "frozen_at": "2026-06-27T23:59:00Z",
+  "frozen_commit": "SELF",
+
+  "source_files": {
+    "docs/FORMAT.md": "a9121674a669dd269c6e1c64a74f76da29d120b74344e307ed7bd8045390bdae",
+    "tests/vectors/format-v1/manifest.json": "7468d538d5e42d13c7b45c1afe3dc3b1a29cef8de79cb313f738ffff0fc33ee1",
+    "tests/vectors/format-v1/format-v1.json": "1df73acc7573cd2d79c20bc235af94bd149ef43ad5153b4b3ddca9e86d1d3d31",
+    "crates/eternal-format/src/record.rs": "6dcf05687ce3fe2ab12497da84338d14b2da149d375c0f3be9ec4162e2edea56",
+    "crates/eternal-format/src/domain.rs": "fe07fd3085d5063ca7f431b8397c3b97b3f2042e68e498780ff9c6f7432fcf64",
+    "crates/eternal-format/src/ids.rs": "424aecf646b5d73ed5aca557bef187f60a425392b7b7d65edbed64fe2f521be1",
+    "crates/eternal-format/src/limits.rs": "49f872b7093c098e74d3c9eff2054dc5fa759c70e322e11b530c44fbadd923de",
+    "crates/eternal-format/src/canonical.rs": "0e35b1f58983abdd42771dec37d9f48cc706ef6fe9d45df11535d8724ef060fc",
+    "crates/eternal-format/src/physical.rs": "b6ae178efc97f3e25947e0fc09bb1467e0ee10c1f12131436142a9cf9eaa8ec0"
+  },
+
+  "fuzz_targets": {
+    "fuzz/targets/records.rs": "56c017070e5cfdb35276bdabffe1b6dbd502a7d8d5da46bbe72bc6bb12638d17",
+    "scripts/fuzz-smoke.ps1": "e8b9c6e695bb8d1bce657c3aad8444b33b30cb3729058428cdec275d89126a5d"
+  },
+
+  "fixtures": {
+    "canonical-cbor-v1.bin": "f4aa3b2a9f2d467bd325efa2a6753f9b21ded48221b59036ec94b5e5226fb5d9",
+    "canonical-cbor-v1-invalid-trailing.bin": "cb0d42b0fce9b1b83849f98b3e1657232da5652fe033b41e37843471733a10ae",
+    "canonical-cbor-v1-invalid-truncated.bin": "4d38b2e3ec5ef0c87db4ded977fde8ba67d27bf04dbcb6b10c65da2af9054e85",
+    "cbor-invalid-duplicate-key.bin": "ca11f540a567a3115a3b7433fa5cbf73d8269372874a2a0af144a1e25b2c415f",
+    "content-manifest-v1.bin": "8e249aaeda6c1298fe797421512c4795d40e062366c31e43e30b4c44639715a8",
+    "encoded-chunk-v1.bin": "578bd7293c0c55920e20e65ead1b2ec2fc38a2f576543654d961a05e47dc2161",
+    "encrypted-chunk-ciphertext-v1.bin": "e4fa8b28dfca1ff9969cb54859457111fa61024db8296a2e6f0b6b067ef837ba",
+    "format-v1.json": "1df73acc7573cd2d79c20bc235af94bd149ef43ad5153b4b3ddca9e86d1d3d31",
+    "pack-v1-invalid-trailer.bin": "2b71a1dfc0b5af24b69c4a9ae365bad94be2dec1c88ad8bffae2d46934755276",
+    "pack-v1-idx-invalid-checksum.bin": "93285535ab5947c2fbde2f67982ca372512bd294ee846661468ecfc18fb25616",
+    "pack-v1-idx-invalid-truncated.bin": "d015be990534d3bb154880a86dc1eaaada8afb988c17132413579c36a3cb1ced",
+    "pack-v1.idx": "8eb90e404a13d16deab0d1bcac69f7d15d755f897586e43bdb20774ecd060b65",
+    "pack-v1.pack": "057b2fc6c58f20bdb1a7b2cc169ed9d622dff4949bf1d890fcff6a6d964d0c3d",
+    "ref-update-envelope-v1.bin": "6c461c407dd7c773151706b421ae82989af5ab975144ece7c4ac0d893cd9b40d",
+    "ref-update-payload-v1.bin": "4bf62463220a6522ea55f22b20831fa6466a99e3a9439603a1b062e8abe41b66",
+    "repo-commit-payload-v1.bin": "72ed27242664f2f428d66e332adc2febdac6239ec6c9a1f6406050a8ee28bebf",
+    "segment-header-v1-invalid-crc.bin": "13e67ec149f7163846d14c3f68acb4f3a43932217b012bb5641cde1a1044f781",
+    "segment-header-v1-invalid-magic.bin": "0d6da4fc532d6208f8743124919557b437694356e9837e748b47d4a76ba0d072",
+    "segment-header-v1.bin": "62dc7d8245c63f69ddac709d8fc83f1c79334b364c1f2857be571c6b7edae7fe",
+    "store-manifest-v1-invalid-corrupted.bin": "adc0122c758e1714bc8f6755d5e841842ede53a1b5a505949e04d13a0f4b337c",
+    "store-manifest-v1-invalid-truncated.bin": "8ab91b457ac4869ccd9e817a374c5a9e99ca9dba3b67aeb13eeea4be23be38d4",
+    "store-manifest-v1.cbor": "c08de01e7f148612da16333e954af647def5a2db65fdee572c67cf457d5fd53b"
+  }
+}

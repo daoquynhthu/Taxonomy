@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Generate a machine-readable CI gate report (gate-report.json).
-  Runs all G1 gate commands, captures outputs and exit codes,
+  Runs all G1/G3 gate commands, captures outputs and exit codes,
   and produces a JSON artifact per PLAN.md §4.3.
 #>
 
@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$outputPath = Join-Path $root $OutputDir "gate-report.json"
+$outputPath = Join-Path (Join-Path $root $OutputDir) "gate-report.json"
 
 # Ensure output directory exists
 $outDir = Split-Path -Parent $outputPath
@@ -79,6 +79,22 @@ $steps += Run-Step "scripts/check-plan-ledger.ps1" {
     & (Join-Path $root "scripts/check-plan-ledger.ps1") 2>&1
 }
 
+# G3 — freeze check
+$freezeCheckScript = Join-Path $root "scripts/check-format-freeze.ps1"
+if (Test-Path -LiteralPath $freezeCheckScript) {
+    $steps += Run-Step "scripts/check-format-freeze.ps1" {
+        & $freezeCheckScript 2>&1
+    }
+}
+
+# G3 — fuzz smoke
+$fuzzSmokeScript = Join-Path $root "scripts/fuzz-smoke.ps1"
+if (Test-Path -LiteralPath $fuzzSmokeScript) {
+    $steps += Run-Step "scripts/fuzz-smoke.ps1" {
+        & $fuzzSmokeScript 2>&1
+    }
+}
+
 # ── Parse test counts (capture all crate-level results) ─────────────────
 $totalPassed = 0; $totalFailed = 0; $totalIgnored = 0
 $re = [System.Text.RegularExpressions.Regex]::new('(?<passed>\d+) passed;\s*(?<failed>\d+) failed;\s*(?<ignored>\d+) ignored')
@@ -127,7 +143,7 @@ try {
     $commitSha = (git rev-parse HEAD 2>$null).Trim()
 } catch {}
 if (-not $commitSha -or $commitSha -eq "unknown") {
-    $commitSha = $env:GITHUB_SHA ?? "unknown"
+    $commitSha = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { "unknown" }
 }
 
 $rustcVersion = "unknown"

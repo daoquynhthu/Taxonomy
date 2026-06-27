@@ -111,6 +111,7 @@ name = "eternal-format"
 version = "4.0.0-dev"
 dependencies = [
  "ciborium",
+ "crc32c",
  "serde",
  "serde_json",
  "sha2",

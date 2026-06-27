@@ -124,6 +124,9 @@ mod f3_9_tests {
     use crate::canonical::{CanonicalDecoder, DecodeError};
     use crate::domain::domain_hash;
     use crate::limits::FormatLimits;
+    use crate::physical::{
+        PhysicalFormatError, validate_pack, validate_pack_index, validate_segment_header,
+    };
     use crate::record::{
         ContentManifestPayload, EncodedChunkPayload, RefUpdatePayload, RepoCommitPayload,
         SignedRecord, StoreManifestPayload,
@@ -301,6 +304,8 @@ mod f3_9_tests {
             computed_crc, 0xc3fc8b61,
             "header CRC must match FORMAT.md §21.10 golden value"
         );
+        // Structured validation also passes
+        assert_eq!(validate_segment_header(&bytes), Ok(()));
     }
 
     #[test]
@@ -328,6 +333,8 @@ mod f3_9_tests {
             golden.as_slice(),
             "pack checksum must match FORMAT.md §21.11 golden value"
         );
+        // Structured validation also passes
+        assert_eq!(validate_pack(&bytes, "EternalCore:Pack:v1"), Ok(()));
     }
 
     #[test]
@@ -355,6 +362,8 @@ mod f3_9_tests {
             golden.as_slice(),
             "index checksum must match FORMAT.md §21.11"
         );
+        // Structured validation also passes
+        assert_eq!(validate_pack_index(&bytes), Ok(()));
     }
 
     // -------------------------------------------------------------------
@@ -404,79 +413,51 @@ mod f3_9_tests {
     #[test]
     fn f3_9_invalid_magic_detected() {
         let bytes = fixture("segment-header-v1-invalid-magic.bin");
-        assert_ne!(&bytes[0..4], b"ETSE");
-        assert_eq!(bytes[0], 0x00);
+        let err = validate_segment_header(&bytes).expect_err("must reject bad magic");
+        assert!(
+            matches!(err, PhysicalFormatError::InvalidMagic { .. }),
+            "expected InvalidMagic, got {err:?}"
+        );
     }
 
     #[test]
     fn f3_9_segment_header_invalid_crc_rejected() {
         let bytes = fixture("segment-header-v1-invalid-crc.bin");
-        let stored_crc = u32::from_le_bytes(bytes[58..62].try_into().unwrap());
-        let computed_crc = crc32c::crc32c(&bytes[0..58]);
-        assert_ne!(
-            computed_crc, stored_crc,
-            "invalid CRC must not match recomputed value"
+        let err = validate_segment_header(&bytes).expect_err("must reject bad CRC");
+        assert!(
+            matches!(err, PhysicalFormatError::HeaderCrcMismatch { .. }),
+            "expected HeaderCrcMismatch, got {err:?}"
         );
     }
 
     #[test]
     fn f3_9_pack_invalid_trailer_rejected() {
         let bytes = fixture("pack-v1-invalid-trailer.bin");
-        let (body, _stored_trailer) = bytes.split_at(bytes.len() - 32);
-        let mut zeroed = body.to_vec();
-        zeroed.extend_from_slice(&[0u8; 32]);
-        let expected = domain_hash("EternalCore:Pack:v1", &zeroed).expect("pack DomainHash");
-        assert_ne!(
-            &bytes[bytes.len() - 32..],
-            expected,
-            "corrupted trailer must not match DomainHash"
+        let err =
+            validate_pack(&bytes, "EternalCore:Pack:v1").expect_err("must reject bad pack trailer");
+        assert!(
+            matches!(err, PhysicalFormatError::TrailerChecksumMismatch),
+            "expected TrailerChecksumMismatch, got {err:?}"
         );
     }
 
     #[test]
     fn f3_9_pack_index_invalid_checksum_rejected() {
         let bytes = fixture("pack-v1-idx-invalid-checksum.bin");
-        let stored = &bytes[bytes.len() - 32..];
-        // Must NOT match the golden value from FORMAT.md §21.11
-        let golden = hex_bytes("3051b321eb8354dc0f11de02a5b6ee3439c0bd00cf0d7100076e88b422727e77");
-        assert_ne!(
-            stored,
-            golden.as_slice(),
-            "zeroed checksum must not match FORMAT.md §21.11 golden value"
-        );
-        // Verify the stored checksum is indeed all-zero (generator clears last 32 bytes)
-        assert_eq!(
-            stored,
-            &[0u8; 32][..],
-            "invalid-checksum fixture must have zeroed index_checksum"
+        let err = validate_pack_index(&bytes).expect_err("must reject bad index checksum");
+        assert!(
+            matches!(err, PhysicalFormatError::IndexChecksumMismatch),
+            "expected IndexChecksumMismatch, got {err:?}"
         );
     }
 
     #[test]
     fn f3_9_pack_index_invalid_truncated_rejected() {
         let bytes = fixture("pack-v1-idx-invalid-truncated.bin");
-        // Valid index is 2199 bytes; truncated is 100 bytes shorter
-        assert_eq!(
-            bytes.len(),
-            2199 - 100,
-            "truncated index must be 2099 bytes"
-        );
-        // Verify magic prefix is intact (truncation removes end, not start)
-        assert_eq!(
-            &bytes[0..4],
-            b"ETID",
-            "magic prefix must survive truncation"
-        );
-        // Remaining bytes should still parse as partial index header
-        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
-        assert_eq!(version, 1, "version must be readable");
-        // Last 32 bytes of truncated fixture are NOT a valid checksum
-        let last_32 = &bytes[bytes.len() - 32..];
-        let golden = hex_bytes("3051b321eb8354dc0f11de02a5b6ee3439c0bd00cf0d7100076e88b422727e77");
-        assert_ne!(
-            last_32,
-            golden.as_slice(),
-            "truncated data must not match golden index_checksum"
+        let err = validate_pack_index(&bytes).expect_err("must reject truncated index");
+        assert!(
+            matches!(err, PhysicalFormatError::Truncated { .. }),
+            "expected Truncated, got {err:?}"
         );
     }
 }

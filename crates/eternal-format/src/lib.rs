@@ -13,11 +13,13 @@
 //! - [`ids`] — Core identifier types (DomainHash, ObjectId, VersionId, etc.)
 //! - [`record`] — Record type enums and payload schemas
 //! - [`limits`] — Configurable parser size limits
+//! - [`physical`] — Non-CBOR physical format validation (segment, pack, index)
 
 pub mod canonical;
 pub mod domain;
 pub mod ids;
 pub mod limits;
+pub mod physical;
 pub mod record;
 
 #[cfg(test)]
