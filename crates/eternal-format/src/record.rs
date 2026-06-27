@@ -1,4 +1,7 @@
-use crate::canonical::{CanonicalDecoder, DecodeError, Value};
+use crate::canonical::{
+    CanonicalDecoder, CanonicalValue, DecodeError, Value, canonical_value_from_value,
+    value_from_canonical_value,
+};
 use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
     ChunkId, ContentManifestId, DataType, EncodedChunkRecordId, KeyId, KeySlotLabel, ObjectId,
@@ -2558,7 +2561,7 @@ pub struct ObjectVersionPayload {
     content_manifest_id: Option<ContentManifestId>,
     parents: Vec<VersionId>,
     data_type: DataType,
-    metadata: Value,
+    metadata: CanonicalValue,
     relations: Vec<Relation>,
     tombstone: bool,
     created_at_ns: i64,
@@ -2574,7 +2577,7 @@ impl ObjectVersionPayload {
         content_manifest_id: Option<ContentManifestId>,
         parents: Vec<VersionId>,
         data_type: DataType,
-        metadata: Value,
+        metadata: CanonicalValue,
         relations: Vec<Relation>,
         tombstone: bool,
         created_at_ns: i64,
@@ -2623,6 +2626,26 @@ impl ObjectVersionPayload {
                 }
             }
         }
+        // additional parents (index 1..) must be lexicographically sorted
+        if parents.len() > 2 {
+            for w in parents[1..].windows(2) {
+                if w[0].as_bytes() >= w[1].as_bytes() {
+                    return Err(PayloadError::UnsortedOrDuplicate { key: 4 });
+                }
+            }
+        }
+        // relation count limit
+        let max_relations = FormatLimits::ABSOLUTE_MAX_RELATIONS as usize;
+        if relations.len() > max_relations {
+            return Err(PayloadError::UnsupportedValue {
+                key: 7,
+                detail: format!(
+                    "relation count {} exceeds maximum {}",
+                    relations.len(),
+                    max_relations,
+                ),
+            });
+        }
         // relations sorted and unique by (target_object_id, relation_type)
         check_relations_sorted_unique(&relations)?;
         Ok(Self {
@@ -2658,7 +2681,7 @@ impl ObjectVersionPayload {
     pub fn data_type(&self) -> &DataType {
         &self.data_type
     }
-    pub fn metadata(&self) -> &Value {
+    pub fn metadata(&self) -> &CanonicalValue {
         &self.metadata
     }
     pub fn relations(&self) -> &[Relation] {
@@ -2719,7 +2742,13 @@ impl TryFrom<Value> for ObjectVersionPayload {
             detail: e.to_string(),
         })?;
         let metadata = match fields.get(6).and_then(|f| *f) {
-            Some(v) => v.clone(),
+            Some(v) => {
+                let limits = FormatLimits::default();
+                let mut nodes = 0;
+                canonical_value_from_value(v, 0, &mut nodes, &limits).map_err(|_| {
+                    PayloadError::Decode(DecodeError::InvalidCanonicalValueStructure)
+                })?
+            }
             None => return Err(PayloadError::MissingField(6)),
         };
         let relations = match fields.get(7).and_then(|f| *f) {
@@ -2780,7 +2809,7 @@ impl From<&ObjectVersionPayload> for Value {
             (Value::U64(3), content_manifest),
             (Value::U64(4), Value::Array(parents)),
             (Value::U64(5), Value::Text(p.data_type.as_str().to_string())),
-            (Value::U64(6), p.metadata.clone()),
+            (Value::U64(6), value_from_canonical_value(&p.metadata)),
             (Value::U64(7), Value::Array(relations)),
             (Value::U64(8), Value::Boolean(p.tombstone)),
             (Value::U64(9), Value::I64(p.created_at_ns)),
@@ -5405,7 +5434,7 @@ mod tests {
             cm_id,
             vec![VersionId::new([0xBBu8; 32])],
             DataType::new("text/plain").unwrap(),
-            Value::U64(42),
+            CanonicalValue::U64(42),
             vec![make_relation("a/b/c", "related")],
             tombstone,
             -1_234_567_890,
@@ -5438,7 +5467,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             parents,
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![],
             false,
             0,
@@ -5470,7 +5499,7 @@ mod tests {
             (Value::U64(3), Value::Bytes(vec![0xAAu8; 32])),
             (Value::U64(4), Value::Array(vec![])),
             (Value::U64(5), Value::Text("t".into())),
-            (Value::U64(6), Value::Null),
+            (Value::U64(6), Value::Array(vec![Value::U64(0)])), // CanonicalValue::Null
             (Value::U64(7), Value::Array(vec![])),
             (Value::U64(8), Value::Boolean(false)),
             (Value::U64(9), Value::I64(0)),
@@ -5496,7 +5525,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             vec![],
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![],
             false,
             0,
@@ -5515,7 +5544,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             vec![],
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![],
             true,
             0,
@@ -5534,7 +5563,7 @@ mod tests {
             None,
             vec![],
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![],
             false,
             0,
@@ -5554,7 +5583,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             parents,
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![],
             false,
             0,
@@ -5574,7 +5603,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             vec![dup_id, dup_id],
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![],
             false,
             0,
@@ -5593,7 +5622,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             vec![],
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![make_relation("z", "later"), make_relation("a", "first")],
             false,
             0,
@@ -5612,7 +5641,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             vec![],
             DataType::new("text").unwrap(),
-            Value::Null,
+            CanonicalValue::Null,
             vec![make_relation("a", "x"), make_relation("a", "x")],
             false,
             0,
@@ -5633,6 +5662,8 @@ mod tests {
 
     #[test]
     fn object_version_accepts_no_parents() {
+        let mut metadata_map = std::collections::BTreeMap::new();
+        metadata_map.insert("key".to_string(), CanonicalValue::U64(1));
         let p = ObjectVersionPayload::new(
             1,
             [0x11u8; 16],
@@ -5640,7 +5671,7 @@ mod tests {
             Some(ContentManifestId::new([0xAAu8; 32])),
             vec![],
             DataType::new("text").unwrap(),
-            Value::Map(vec![(Value::Text("key".into()), Value::U64(1))]),
+            CanonicalValue::Map(metadata_map),
             vec![],
             false,
             99_999,
@@ -5650,6 +5681,143 @@ mod tests {
         assert!(p.parents().is_empty());
         assert_eq!(p.created_at_ns(), 99_999);
         // metadata retains map type
-        assert!(matches!(p.metadata(), Value::Map(_)));
+        assert!(matches!(p.metadata(), CanonicalValue::Map(_)));
+    }
+
+    #[test]
+    fn object_version_rejects_raw_value_as_metadata() {
+        // Field 6 must be CanonicalValue tagged-array, not raw Value::U64
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes(vec![0x11u8; 16])),
+            (Value::U64(2), Value::Text("obj".into())),
+            (Value::U64(3), Value::Bytes(vec![0xAAu8; 32])),
+            (Value::U64(4), Value::Array(vec![])),
+            (Value::U64(5), Value::Text("t".into())),
+            (Value::U64(6), Value::U64(999)),
+            (Value::U64(7), Value::Array(vec![])),
+            (Value::U64(8), Value::Boolean(false)),
+            (Value::U64(9), Value::I64(0)),
+            (Value::U64(10), Value::Bytes(vec![0xCCu8; 32])),
+        ];
+        let err = ObjectVersionPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(
+            err,
+            PayloadError::Decode(DecodeError::InvalidCanonicalValueStructure)
+        ));
+    }
+
+    #[test]
+    fn object_version_rejects_raw_map_as_metadata() {
+        // Field 6 as raw CBOR map (not CanonicalValue tagged-array) must fail
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes(vec![0x11u8; 16])),
+            (Value::U64(2), Value::Text("obj".into())),
+            (Value::U64(3), Value::Bytes(vec![0xAAu8; 32])),
+            (Value::U64(4), Value::Array(vec![])),
+            (Value::U64(5), Value::Text("t".into())),
+            (
+                Value::U64(6),
+                Value::Map(vec![(Value::Text("k".into()), Value::U64(1))]),
+            ),
+            (Value::U64(7), Value::Array(vec![])),
+            (Value::U64(8), Value::Boolean(false)),
+            (Value::U64(9), Value::I64(0)),
+            (Value::U64(10), Value::Bytes(vec![0xCCu8; 32])),
+        ];
+        let err = ObjectVersionPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(
+            err,
+            PayloadError::Decode(DecodeError::InvalidCanonicalValueStructure)
+        ));
+    }
+
+    #[test]
+    fn object_version_rejects_too_many_relations() {
+        let relations: Vec<Relation> = (0..100_001)
+            .map(|i| make_relation(&format!("o/{i}"), "t"))
+            .collect();
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![],
+            DataType::new("text").unwrap(),
+            CanonicalValue::Null,
+            relations,
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 7, .. }));
+    }
+
+    #[test]
+    fn object_version_rejects_unsorted_additional_parents() {
+        // parents[1..] must be lexicographically sorted
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![
+                VersionId::new([0x01u8; 32]), // local parent (index 0)
+                VersionId::new([0xFFu8; 32]), // should be 'b', not 'z'
+                VersionId::new([0xAAu8; 32]), // 'a' < 'z' but after index 1
+            ],
+            DataType::new("text").unwrap(),
+            CanonicalValue::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 4 }));
+    }
+
+    #[test]
+    fn object_version_accepts_sorted_additional_parents() {
+        let p = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![
+                VersionId::new([0x01u8; 32]), // local parent (index 0)
+                VersionId::new([0xAAu8; 32]), // 'a'
+                VersionId::new([0xFFu8; 32]), // 'b' > 'a'
+            ],
+            DataType::new("text").unwrap(),
+            CanonicalValue::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap();
+        assert_eq!(p.parents().len(), 3);
+    }
+
+    #[test]
+    fn object_version_accepts_single_parent() {
+        let p = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![VersionId::new([0xBBu8; 32])],
+            DataType::new("text").unwrap(),
+            CanonicalValue::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap();
+        assert_eq!(p.parents().len(), 1);
     }
 }

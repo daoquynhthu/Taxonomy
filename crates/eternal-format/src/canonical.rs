@@ -1090,6 +1090,170 @@ impl<'de> serde::de::Visitor<'de> for CanonicalValueStringVisitor {
 }
 
 // ---------------------------------------------------------------------------
+// Value → CanonicalValue conversion (from decoded CBOR Value)
+// ---------------------------------------------------------------------------
+
+/// Convert a decoded `Value` into a `CanonicalValue`, validating the
+/// tagged-array format per FORMAT.md §4.5 and enforcing resource limits.
+pub fn canonical_value_from_value(
+    value: &Value,
+    depth: u64,
+    nodes: &mut u64,
+    limits: &FormatLimits,
+) -> Result<CanonicalValue, DecodeError> {
+    if depth > limits.max_depth() {
+        return Err(DecodeError::DepthExceeded);
+    }
+    *nodes = nodes.checked_add(1).ok_or(DecodeError::ValueTooLarge {
+        requested: u64::MAX,
+        max: limits.max_nodes(),
+    })?;
+    if *nodes > limits.max_nodes() {
+        return Err(DecodeError::ValueTooLarge {
+            requested: *nodes,
+            max: limits.max_nodes(),
+        });
+    }
+    let arr = match value {
+        Value::Array(arr) => arr,
+        _ => return Err(DecodeError::InvalidCanonicalValueStructure),
+    };
+    let disc = match arr.first() {
+        Some(Value::U64(d)) => *d,
+        _ => return Err(DecodeError::InvalidCanonicalValueStructure),
+    };
+    match disc {
+        0 => {
+            if arr.len() != 1 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            Ok(CanonicalValue::Null)
+        }
+        1 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            match &arr[1] {
+                Value::Boolean(b) => Ok(CanonicalValue::Bool(*b)),
+                _ => Err(DecodeError::InvalidCanonicalValueStructure),
+            }
+        }
+        2 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            match &arr[1] {
+                Value::I64(v) => Ok(CanonicalValue::I64(*v)),
+                Value::U64(v) if *v <= i64::MAX as u64 => Ok(CanonicalValue::I64(*v as i64)),
+                _ => Err(DecodeError::InvalidCanonicalValueStructure),
+            }
+        }
+        3 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            match &arr[1] {
+                Value::U64(v) => Ok(CanonicalValue::U64(*v)),
+                Value::I64(v) if *v >= 0 => Ok(CanonicalValue::U64(*v as u64)),
+                _ => Err(DecodeError::InvalidCanonicalValueStructure),
+            }
+        }
+        4 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            match &arr[1] {
+                Value::Text(s) => Ok(CanonicalValue::Text(s.clone())),
+                _ => Err(DecodeError::InvalidCanonicalValueStructure),
+            }
+        }
+        5 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            match &arr[1] {
+                Value::Bytes(b) => Ok(CanonicalValue::Bytes(b.clone())),
+                _ => Err(DecodeError::InvalidCanonicalValueStructure),
+            }
+        }
+        6 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            let items = match &arr[1] {
+                Value::Array(items) => items,
+                _ => return Err(DecodeError::InvalidCanonicalValueStructure),
+            };
+            let mut result = Vec::with_capacity(items.len());
+            for item in items {
+                result.push(canonical_value_from_value(item, depth + 1, nodes, limits)?);
+            }
+            Ok(CanonicalValue::Array(result))
+        }
+        7 => {
+            if arr.len() != 2 {
+                return Err(DecodeError::InvalidCanonicalValueStructure);
+            }
+            let entries = match &arr[1] {
+                Value::Array(entries) => entries,
+                _ => return Err(DecodeError::InvalidCanonicalValueStructure),
+            };
+            let mut map = std::collections::BTreeMap::new();
+            for entry in entries {
+                let pair = match entry {
+                    Value::Array(pair) => pair,
+                    _ => return Err(DecodeError::InvalidCanonicalValueStructure),
+                };
+                if pair.len() != 2 {
+                    return Err(DecodeError::InvalidCanonicalValueStructure);
+                }
+                let key = match &pair[0] {
+                    Value::Text(k) => k.clone(),
+                    _ => return Err(DecodeError::CanonicalMapKeyNotText),
+                };
+                let val = canonical_value_from_value(&pair[1], depth + 1, nodes, limits)?;
+                if map.insert(key.clone(), val).is_some() {
+                    return Err(DecodeError::DuplicateMapKey);
+                }
+            }
+            Ok(CanonicalValue::Map(map))
+        }
+        _ => Err(DecodeError::InvalidCanonicalValueDiscriminant(disc)),
+    }
+}
+
+/// Convert a `CanonicalValue` into a `Value` for CBOR encoding.
+pub fn value_from_canonical_value(value: &CanonicalValue) -> Value {
+    match value {
+        CanonicalValue::Null => Value::Array(vec![Value::U64(0)]),
+        CanonicalValue::Bool(b) => Value::Array(vec![Value::U64(1), Value::Boolean(*b)]),
+        CanonicalValue::I64(v) => Value::Array(vec![Value::U64(2), Value::I64(*v)]),
+        CanonicalValue::U64(v) => Value::Array(vec![Value::U64(3), Value::U64(*v)]),
+        CanonicalValue::Text(s) => Value::Array(vec![Value::U64(4), Value::Text(s.clone())]),
+        CanonicalValue::Bytes(b) => Value::Array(vec![Value::U64(5), Value::Bytes(b.clone())]),
+        CanonicalValue::Array(items) => {
+            let inner: Vec<Value> = items.iter().map(value_from_canonical_value).collect();
+            Value::Array(vec![Value::U64(6), Value::Array(inner)])
+        }
+        CanonicalValue::Map(entries) => {
+            let pairs: Vec<Value> = entries
+                .iter()
+                .map(|(k, v)| {
+                    Value::Array(vec![Value::Text(k.clone()), value_from_canonical_value(v)])
+                })
+                .collect();
+            Value::Array(vec![Value::U64(7), Value::Array(pairs)])
+        }
+    }
+}
+
+impl From<CanonicalValue> for Value {
+    fn from(cv: CanonicalValue) -> Self {
+        value_from_canonical_value(&cv)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Decode error types
 // ---------------------------------------------------------------------------
 
