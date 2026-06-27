@@ -248,7 +248,7 @@
         },
         {
           "id": "F3.10",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F3.8"
           ]

@@ -37,3 +37,9 @@ name = "names"
 path = "targets/names.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "records"
+path = "targets/records.rs"
+test = false
+doc = false

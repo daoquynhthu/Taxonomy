@@ -184,6 +184,7 @@ if ($LASTEXITCODE -eq 0) {
 $results = @()
 $results += Run-FuzzTarget "cbor"
 $results += Run-FuzzTarget "names"
+$results += Run-FuzzTarget "records"
 
 # ── Assemble report ──────────────────────────────────────────────────────
 $overallPass = ($results | Where-Object { $_.exit_code -ne 0 -or $_.crashed -or $_.timed_out -or $_.panicked }).Count -eq 0

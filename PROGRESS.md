@@ -1,5 +1,14 @@
 # Progress
 
+## F3.10 — Fuzz all record decoders
+
+- Status: GREEN
+- Commit: SELF
+- Completed: Added `fuzz/targets/records.rs` fuzz target exercising `SignedRecord::decode()` + 25 `TryFrom<Value>` payload decoders (F3.2–F3.7) under `FormatLimits`. Seeded corpus with all format-v1 fixtures. 50000 runs, 52MB RSS, 0 crashes/timeouts/panics. Registered in `fuzz/Cargo.toml` and `scripts/fuzz-smoke.ps1`.
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `scripts/fuzz-smoke.ps1` (cbor + names + records: 3×50000 runs, all clean)
+- Gate: standard task gate + fuzz-smoke — all pass
+- Follow-up: F3.11
+
 ## F3.9 — Complete format-v1 fixtures
 
 - Status: GREEN
