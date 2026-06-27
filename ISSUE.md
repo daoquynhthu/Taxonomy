@@ -1,5 +1,21 @@
 # Issues
 
+## ISSUE-0020 — F3.8 record registry lacked RecordIdRule and non-frame classification
+
+- Status: RESOLVED
+- Severity: BLOCKER
+- Discovered in: F3.8 audit 2026-06-27 (commit 78618aa)
+- Affected scope: crates/eternal-format/src/record.rs, docs/PLAN.md F3.8, docs/FORMAT.md §5.3–§5.4, §12
+- Evidence:
+  1. PLAN.md F3.8 requires fixed mapping between record type code, payload type, signed/unsigned class, semantic RecordId rule, and allowed physical container. RecordTypeInfo had only type_code, name, class, and allowed_container — no RecordIdRule field.
+  2. FORMAT.md defines different RecordId derivation rules: signed payload DomainHash over canonical payload; unsigned payload DomainHash over deterministic CBOR; SMT leaf/internal semantic concat hash.
+  3. PLAN.md F3.8 Green requires "mutable pointer files and StoreManifest files cannot be interpreted as ordinary records" — no RecordFileKind or non-frame classification existed to prove this.
+  4. PROGRESS.md F3.7 entry was overwritten by F3.8 entry (ledger hygiene).
+- Violated invariant: PLAN.md F3.8 Green — registry must encode RecordIdRule; non-frame files must be distinguishable from frame records.
+- Required decision: Add RecordIdRule enum (CborDomainHash, SMTLeafConcat, SMTInternalConcat); add RecordFileKind enum (FrameRecord, StandalonePayload); add NON_FRAME_RECORD_TYPES for StoreManifest; restore F3.7 PROGRESS entry.
+- Work stopped: F3.8, F3.9 and later tasks.
+- Resolution: RESOLVED by commit SELF (all 4 findings fixed: RecordIdRule + tags for types 1..=11, RecordFileKind, StoreManifest non-frame classification and tests, F3.7 PROGRESS entry restored. 571 tests / fmt + clippy clean.)
+
 ## ISSUE-0019 — F3.7 StoreManifestPayload loses RepositoryGenesisId type separation and accepts non-v1 segment paths
 
 - Status: RESOLVED

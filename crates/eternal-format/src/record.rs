@@ -4266,7 +4266,7 @@ impl From<&StoreManifestPayload> for Value {
 }
 
 // ---------------------------------------------------------------------------
-// Type registry (§12, physical record type codes)
+// Type registry (§12, physical record type codes; §5.3 domain tags)
 // ---------------------------------------------------------------------------
 
 /// Class of a record type: signed (wrapped in SignedRecord envelope) or
@@ -4286,6 +4286,28 @@ pub enum PhysicalContainer {
     Any,
 }
 
+/// How a record's semantic RecordId is derived.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordIdRule {
+    /// RecordId = DomainHash(tag, deterministic_cbor(payload))
+    /// Used by signed payloads (types 1,2,3,6,9,10) and unsigned payloads
+    /// (types 4,5,11) whose ID is the hash of the canonical CBOR encoding.
+    CborDomainHash(&'static str),
+    /// RecordId = DomainHash("EternalCore:SMTLeaf:v1", object_key || version_id)
+    SMTLeafConcat,
+    /// RecordId = DomainHash("EternalCore:SMTInternal:v1", left_child || right_child)
+    SMTInternalConcat,
+}
+
+/// Whether a record type is a frame-level physical record or a standalone file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordFileKind {
+    /// Ordinary frame record in segment or pack (types 1..=11).
+    FrameRecord,
+    /// Standalone CBOR payload file (e.g., StoreManifest).
+    StandalonePayload,
+}
+
 /// Metadata for a known physical record type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecordTypeInfo {
@@ -4293,6 +4315,8 @@ pub struct RecordTypeInfo {
     pub name: &'static str,
     pub class: RecordClass,
     pub allowed_container: PhysicalContainer,
+    pub id_rule: RecordIdRule,
+    pub file_kind: RecordFileKind,
 }
 
 const RECORD_TYPES: &[RecordTypeInfo] = &[
@@ -4301,70 +4325,108 @@ const RECORD_TYPES: &[RecordTypeInfo] = &[
         name: "RepositoryGenesis",
         class: RecordClass::Signed,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:RepositoryGenesis:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 2,
         name: "PolicyRecord",
         class: RecordClass::Signed,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:PolicyRecord:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 3,
         name: "KeyringRecord",
         class: RecordClass::Signed,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:KeyringRecord:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 4,
         name: "EncodedChunk",
         class: RecordClass::Unsigned,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:EncodedChunk:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 5,
         name: "ContentManifest",
         class: RecordClass::Unsigned,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:ContentManifest:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 6,
         name: "ObjectVersion",
         class: RecordClass::Signed,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:ObjectVersion:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 7,
         name: "SMTLeaf",
         class: RecordClass::Unsigned,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::SMTLeafConcat,
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 8,
         name: "SMTInternal",
         class: RecordClass::Unsigned,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::SMTInternalConcat,
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 9,
         name: "RepoCommit",
         class: RecordClass::Signed,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:RepoCommit:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 10,
         name: "RefUpdate",
         class: RecordClass::Signed,
         allowed_container: PhysicalContainer::Any,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:RefUpdate:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
     RecordTypeInfo {
         type_code: 11,
         name: "TransactionEnd",
         class: RecordClass::Unsigned,
         allowed_container: PhysicalContainer::Segment,
+        id_rule: RecordIdRule::CborDomainHash("EternalCore:TransactionEnd:v1"),
+        file_kind: RecordFileKind::FrameRecord,
     },
 ];
 
-/// Returns the [`RecordTypeInfo`] for a known record type code.
+/// Metadata for a known non-frame record payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NonFrameRecordTypeInfo {
+    pub name: &'static str,
+    pub file_kind: RecordFileKind,
+    pub id_rule: RecordIdRule,
+}
+
+/// Non-frame record payloads that are stored as standalone files rather than
+/// as frames inside segments or packs (e.g., StoreManifest, pointer files).
+const NON_FRAME_RECORD_TYPES: &[NonFrameRecordTypeInfo] = &[NonFrameRecordTypeInfo {
+    name: "StoreManifest",
+    file_kind: RecordFileKind::StandalonePayload,
+    id_rule: RecordIdRule::CborDomainHash("EternalCore:StoreManifest:v1"),
+}];
+
+/// Returns the [`RecordTypeInfo`] for a known frame record type code.
 ///
 /// Returns `None` for codes 0 and 12..=255 (invalid in format v1).
 pub fn lookup_record_type(type_code: u8) -> Option<&'static RecordTypeInfo> {
@@ -4379,9 +4441,25 @@ pub fn type_allowed_container(type_code: u64) -> Option<PhysicalContainer> {
     lookup_record_type(code).map(|info| info.allowed_container)
 }
 
-/// Returns `true` if `type_code` is a known format-v1 record type (1..=11).
+/// Returns `true` if `type_code` is a known format-v1 frame record type (1..=11).
 pub fn is_known_record_type(type_code: u8) -> bool {
     lookup_record_type(type_code).is_some()
+}
+
+/// Returns the [`RecordIdRule`] for a known frame record type code.
+pub fn record_id_rule(type_code: u8) -> Option<&'static RecordIdRule> {
+    lookup_record_type(type_code).map(|info| &info.id_rule)
+}
+
+/// Returns the [`RecordFileKind`] for a known frame record type code.
+pub fn record_file_kind(type_code: u8) -> Option<RecordFileKind> {
+    lookup_record_type(type_code).map(|info| info.file_kind)
+}
+
+/// Returns `true` if `type_code` corresponds to a non-frame payload
+/// (e.g., StoreManifest) that must NOT be interpreted as a frame record.
+pub fn is_non_frame_record(name: &str) -> bool {
+    NON_FRAME_RECORD_TYPES.iter().any(|info| info.name == name)
 }
 
 // ---------------------------------------------------------------------------
@@ -8565,8 +8643,8 @@ mod tests {
     #[test]
     fn type_registry_all_codes_mapped() {
         for code in 1..=11u8 {
-            let info = lookup_record_type(code)
-                .unwrap_or_else(|| panic!("code {code} should be known"));
+            let info =
+                lookup_record_type(code).unwrap_or_else(|| panic!("code {code} should be known"));
             assert_eq!(info.type_code, code, "type_code mismatch for code {code}");
             assert!(
                 !info.name.is_empty(),
@@ -8657,6 +8735,86 @@ mod tests {
                 "type_allowed_container({code}) must match lookup"
             );
         }
+    }
+
+    #[test]
+    fn type_registry_record_id_rule_cbor_domain_hash() {
+        let cbor_hash_codes: Vec<u8> = RECORD_TYPES
+            .iter()
+            .filter(|t| matches!(t.id_rule, RecordIdRule::CborDomainHash(_)))
+            .map(|t| t.type_code)
+            .collect();
+        assert_eq!(cbor_hash_codes, vec![1, 2, 3, 4, 5, 6, 9, 10, 11]);
+    }
+
+    #[test]
+    fn type_registry_record_id_rule_smt_leaf() {
+        let info = lookup_record_type(7).expect("type 7 must exist");
+        assert_eq!(info.id_rule, RecordIdRule::SMTLeafConcat);
+    }
+
+    #[test]
+    fn type_registry_record_id_rule_smt_internal() {
+        let info = lookup_record_type(8).expect("type 8 must exist");
+        assert_eq!(info.id_rule, RecordIdRule::SMTInternalConcat);
+    }
+
+    #[test]
+    fn type_registry_record_id_rule_tags_match_format() {
+        let check = |code: u8, expected_tag: &str| {
+            let info = lookup_record_type(code).unwrap_or_else(|| panic!("code {code}"));
+            match info.id_rule {
+                RecordIdRule::CborDomainHash(tag) => assert_eq!(tag, expected_tag),
+                _ => panic!("code {code} expected CborDomainHash"),
+            }
+        };
+        check(1, "EternalCore:RepositoryGenesis:v1");
+        check(2, "EternalCore:PolicyRecord:v1");
+        check(3, "EternalCore:KeyringRecord:v1");
+        check(4, "EternalCore:EncodedChunk:v1");
+        check(5, "EternalCore:ContentManifest:v1");
+        check(6, "EternalCore:ObjectVersion:v1");
+        check(9, "EternalCore:RepoCommit:v1");
+        check(10, "EternalCore:RefUpdate:v1");
+        check(11, "EternalCore:TransactionEnd:v1");
+    }
+
+    #[test]
+    fn type_registry_all_frame_types_have_frame_file_kind() {
+        for info in RECORD_TYPES {
+            assert_eq!(
+                info.file_kind,
+                RecordFileKind::FrameRecord,
+                "type {} ({}) must be FrameRecord",
+                info.type_code,
+                info.name
+            );
+        }
+    }
+
+    #[test]
+    fn type_registry_store_manifest_is_not_a_frame_record() {
+        assert!(
+            lookup_record_type(12).is_none(),
+            "StoreManifest must not be a frame record type"
+        );
+        assert!(
+            is_non_frame_record("StoreManifest"),
+            "StoreManifest must be classified as non-frame"
+        );
+    }
+
+    #[test]
+    fn type_registry_non_frame_has_correct_id_rule() {
+        let sm = NON_FRAME_RECORD_TYPES
+            .iter()
+            .find(|t| t.name == "StoreManifest")
+            .expect("StoreManifest must be in NON_FRAME_RECORD_TYPES");
+        assert_eq!(sm.file_kind, RecordFileKind::StandalonePayload);
+        assert_eq!(
+            sm.id_rule,
+            RecordIdRule::CborDomainHash("EternalCore:StoreManifest:v1")
+        );
     }
 
     // -------------------------------------------------------------------

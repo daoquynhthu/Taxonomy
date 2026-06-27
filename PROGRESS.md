@@ -3,11 +3,20 @@
 ## F3.8 — Implement record registry
 
 - Status: GREEN
-- Commit: SELF
-- Completed: `RecordClass` enum (Signed/Unsigned), `RecordTypeInfo` struct (`type_code`, `name`, `class`, `allowed_container`), static `RECORD_TYPES` table covering all 11 format-v1 codes (1..=11) per FORMAT.md §12 — RepositoryGenesis, PolicyRecord, KeyringRecord, EncodedChunk, ContentManifest, ObjectVersion, SMTLeaf, SMTInternal, RepoCommit, RefUpdate, TransactionEnd. `lookup_record_type(u8)` returns full metadata; `type_allowed_container(u64)` expanded to all codes; `is_known_record_type(u8)` validates code. Codes 0 and 12..=255 rejected as invalid. Signed codes: 1,2,3,6,9,10. Unsigned codes: 4,5,7,8,11. TransactionEnd is segment-only (code 11); all others allow segment+pack.
-- Tests: 564 unit + 1 integration (`cargo test --workspace --all-features`); 8 new F3.8 tests — `all_codes_mapped`, `invalid_codes_rejected` (codes 0..=255), `signed_codes`, `unsigned_codes`, `container_segment_only`, `container_any`, `is_known`, `allowed_container_delegates_to_lookup`.
+- Commit: SELF (ISSUE-0020 fixes: SELF)
+- Completed: `RecordClass` enum (Signed/Unsigned), `RecordIdRule` enum with `CborDomainHash(tag)`, `SMTLeafConcat`, `SMTInternalConcat` patterns; `RecordFileKind` enum (`FrameRecord`/`StandalonePayload`); `RecordTypeInfo` struct with `type_code`, `name`, `class`, `allowed_container`, `id_rule`, `file_kind`; static `RECORD_TYPES` table covering all 11 format-v1 codes (1..=11) per FORMAT.md §12 and §5.3–§5.4, plus `NON_FRAME_RECORD_TYPES` for StoreManifest (standalone CBOR payload). Tag mapping verified per FORMAT.md §5.3: 1=EternalCore:RepositoryGenesis:v1, 2=EternalCore:PolicyRecord:v1, 3=EternalCore:KeyringRecord:v1, 4=EternalCore:EncodedChunk:v1, 5=EternalCore:ContentManifest:v1, 6=EternalCore:ObjectVersion:v1, 7=SMTLeafConcat, 8=SMTInternalConcat, 9=EternalCore:RepoCommit:v1, 10=EternalCore:RefUpdate:v1, 11=EternalCore:TransactionEnd:v1. StoreManifest explicitly classified as non-frame with `RecordFileKind::StandalonePayload` — verified that `lookup_record_type` (frame registry) rejects it. Codes 0 and 12..=255 rejected as invalid.
+- Tests: 571 unit + 1 integration (`cargo test --workspace --all-features`); 15 new F3.8 tests — 8 original + 7 audit fix tests: `record_id_rule_cbor_domain_hash`, `record_id_rule_smt_leaf`, `record_id_rule_smt_internal`, `record_id_rule_tags_match_format`, `all_frame_types_have_frame_file_kind`, `store_manifest_is_not_a_frame_record`, `non_frame_has_correct_id_rule`.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` — all pass
 - Follow-up: F3.9
+
+## F3.7 — Implement StoreManifest schemas
+
+- Status: GREEN
+- Commit: SELF (ISSUE-0019 fixes: 5f83061)
+- Completed: SegmentDescriptor (§11.1), PackDescriptor (§11.2), StoreManifestPayload (§11.3) with `new()` constructors, `TryFrom<Value>` decoding, `From<&T> for Value` encoding. `record_id()` returns `StoreManifestId`. ISSUE-0019 fixes: `repository_genesis_id` uses `RepositoryGenesisId` newtype; v1 segment path pattern enforced.
+- Tests: 556 unit + 1 integration; 29 F3.7 tests (25 original + 4 v1 path rejection)
+- Gate: fmt + clippy + test — all pass
+- Follow-up: F3.8
 
 ## F3.4 — Implement object payload schemas
 
