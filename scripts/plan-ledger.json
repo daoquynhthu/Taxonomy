@@ -254,8 +254,8 @@
           ]
         },
         {
-          "id": "F3.11",
-          "status": "RED",
+      "id": "F3.11",
+      "status": "GREEN",
           "depends_on": [
             "F3.8",
             "F3.9",

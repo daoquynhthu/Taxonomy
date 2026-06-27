@@ -1,5 +1,14 @@
 # Progress
 
+## F3.11 — Freeze format v1 (Hard Gate G3)
+
+- Status: GREEN
+- Commit: SELF
+- Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta), every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures structural validation), every invalid fixture rejected with expected class (10/10), all format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Fixture checksums verified via `check-fixtures.ps1`. Spec and plan checks pass. Format v1 bytes frozen — subsequent phases require G3 reopening to change.
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (593 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor 62MB + names 54MB + records 58MB peak RSS, all clean)
+- Evidence: `gate-report.json` (full Hard Gate G3 artifact per PLAN.md §4.3); `fuzz-smoke-report.json` (3 targets, 150k total runs, 0 crashes)
+- Follow-up: S4.1
+
 ## F3.10 — Fuzz all record decoders
 
 - Status: GREEN
