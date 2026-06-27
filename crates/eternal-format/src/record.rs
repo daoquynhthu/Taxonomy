@@ -6,8 +6,8 @@ use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
     ChunkId, ContentManifestId, DataType, EncodedChunkRecordId, KeyId, KeySlotLabel, KeyringId,
     ObjectId, ObjectKey, PolicyId, RecordId, RefName, RefPattern, RefUpdateId, RelationType,
-    RepoCommitId, Signature, SmtInternalId, SmtLeafId, SmtRoot, StoreManifestId, TransactionEndId,
-    VersionId,
+    RepoCommitId, RepositoryGenesisId, Signature, SmtInternalId, SmtLeafId, SmtRoot,
+    StoreManifestId, TransactionEndId, VersionId,
 };
 use crate::limits::FormatLimits;
 
@@ -3858,6 +3858,28 @@ pub struct SegmentDescriptor {
     relative_path: String,
 }
 
+fn uuid_to_hex(id: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        id[0],
+        id[1],
+        id[2],
+        id[3],
+        id[4],
+        id[5],
+        id[6],
+        id[7],
+        id[8],
+        id[9],
+        id[10],
+        id[11],
+        id[12],
+        id[13],
+        id[14],
+        id[15],
+    )
+}
+
 impl SegmentDescriptor {
     pub fn new(
         store_generation: u64,
@@ -3865,6 +3887,36 @@ impl SegmentDescriptor {
         relative_path: String,
     ) -> Result<Self, PayloadError> {
         validate_normalized_path(&relative_path, 2)?;
+        // Enforce v1 path pattern: objects/active/segment-<generation>-<uuid>.seg
+        let prefix = "objects/active/";
+        if !relative_path.starts_with(prefix) {
+            return Err(PayloadError::InvalidText {
+                key: 2,
+                detail: format!("v1 path must start with '{prefix}'"),
+            });
+        }
+        let filename = &relative_path[prefix.len()..];
+        let expected_prefix = format!("segment-{store_generation}-");
+        if !filename.starts_with(&expected_prefix) {
+            return Err(PayloadError::InvalidText {
+                key: 2,
+                detail: format!("v1 filename must start with 'segment-{store_generation}-'"),
+            });
+        }
+        if !filename.ends_with(".seg") {
+            return Err(PayloadError::InvalidText {
+                key: 2,
+                detail: "v1 filename must end with '.seg'".to_string(),
+            });
+        }
+        let uuid_part = &filename[expected_prefix.len()..filename.len() - 4];
+        let expected_hex = uuid_to_hex(&segment_id);
+        if uuid_part != expected_hex {
+            return Err(PayloadError::InvalidText {
+                key: 2,
+                detail: "v1 filename uuid does not match segment_id".to_string(),
+            });
+        }
         Ok(Self {
             store_generation,
             segment_id,
@@ -4019,7 +4071,7 @@ pub fn check_pack_descriptors_sorted_unique(
 pub struct StoreManifestPayload {
     format_version: u64,
     repository_id: [u8; 16],
-    repository_genesis_id: [u8; 32],
+    repository_genesis_id: RepositoryGenesisId,
     generation: u64,
     previous_manifest_id: Option<StoreManifestId>,
     active_segment: SegmentDescriptor,
@@ -4032,7 +4084,7 @@ impl StoreManifestPayload {
     pub fn new(
         format_version: u64,
         repository_id: [u8; 16],
-        repository_genesis_id: [u8; 32],
+        repository_genesis_id: RepositoryGenesisId,
         generation: u64,
         previous_manifest_id: Option<StoreManifestId>,
         active_segment: SegmentDescriptor,
@@ -4099,7 +4151,7 @@ impl StoreManifestPayload {
         &self.repository_id
     }
 
-    pub fn repository_genesis_id(&self) -> &[u8; 32] {
+    pub fn repository_genesis_id(&self) -> &RepositoryGenesisId {
         &self.repository_genesis_id
     }
 
@@ -4180,7 +4232,7 @@ impl TryFrom<Value> for StoreManifestPayload {
         Self::new(
             field_uint(&fields, 0)?,
             field_bytes_exact::<16>(&fields, 1)?,
-            field_bytes_exact::<32>(&fields, 2)?,
+            RepositoryGenesisId::new(field_bytes_exact::<32>(&fields, 2)?),
             field_uint(&fields, 3)?,
             field_nullable_bytes_exact::<32>(&fields, 4)?.map(StoreManifestId::new),
             active_segment,
@@ -4202,7 +4254,7 @@ impl From<&StoreManifestPayload> for Value {
             (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
             (
                 Value::U64(2),
-                Value::Bytes(p.repository_genesis_id.to_vec()),
+                Value::Bytes(p.repository_genesis_id.as_bytes().to_vec()),
             ),
             (Value::U64(3), Value::U64(p.generation)),
             (Value::U64(4), prev_value),
@@ -8461,7 +8513,7 @@ mod tests {
                 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
                 0x0e, 0x0f,
             ],
-            [0xaa; 32],
+            RepositoryGenesisId::new([0xaa; 32]),
             1,
             None,
             segment,
@@ -8527,6 +8579,46 @@ mod tests {
         let err =
             SegmentDescriptor::new(1, [0x11; 16], "objects/../active/segment.seg".to_string())
                 .unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_non_v1_prefix() {
+        let err = SegmentDescriptor::new(1, [0x11; 16], "objects/packs/some.seg".to_string())
+            .unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_wrong_generation_in_path() {
+        let err = SegmentDescriptor::new(
+            1,
+            [0x11; 16],
+            "objects/active/segment-2-11111111-1111-1111-1111-111111111111.seg".to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_wrong_uuid_in_path() {
+        let err = SegmentDescriptor::new(
+            1,
+            [0x11; 16],
+            "objects/active/segment-1-00000000-0000-0000-0000-000000000000.seg".to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_missing_seg_extension() {
+        let err = SegmentDescriptor::new(
+            1,
+            [0x11; 16],
+            "objects/active/segment-1-11111111-1111-1111-1111-111111111111.dat".to_string(),
+        )
+        .unwrap_err();
         assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
     }
 
@@ -8701,7 +8793,7 @@ mod tests {
         let err = StoreManifestPayload::new(
             0,
             [0x11; 16],
-            [0xaa; 32],
+            RepositoryGenesisId::new([0xaa; 32]),
             1,
             None,
             make_segment_descriptor(),
@@ -8717,7 +8809,7 @@ mod tests {
         let err = StoreManifestPayload::new(
             1,
             [0x11; 16],
-            [0xaa; 32],
+            RepositoryGenesisId::new([0xaa; 32]),
             0,
             None,
             make_segment_descriptor(),
@@ -8733,7 +8825,7 @@ mod tests {
         let err = StoreManifestPayload::new(
             1,
             [0x11; 16],
-            [0xaa; 32],
+            RepositoryGenesisId::new([0xaa; 32]),
             1,
             Some(StoreManifestId::new([0xbb; 32])),
             make_segment_descriptor(),
@@ -8748,8 +8840,17 @@ mod tests {
     fn store_manifest_payload_rejects_generation2_without_predecessor() {
         let mut seg = make_segment_descriptor();
         seg.store_generation = 2;
-        let err = StoreManifestPayload::new(1, [0x11; 16], [0xaa; 32], 2, None, seg, vec![], 0)
-            .unwrap_err();
+        let err = StoreManifestPayload::new(
+            1,
+            [0x11; 16],
+            RepositoryGenesisId::new([0xaa; 32]),
+            2,
+            None,
+            seg,
+            vec![],
+            0,
+        )
+        .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
     }
 
@@ -8757,8 +8858,17 @@ mod tests {
     fn store_manifest_payload_rejects_segment_generation_mismatch() {
         let mut seg = make_segment_descriptor();
         seg.store_generation = 2;
-        let err = StoreManifestPayload::new(1, [0x11; 16], [0xaa; 32], 1, None, seg, vec![], 0)
-            .unwrap_err();
+        let err = StoreManifestPayload::new(
+            1,
+            [0x11; 16],
+            RepositoryGenesisId::new([0xaa; 32]),
+            1,
+            None,
+            seg,
+            vec![],
+            0,
+        )
+        .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
     }
 
@@ -8768,7 +8878,7 @@ mod tests {
         let err = StoreManifestPayload::new(
             1,
             [0x11; 16],
-            [0xaa; 32],
+            RepositoryGenesisId::new([0xaa; 32]),
             1,
             None,
             make_segment_descriptor(),
@@ -8784,13 +8894,13 @@ mod tests {
         let seg = SegmentDescriptor::new(
             2,
             [0x11; 16],
-            "objects/active/segment-2-11111111-2222-3333-4444-555555555555.seg".to_string(),
+            "objects/active/segment-2-11111111-1111-1111-1111-111111111111.seg".to_string(),
         )
         .unwrap();
         let p = StoreManifestPayload::new(
             1,
             [0x11; 16],
-            [0xaa; 32],
+            RepositoryGenesisId::new([0xaa; 32]),
             2,
             Some(StoreManifestId::new([0xbb; 32])),
             seg,
