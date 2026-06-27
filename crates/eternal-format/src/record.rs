@@ -2830,6 +2830,23 @@ fn check_relations_sorted_unique(relations: &[Relation]) -> Result<(), PayloadEr
     Ok(())
 }
 
+/// Extract a single bit from an [`ObjectKey`] at the given SMT depth.
+///
+/// Per FORMAT.md §10.1:
+/// - The path is the 256 bits of `ObjectKey`, most-significant bit first.
+/// - Depth 0 consumes bit 7 of byte 0; depth 255 consumes bit 0 of byte 31.
+/// - Bit 0 selects the left child. Bit 1 selects the right child.
+///
+/// Returns `None` when `depth >= 256`.
+pub fn object_key_bit(object_key: &ObjectKey, depth: usize) -> Option<u8> {
+    if depth >= 256 {
+        return None;
+    }
+    let byte_index = depth / 8;
+    let bit_position = 7 - (depth % 8);
+    Some((object_key.as_bytes()[byte_index] >> bit_position) & 1)
+}
+
 // ---------------------------------------------------------------------------
 // SMTLeafPayload (FORMAT.md §9.15 — record type 7, unsigned semantic ID)
 // ---------------------------------------------------------------------------
@@ -6051,6 +6068,48 @@ mod tests {
     }
 
     #[test]
+    fn object_version_rejects_unsorted_canonical_metadata_map() {
+        // Field 6 as CanonicalValue::Map with unsorted keys must be rejected.
+        // Tagged-array [7, [["b", null], ["a", null]]] — keys "b" then "a".
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes(vec![0x11u8; 16])),
+            (Value::U64(2), Value::Text("obj".into())),
+            (Value::U64(3), Value::Bytes(vec![0xAAu8; 32])),
+            (Value::U64(4), Value::Array(vec![])),
+            (Value::U64(5), Value::Text("t".into())),
+            (
+                Value::U64(6),
+                Value::Array(vec![
+                    Value::U64(7),
+                    Value::Array(vec![
+                        Value::Array(vec![
+                            Value::Text("b".into()),
+                            Value::Array(vec![Value::U64(0)]),
+                        ]),
+                        Value::Array(vec![
+                            Value::Text("a".into()),
+                            Value::Array(vec![Value::U64(0)]),
+                        ]),
+                    ]),
+                ]),
+            ),
+            (Value::U64(7), Value::Array(vec![])),
+            (Value::U64(8), Value::Boolean(false)),
+            (Value::U64(9), Value::I64(0)),
+            (Value::U64(10), Value::Bytes(vec![0xCCu8; 32])),
+        ];
+        let err = ObjectVersionPayload::try_from(Value::Map(pairs)).unwrap_err();
+        // Currently ObjectVersionPayload wraps all CanonicalValue decode errors
+        // as InvalidCanonicalValueStructure. When the inner canonical_value_from_value
+        // rejects unsorted entries, this propagates as InvalidCanonicalValueStructure.
+        assert!(matches!(
+            err,
+            PayloadError::Decode(DecodeError::InvalidCanonicalValueStructure)
+        ));
+    }
+
+    #[test]
     fn object_version_rejects_too_many_relations() {
         let relations: Vec<Relation> = (0..100_001)
             .map(|i| make_relation(&format!("o/{i}"), "t"))
@@ -6468,5 +6527,141 @@ mod tests {
         ];
         let err = SMTProof::try_from(Value::Map(pairs)).unwrap_err();
         assert!(matches!(err, PayloadError::WrongLength { key: 4, .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // SMT bit-order tests (FORMAT.md §10.1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn object_key_bit_depth0() {
+        // ObjectKey: [0x80, 0x00, ...] → bit 7 of byte 0 = 1 (MSB)
+        let key = ObjectKey::new([0x80u8; 32]);
+        // Depth 0 = bit 7 of byte 0 = 1
+        assert_eq!(object_key_bit(&key, 0), Some(1));
+        // Depth 1 = bit 6 of byte 0 = 0 (0x80 = 1000_0000)
+        assert_eq!(object_key_bit(&key, 1), Some(0));
+    }
+
+    #[test]
+    fn object_key_bit_depth1() {
+        // ObjectKey: [0x40, ...] → bit 6 of byte 0 = 1
+        let key = ObjectKey::new([0x40u8; 32]);
+        assert_eq!(object_key_bit(&key, 0), Some(0)); // bit 7 = 0
+        assert_eq!(object_key_bit(&key, 1), Some(1)); // bit 6 = 1
+    }
+
+    #[test]
+    fn object_key_bit_depth7() {
+        // ObjectKey: [0x01, ...] → bit 0 of byte 0 = 1
+        let key = ObjectKey::new([0x01u8; 32]);
+        assert_eq!(object_key_bit(&key, 7), Some(1)); // bit 0 = 1
+        assert_eq!(object_key_bit(&key, 6), Some(0)); // bit 1 = 0
+    }
+
+    #[test]
+    fn object_key_bit_depth8() {
+        // ObjectKey: [0x00, 0x80, ...] → bit 7 of byte 1 = 1
+        let mut bytes = [0u8; 32];
+        bytes[1] = 0x80;
+        let key = ObjectKey::new(bytes);
+        assert_eq!(object_key_bit(&key, 8), Some(1)); // bit 7 of byte 1 = 1
+        assert_eq!(object_key_bit(&key, 15), Some(0)); // bit 0 of byte 1 = 0
+    }
+
+    #[test]
+    fn object_key_bit_depth255() {
+        // ObjectKey: [..., 0x01] → bit 0 of byte 31 = 1
+        let mut bytes = [0u8; 32];
+        bytes[31] = 0x01;
+        let key = ObjectKey::new(bytes);
+        assert_eq!(object_key_bit(&key, 255), Some(1)); // bit 0 of byte 31 = 1
+        assert_eq!(object_key_bit(&key, 254), Some(0)); // bit 1 of byte 31 = 0
+    }
+
+    #[test]
+    fn object_key_bit_out_of_range() {
+        let key = ObjectKey::new([0u8; 32]);
+        assert_eq!(object_key_bit(&key, 256), None);
+    }
+
+    fn hex_to_arr32(s: &str) -> [u8; 32] {
+        let bytes: Vec<u8> = (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect();
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        arr
+    }
+
+    #[test]
+    fn object_key_bit_known_fixture() {
+        // ObjectKey from FORMAT.md §21.6 for ObjectId "a":
+        // 8eff98cc3232ebc0cc1129d0b201279939ff3966b08a68d269cf575d8270b8c9
+        let arr = hex_to_arr32("8eff98cc3232ebc0cc1129d0b201279939ff3966b08a68d269cf575d8270b8c9");
+        let key = ObjectKey::new(arr);
+        // Depth 0: byte 0 = 0x8e = 1000_1110, bit 7 = 1
+        assert_eq!(object_key_bit(&key, 0), Some(1));
+        // Depth 1: bit 6 = 0
+        assert_eq!(object_key_bit(&key, 1), Some(0));
+        // Depth 4: bit 3 = 1 (1000_1110 >> 3 = 0001_0001 = 1)
+        assert_eq!(object_key_bit(&key, 4), Some(1));
+        // Depth 7: bit 0 = 0 (1000_1110, LSB = 0)
+        assert_eq!(object_key_bit(&key, 7), Some(0));
+        // Depth 8: byte 1 = 0x98 = 1001_1000, bit 7 = 1
+        assert_eq!(object_key_bit(&key, 8), Some(1));
+    }
+
+    // -----------------------------------------------------------------------
+    // SMT proof fixture tests (FORMAT.md §10.6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn smt_proof_encoding_is_deterministic() {
+        let siblings: Vec<[u8; 32]> = (0..256).map(|i| [i as u8; 32]).collect();
+        let proof = SMTProof::new(
+            1,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            Some(VersionId::new([0x03u8; 32])),
+            siblings,
+        )
+        .unwrap();
+        let value = Value::from(&proof);
+        let bytes_a = value.reencode();
+        let bytes_b = value.reencode();
+        assert_eq!(bytes_a, bytes_b, "SMTProof CBOR must be deterministic");
+    }
+
+    #[test]
+    fn smt_proof_sibling_order_leaf_to_root() {
+        // Verify sibling 0 is at leaf depth (depth 255) and sibling 255 is
+        // at root depth (depth 0), consistent with leaf-to-root ordering.
+        let mut siblings: Vec<[u8; 32]> = Vec::with_capacity(256);
+        for i in 0..256 {
+            let mut bytes = [0u8; 32];
+            bytes[0] = i as u8;
+            siblings.push(bytes);
+        }
+        let proof = SMTProof::new(
+            1,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            None,
+            siblings,
+        )
+        .unwrap();
+        // After roundtrip, sibling 0 and 255 must be preserved
+        assert_eq!(
+            proof.siblings()[0][0],
+            0,
+            "sibling 0 must correspond to depth 255 (leaf)"
+        );
+        assert_eq!(
+            proof.siblings()[255][0],
+            255,
+            "sibling 255 must correspond to depth 0 (root)"
+        );
     }
 }

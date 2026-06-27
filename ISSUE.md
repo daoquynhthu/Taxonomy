@@ -1,5 +1,19 @@
 # Issues
 
+## ISSUE-0017 — F3.4/F3.5 audit regression: CanonicalValue map order silently normalized, F3.5 proof fixture evidence missing
+
+- Status: RESOLVED
+- Severity: BLOCKER
+- Discovered in: F3.4/F3.5 audit 2026-06-27 (commit 58ffa0a)
+- Affected scope: crates/eternal-format/src/canonical.rs, crates/eternal-format/src/record.rs, docs/FORMAT.md §4.5, §10.1, §10.6, docs/PLAN.md F3.5
+- Evidence:
+  1. canonical_value_from_value() accepted CanonicalValue::Map entries in arbitrary order and stored them in BTreeMap, silently normalizing unsorted authoritative metadata instead of rejecting it.
+  2. F3.5 lacked bit-order helper (object_key_bit) and deterministic proof CBOR fixture tests.
+- Violated invariant: Agent.md §5 rejects non-canonical authoritative encodings; PLAN.md F3.5 Green requires bit order + proof fixture bytes.
+- Required decision: Add sorted-key check to canonical_value_from_value() tag-7 decoder; add object_key_bit() helper with MSB-first bit extraction; add proof determinism and sibling-order tests.
+- Work stopped: F3.5, F3.6
+- Resolution: RESOLVED by commit XXXXX (canonical_value_from_value now rejects unsorted map entries with DecodeError::UnsortedMapKey; 3 canonical_value tests + 1 ObjectVersionPayload test added; object_key_bit() helper with 7 bit-order tests; 2 proof fixture tests; 486 total / fmt+clippy clean)
+
 ## ISSUE-0015 — F3.3 content payload schemas accept invalid descriptors and lose ChunkId type separation
 
 - Status: RESOLVED

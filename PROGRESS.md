@@ -3,22 +3,25 @@
 ## F3.4 — Implement object payload schemas
 
 - Status: GREEN
-- Commit: SELF (fix: `ad57a7b`)
+- Commit: SELF (fix: `ad57a7b`; regress-fix: SELF)
 - Completed: `Relation` (§9.13) and `ObjectVersionPayload` (§9.14, signed type 6) with `new()` constructors validating constraints per FORMAT.md, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with `reject_unknown_keys()`. `check_relations_sorted_unique()` enforces relation ordering by `(target_object_id, relation_type)`. Tombstone invariant: tombstone=true ⇒ content_manifest_id=None, tombstone=false ⇒ content_manifest_id=Some(ContentManifestId). Parent count limited to `ABSOLUTE_MAX_OBJECT_VERSION_PARENTS` (64) with duplicate rejection, and `parents[1..]` checked lexicographically sorted when parents.len() > 2. Metadata stored as `CanonicalValue` (not raw `Value`) with validation via `canonical_value_from_value()` per FORMAT.md §4.5 tagged-array encoding. Relation count capped at `ABSOLUTE_MAX_RELATIONS` (100,000). `record_id()` produces `VersionId` via domain hash `"EternalCore:ObjectVersion:v1"`.
 - Key additions in `canonical.rs`: `canonical_value_from_value()` — decodes tagged-array `[discriminant, payload]` to `CanonicalValue`; `value_from_canonical_value()` — encodes back; `From<CanonicalValue> for Value` — direct conversion. Both reusable by future payload schemas needing CanonicalValue validation.
-- Tests: 450 unit + 1 integration (`cargo test --workspace --all-features`); 27 F3.4 tests (21 initial + 6 regression: `rejects_raw_value_as_metadata`, `rejects_raw_map_as_metadata`, `rejects_too_many_relations`, `rejects_unsorted_additional_parents`, `accepts_sorted_additional_parents`, `accepts_single_parent`).
-- Audit fixes (ISSUE-0016): (1) BLOCKER — metadata validated as CanonicalValue tagged-array instead of raw Value; (2) BLOCKER — relation count ≤ 100k enforced; (3) HIGH — unsorted additional parents rejected.
+- Tests: 486 unit + 1 integration (`cargo test --workspace --all-features`); 30 F3.4 tests (21 initial + 6 ISSUE-0016 regression + 3 ISSUE-0017 regression: `cv_from_value_rejects_unsorted_map_entries`, `cv_from_value_rejects_duplicate_map_entries`, `cv_from_value_accepts_sorted_map_entries`, `object_version_rejects_unsorted_canonical_metadata_map`).
+- Audit fixes:
+  - ISSUE-0016: (1) BLOCKER — metadata validated as CanonicalValue tagged-array instead of raw Value; (2) BLOCKER — relation count ≤ 100k enforced; (3) HIGH — unsorted additional parents rejected.
+  - ISSUE-0017: (1) BLOCKER — `canonical_value_from_value()` now rejects unsorted `CanonicalValue::Map` entries with `DecodeError::UnsortedMapKey` instead of silently normalizing via BTreeMap; (2) BLOCKER — `object_key_bit()` helper added with MSB-first bit extraction per FORMAT.md §10.1, verified at depths 0/1/7/8/255 including known ObjectKey fixture.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
-- Follow-up: none (F3.5 now complete)
+- Follow-up: F3.5
 
 ## F3.5 — Implement SMT payload and proof schemas
 
 - Status: GREEN
-- Commit: SELF
+- Commit: SELF (fix: SELF — ISSUE-0017 audit: added proof fixture + bit-order evidence)
 - Completed: `SMTLeafPayload` (§9.15, record type 7, unsigned semantic ID) with `object_key: ObjectKey`, `version_id: VersionId`; `SMTInternalPayload` (§9.16, record type 8, unsigned semantic ID) with `left_child/right_child: [u8; 32]`; `SMTProof` (§10.6, protocol object) with `root: SmtRoot`, `object_key: ObjectKey`, `version_id: Option<VersionId>`, `siblings: Vec<[u8; 32]>` (exactly 256). All three implement `new()` with format_version=1 validation, `TryFrom<Value>` decoding with `reject_unknown_keys()`, and `From<&T> for Value` encoding with unsigned integer field keys. `SMTLeafPayload::record_id()` returns `SmtLeafId` via `DomainHash("EternalCore:SMTLeaf:v1", object_key || version_id)`. `SMTInternalPayload::record_id()` returns `SmtInternalId` via `DomainHash("EternalCore:SMTInternal:v1", left_child || right_child)`. `SMTProof` rejects malformed siblings count != 256 and wrong sibling byte length.
 - New ID types in `ids.rs`: `SmtLeafId`, `SmtInternalId` (hash_id! macro).
-- Tests: 473 unit + 1 integration (`cargo test --workspace --all-features`); 23 new F3.5 tests — SMTLeafPayload (field-numbers, roundtrip, rejects unknown/not-a-map/bad-format_version, record_id), SMTInternalPayload (same pattern, 6 tests), SMTProof (field-numbers, roundtrip with/without version, rejects unknown/not-a-map/bad-format_version/too-few-siblings/too-many-siblings/zero-siblings, decoder rejects wrong sibling count, decoder rejects wrong sibling byte length).
-- Evidence: All field-number tests confirm keys 0..N encode. CBOR roundtrip byte fidelity. Sibling length and count validation at constructor and decoder.
+- Key addition: `object_key_bit()` helper in `record.rs` extracts a single bit from ObjectKey at given SMT depth (MSB first, per FORMAT.md §10.1).
+- Tests: 486 unit + 1 integration (`cargo test --workspace --all-features`); 37 F3.5 tests — 23 payload struct tests + 7 bit-order tests (depth 0/1/7/8/255, known ObjectKey fixture, out-of-range) + 2 proof fixture tests (deterministic CBOR, sibling leaf-to-root ordering) + 5 new ISSUE-0017 regression tests (3 canonical_value_from_value map-order, 1 ObjectVersionPayload unsorted metadata, 1 canonical_value_from_value sorted accept).
+- Evidence: All field-number tests confirm keys 0..N encode. CBOR roundtrip byte fidelity. Sibling length/count validation. Bit ordering verified at depths 0/1/7/8/255 against known ObjectKey fixture. Proof CBOR encoding is deterministic. Sibling[0] corresponds to leaf (depth 255), sibling[255] to root (depth 0).
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
 - Follow-up: F3.6 Implement state and ref payload schemas
 

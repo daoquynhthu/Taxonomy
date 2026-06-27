@@ -1199,6 +1199,7 @@ pub fn canonical_value_from_value(
                 _ => return Err(DecodeError::InvalidCanonicalValueStructure),
             };
             let mut map = std::collections::BTreeMap::new();
+            let mut last_key: Option<String> = None;
             for entry in entries {
                 let pair = match entry {
                     Value::Array(pair) => pair,
@@ -1211,10 +1212,20 @@ pub fn canonical_value_from_value(
                     Value::Text(k) => k.clone(),
                     _ => return Err(DecodeError::CanonicalMapKeyNotText),
                 };
-                let val = canonical_value_from_value(&pair[1], depth + 1, nodes, limits)?;
-                if map.insert(key.clone(), val).is_some() {
-                    return Err(DecodeError::DuplicateMapKey);
+                if let Some(ref last) = last_key {
+                    match key.as_str().cmp(last.as_str()) {
+                        std::cmp::Ordering::Less => {
+                            return Err(DecodeError::UnsortedMapKey);
+                        }
+                        std::cmp::Ordering::Equal => {
+                            return Err(DecodeError::DuplicateMapKey);
+                        }
+                        std::cmp::Ordering::Greater => {}
+                    }
                 }
+                let val = canonical_value_from_value(&pair[1], depth + 1, nodes, limits)?;
+                map.insert(key.clone(), val);
+                last_key = Some(key);
             }
             Ok(CanonicalValue::Map(map))
         }
@@ -2507,6 +2518,80 @@ mod tests {
         enc.canonical_value(&CanonicalValue::Null);
         let bytes = enc.into_bytes();
         assert_eq!(cv_err(&bytes), DecodeError::UnsortedMapKey);
+    }
+
+    #[test]
+    fn cv_from_value_rejects_unsorted_map_entries() {
+        // Construct a Value::Array representing [7, [["b", null], ["a", null]]]
+        // where keys "b", "a" are unsorted. This tests the canonical_value_from_value
+        // path (Value→CanonicalValue), which is used by ObjectVersionPayload metadata.
+        let val = Value::Array(vec![
+            Value::U64(7),
+            Value::Array(vec![
+                Value::Array(vec![
+                    Value::Text("b".into()),
+                    Value::Array(vec![Value::U64(0)]),
+                ]),
+                Value::Array(vec![
+                    Value::Text("a".into()),
+                    Value::Array(vec![Value::U64(0)]),
+                ]),
+            ]),
+        ]);
+        let limits = FormatLimits::default();
+        let mut nodes = 0;
+        let err = canonical_value_from_value(&val, 0, &mut nodes, &limits).unwrap_err();
+        assert_eq!(err, DecodeError::UnsortedMapKey);
+    }
+
+    #[test]
+    fn cv_from_value_rejects_duplicate_map_entries() {
+        // Construct a Value::Array representing [7, [["a", null], ["a", null]]]
+        // with duplicate key "a".
+        let val = Value::Array(vec![
+            Value::U64(7),
+            Value::Array(vec![
+                Value::Array(vec![
+                    Value::Text("a".into()),
+                    Value::Array(vec![Value::U64(0)]),
+                ]),
+                Value::Array(vec![
+                    Value::Text("a".into()),
+                    Value::Array(vec![Value::U64(0)]),
+                ]),
+            ]),
+        ]);
+        let limits = FormatLimits::default();
+        let mut nodes = 0;
+        let err = canonical_value_from_value(&val, 0, &mut nodes, &limits).unwrap_err();
+        assert_eq!(err, DecodeError::DuplicateMapKey);
+    }
+
+    #[test]
+    fn cv_from_value_accepts_sorted_map_entries() {
+        // Construct a Value::Array representing [7, [["a", null], ["b", null]]]
+        // with sorted keys "a", "b".
+        let val = Value::Array(vec![
+            Value::U64(7),
+            Value::Array(vec![
+                Value::Array(vec![
+                    Value::Text("a".into()),
+                    Value::Array(vec![Value::U64(0)]),
+                ]),
+                Value::Array(vec![
+                    Value::Text("b".into()),
+                    Value::Array(vec![Value::U64(0)]),
+                ]),
+            ]),
+        ]);
+        let limits = FormatLimits::default();
+        let mut nodes = 0;
+        let result = canonical_value_from_value(&val, 0, &mut nodes, &limits).unwrap();
+        assert!(
+            matches!(&result, CanonicalValue::Map(m) if m.len() == 2
+                && m.keys().map(|k| k.as_str()).collect::<Vec<_>>() == vec!["a", "b"]),
+            "expected sorted map with 2 entries"
+        );
     }
 
     #[test]
