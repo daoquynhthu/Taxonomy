@@ -121,10 +121,12 @@ mod tests {
 
 #[cfg(test)]
 mod f3_9_tests {
-    use crate::canonical::{CanonicalDecoder, DecodeError, Value};
+    use crate::canonical::{CanonicalDecoder, DecodeError};
+    use crate::domain::domain_hash;
     use crate::limits::FormatLimits;
     use crate::record::{
         ContentManifestPayload, EncodedChunkPayload, RefUpdatePayload, RepoCommitPayload,
+        SignedRecord, StoreManifestPayload,
     };
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -139,7 +141,7 @@ mod f3_9_tests {
     }
 
     // -------------------------------------------------------------------
-    // Valid fixture decode tests
+    // §22: Every valid CBOR fixture must decode and re-encode identically
     // -------------------------------------------------------------------
 
     #[test]
@@ -151,11 +153,11 @@ mod f3_9_tests {
     }
 
     #[test]
-    fn f3_9_ref_update_payload_decodes() {
+    fn f3_9_ref_update_payload_decodes_and_reencodes() {
         let bytes = fixture("ref-update-payload-v1.bin");
         let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
         let val = dec.decode().expect("valid CBOR");
-        let payload = RefUpdatePayload::try_from(val).expect("valid RefUpdatePayload");
+        let payload = RefUpdatePayload::try_from(val.clone()).expect("valid RefUpdatePayload");
         assert_eq!(payload.format_version(), 1);
         assert_eq!(payload.ref_name().as_str(), "refs/heads/main");
         assert_eq!(payload.sequence(), 1);
@@ -166,33 +168,28 @@ mod f3_9_tests {
             expected.as_slice(),
             "RefUpdateId must match FORMAT.md §21.4"
         );
+        assert_eq!(val.reencode(), bytes, "RefUpdatePayload re-encode identity");
     }
 
     #[test]
-    fn f3_9_ref_update_envelope_is_5_entry_map() {
+    fn f3_9_envelope_decodes_and_reencodes() {
         let bytes = fixture("ref-update-envelope-v1.bin");
-        let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
-        let val = dec.decode().expect("valid CBOR");
-        match &val {
-            Value::Map(pairs) => {
-                assert_eq!(pairs.len(), 5);
-                for (k, _) in pairs {
-                    match k {
-                        Value::U64(n) => assert!(*n <= 4, "unexpected key {n}"),
-                        _ => panic!("non-uint key"),
-                    }
-                }
-            }
-            _ => panic!("envelope is not a map"),
-        }
+        let env = SignedRecord::decode(&bytes, &FormatLimits::default())
+            .expect("valid SignedRecord envelope");
+        assert_eq!(env.record_id().as_bytes().len(), 32);
+        assert_eq!(env.signer_key_id().as_bytes().len(), 32);
+        assert_eq!(env.signature().as_bytes().len(), 64);
+        let reencoded = env.encode(&FormatLimits::default()).expect("re-encode");
+        assert_eq!(reencoded, bytes, "envelope re-encode identity");
     }
 
     #[test]
-    fn f3_9_content_manifest_decodes() {
+    fn f3_9_content_manifest_decodes_and_reencodes() {
         let bytes = fixture("content-manifest-v1.bin");
         let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
         let val = dec.decode().expect("valid CBOR");
-        let payload = ContentManifestPayload::try_from(val).expect("valid ContentManifestPayload");
+        let payload =
+            ContentManifestPayload::try_from(val.clone()).expect("valid ContentManifestPayload");
         assert_eq!(payload.format_version(), 1);
         assert_eq!(payload.total_size(), 3);
         assert_eq!(payload.chunks().len(), 1);
@@ -203,14 +200,15 @@ mod f3_9_tests {
             expected.as_slice(),
             "ContentManifestId must match FORMAT.md §21.5"
         );
+        assert_eq!(val.reencode(), bytes, "ContentManifest re-encode identity");
     }
 
     #[test]
-    fn f3_9_repo_commit_decodes() {
+    fn f3_9_repo_commit_decodes_and_reencodes() {
         let bytes = fixture("repo-commit-payload-v1.bin");
         let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
         let val = dec.decode().expect("valid CBOR");
-        let payload = RepoCommitPayload::try_from(val).expect("valid RepoCommitPayload");
+        let payload = RepoCommitPayload::try_from(val.clone()).expect("valid RepoCommitPayload");
         assert_eq!(payload.format_version(), 1);
         assert_eq!(payload.parents().len(), 0);
         assert_eq!(payload.changes().len(), 1);
@@ -221,14 +219,16 @@ mod f3_9_tests {
             expected.as_slice(),
             "RepoCommitId must match FORMAT.md §21.7"
         );
+        assert_eq!(val.reencode(), bytes, "RepoCommit re-encode identity");
     }
 
     #[test]
-    fn f3_9_encoded_chunk_decodes() {
+    fn f3_9_encoded_chunk_decodes_and_reencodes() {
         let bytes = fixture("encoded-chunk-v1.bin");
         let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
         let val = dec.decode().expect("valid CBOR");
-        let payload = EncodedChunkPayload::try_from(val).expect("valid EncodedChunkPayload");
+        let payload =
+            EncodedChunkPayload::try_from(val.clone()).expect("valid EncodedChunkPayload");
         assert_eq!(payload.format_version(), 1);
         assert_eq!(payload.plaintext_length(), 3);
         let expected =
@@ -238,48 +238,98 @@ mod f3_9_tests {
             expected.as_slice(),
             "EncodedChunkRecordId must match FORMAT.md §21.9"
         );
+        assert_eq!(val.reencode(), bytes, "EncodedChunk re-encode identity");
     }
 
     #[test]
-    fn f3_9_segment_header_length_and_magic() {
-        let bytes = fixture("segment-header-v1.bin");
-        assert_eq!(bytes.len(), 62);
-        assert_eq!(&bytes[0..4], b"ETSE");
-    }
-
-    #[test]
-    fn f3_9_pack_magic() {
-        let bytes = fixture("pack-v1.pack");
-        assert_eq!(&bytes[0..8], b"ETPACK\0\0");
-    }
-
-    #[test]
-    fn f3_9_pack_index_magic() {
-        let bytes = fixture("pack-v1.idx");
-        assert_eq!(&bytes[0..4], b"ETID");
-    }
-
-    #[test]
-    fn f3_9_store_manifest_decodes() {
+    fn f3_9_store_manifest_decodes_and_reencodes() {
         let bytes = fixture("store-manifest-v1.cbor");
         let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
         let val = dec.decode().expect("valid CBOR");
-        match &val {
-            Value::Map(pairs) => {
-                assert!(!pairs.is_empty());
-                for (k, _) in pairs {
-                    match k {
-                        Value::U64(n) => assert!(*n <= 7, "unexpected key {n}"),
-                        _ => panic!("non-uint key"),
-                    }
-                }
-            }
-            _ => panic!("not a map"),
-        }
+        let payload =
+            StoreManifestPayload::try_from(val.clone()).expect("valid StoreManifestPayload");
+        assert_eq!(payload.format_version(), 1);
+        let manifest_id = payload.record_id().expect("StoreManifestId");
+        let expected =
+            hex_bytes("ade6809438dcfb396d7ab5540ef329478921d77374bf4f7c1ecbf9cd42bf71ca");
+        assert_eq!(
+            manifest_id.as_bytes().as_slice(),
+            expected.as_slice(),
+            "StoreManifestId must match FORMAT.md §21.12"
+        );
+        assert_eq!(val.reencode(), bytes, "StoreManifest re-encode identity");
     }
 
     // -------------------------------------------------------------------
-    // Invalid fixture rejection tests
+    // §22: Non-CBOR fixture structural verification
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn f3_9_segment_header_crc32c() {
+        let bytes = fixture("segment-header-v1.bin");
+        assert_eq!(bytes.len(), 62);
+        assert_eq!(&bytes[0..8], b"ETSEG\0\0\0", "full 8-byte magic");
+        let stored_crc = u32::from_le_bytes(bytes[58..62].try_into().unwrap());
+        let computed_crc = crc32c::crc32c(&bytes[0..58]);
+        assert_eq!(
+            computed_crc, stored_crc,
+            "header CRC must match recomputed value"
+        );
+        assert_eq!(
+            computed_crc, 0xc3fc8b61,
+            "header CRC must match FORMAT.md §21.10 golden value"
+        );
+    }
+
+    #[test]
+    fn f3_9_pack_structure_and_checksum() {
+        let bytes = fixture("pack-v1.pack");
+        assert_eq!(&bytes[0..8], b"ETPACK\0\0", "pack magic");
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        assert_eq!(version, 1, "pack format version");
+        let record_count = u64::from_le_bytes(bytes[26..34].try_into().unwrap());
+        assert_eq!(record_count, 1, "record count");
+
+        // Verify trailer DomainHash
+        let (body, trailer) = bytes.split_at(bytes.len() - 32);
+        let mut zeroed = body.to_vec();
+        zeroed.extend_from_slice(&[0u8; 32]);
+        let expected = domain_hash("EternalCore:Pack:v1", &zeroed).expect("pack DomainHash");
+        assert_eq!(
+            trailer, expected,
+            "pack checksum must match DomainHash per FORMAT.md §15"
+        );
+    }
+
+    #[test]
+    fn f3_9_pack_index_structure_and_checksum() {
+        let bytes = fixture("pack-v1.idx");
+        assert_eq!(&bytes[0..8], b"ETIDX\0\0\0", "index magic");
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        assert_eq!(version, 1, "index format version");
+        let record_count = u64::from_le_bytes(bytes[58..66].try_into().unwrap());
+        assert_eq!(record_count, 1, "record count");
+
+        // Verify length: 2146 + 53 * N
+        assert_eq!(bytes.len(), 2199, "index total length must be 2146 + 53*N");
+
+        // Verify fanout table structure
+        let fanout_first = u64::from_le_bytes(bytes[66..74].try_into().unwrap());
+        assert_eq!(fanout_first, 0, "fanout[0] must be 0");
+        let fanout_last = u64::from_le_bytes(bytes[66 + 2040..66 + 2048].try_into().unwrap());
+        assert_eq!(fanout_last, 1, "fanout[255] must equal record_count");
+
+        // Verify index_checksum matches FORMAT.md §21.11 golden value
+        let golden = hex_bytes("3051b321eb8354dc0f11de02a5b6ee3439c0bd00cf0d7100076e88b422727e77");
+        assert_eq!(
+            &bytes[bytes.len() - 32..],
+            golden.as_slice(),
+            "index checksum must match FORMAT.md §21.11"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // §22: Invalid fixtures must fail at the appropriate layer
     // -------------------------------------------------------------------
 
     #[test]
@@ -311,7 +361,6 @@ mod f3_9_tests {
         let bytes = fixture("store-manifest-v1-invalid-corrupted.bin");
         let mut dec = CanonicalDecoder::from_limits(&bytes, &FormatLimits::default());
         let err = dec.decode().expect_err("must reject corrupted CBOR");
-        // 0xFF is major type 7, additional info 31 → treated as indefinite length
         assert!(matches!(err, DecodeError::IndefiniteLengthUnsupported));
     }
 
@@ -331,9 +380,74 @@ mod f3_9_tests {
     }
 
     #[test]
-    fn f3_9_invalid_crc_detected() {
+    fn f3_9_segment_header_invalid_crc_rejected() {
         let bytes = fixture("segment-header-v1-invalid-crc.bin");
-        let valid_crc = [0x61, 0x8b, 0xfc, 0xc3];
-        assert_ne!(&bytes[58..62], &valid_crc);
+        let stored_crc = u32::from_le_bytes(bytes[58..62].try_into().unwrap());
+        let computed_crc = crc32c::crc32c(&bytes[0..58]);
+        assert_ne!(
+            computed_crc, stored_crc,
+            "invalid CRC must not match recomputed value"
+        );
+    }
+
+    #[test]
+    fn f3_9_pack_invalid_trailer_rejected() {
+        let bytes = fixture("pack-v1-invalid-trailer.bin");
+        let (body, _stored_trailer) = bytes.split_at(bytes.len() - 32);
+        let mut zeroed = body.to_vec();
+        zeroed.extend_from_slice(&[0u8; 32]);
+        let expected = domain_hash("EternalCore:Pack:v1", &zeroed).expect("pack DomainHash");
+        assert_ne!(
+            &bytes[bytes.len() - 32..],
+            expected,
+            "corrupted trailer must not match DomainHash"
+        );
+    }
+
+    #[test]
+    fn f3_9_pack_index_invalid_checksum_rejected() {
+        let bytes = fixture("pack-v1-idx-invalid-checksum.bin");
+        let stored = &bytes[bytes.len() - 32..];
+        // Must NOT match the golden value from FORMAT.md §21.11
+        let golden = hex_bytes("3051b321eb8354dc0f11de02a5b6ee3439c0bd00cf0d7100076e88b422727e77");
+        assert_ne!(
+            stored,
+            golden.as_slice(),
+            "zeroed checksum must not match FORMAT.md §21.11 golden value"
+        );
+        // Verify the stored checksum is indeed all-zero (generator clears last 32 bytes)
+        assert_eq!(
+            stored,
+            &[0u8; 32][..],
+            "invalid-checksum fixture must have zeroed index_checksum"
+        );
+    }
+
+    #[test]
+    fn f3_9_pack_index_invalid_truncated_rejected() {
+        let bytes = fixture("pack-v1-idx-invalid-truncated.bin");
+        // Valid index is 2199 bytes; truncated is 100 bytes shorter
+        assert_eq!(
+            bytes.len(),
+            2199 - 100,
+            "truncated index must be 2099 bytes"
+        );
+        // Verify magic prefix is intact (truncation removes end, not start)
+        assert_eq!(
+            &bytes[0..4],
+            b"ETID",
+            "magic prefix must survive truncation"
+        );
+        // Remaining bytes should still parse as partial index header
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        assert_eq!(version, 1, "version must be readable");
+        // Last 32 bytes of truncated fixture are NOT a valid checksum
+        let last_32 = &bytes[bytes.len() - 32..];
+        let golden = hex_bytes("3051b321eb8354dc0f11de02a5b6ee3439c0bd00cf0d7100076e88b422727e77");
+        assert_ne!(
+            last_32,
+            golden.as_slice(),
+            "truncated data must not match golden index_checksum"
+        );
     }
 }
