@@ -3793,6 +3793,29 @@ pub fn record_ids_root(record_ids: &[RecordId]) -> Result<[u8; 32], DomainHashEr
 }
 
 // ---------------------------------------------------------------------------
+// Type registry (§21, record type → physical container mapping)
+// ---------------------------------------------------------------------------
+
+/// Physical container where records of a given type may be stored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PhysicalContainer {
+    /// Active segment only (e.g., TransactionEnd, type 11).
+    Segment,
+    /// Both active segment and sealed pack.
+    Any,
+}
+
+/// Returns the allowed physical container for a record type code.
+///
+/// Returns `None` for unknown type codes (which will be resolved in F3.8).
+pub fn type_allowed_container(type_code: u64) -> Option<PhysicalContainer> {
+    match type_code {
+        11 => Some(PhysicalContainer::Segment),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -7964,5 +7987,20 @@ mod tests {
             record_ids_root(&[id_a, id_b]).unwrap(),
             record_ids_root(&[id_a, id_b]).unwrap(),
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Type registry tests (§21)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn type_registry_transaction_end_is_segment_only() {
+        assert_eq!(type_allowed_container(11), Some(PhysicalContainer::Segment),);
+    }
+
+    #[test]
+    fn type_registry_unknown_code_returns_none() {
+        assert_eq!(type_allowed_container(0), None);
+        assert_eq!(type_allowed_container(99), None);
     }
 }

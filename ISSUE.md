@@ -2,7 +2,7 @@
 
 ## ISSUE-0018 — F3.6 audit regression: raw [u8; 32] types, missing-field defaulting, no tag constraints
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: F3.6 audit 2026-06-27 (commit 242ee9a)
 - Affected scope: crates/eternal-format/src/record.rs, docs/FORMAT.md §9.17–§9.21, docs/PLAN.md F3.6
@@ -15,7 +15,7 @@
 - Violated invariant: Agent.md §5: "Production library code must not use unwrap, expect" (BLOCKER 1 is a type safety violation); FORMAT.md §4.3 missing-field rejection; FORMAT.md §9.18 parent baseline semantics; FORMAT.md §9.19 tag constraints; FORMAT.md §9.20 offset ordering.
 - Required decision: Fix all 4 BLOCKERs and 1 HIGH in F3.6 record.rs. Update tests to use newtype wrappers. Add negative tests for each violation.
 - Work stopped: F3.6 (now unblocked after fix)
-- Resolution: RESOLVED by commit SELF (all 4 BLOCKERs + HIGH fixed; types use hash_id wrappers; parents[0] is baseline; missing fields reject with MissingField; tag constraints enforced; end_frame_offset >= first_frame_offset checked; new tests added: repo_commit_payload_rejects_missing_parents, repo_commit_payload_rejects_missing_changes, ref_update_payload_rejects_tag_null_target, ref_update_payload_rejects_tag_with_predecessor, ref_update_payload_rejects_tag_wrong_sequence, transaction_end_payload_rejects_end_offset_before_first_offset)
+- Resolution: RESOLVED by commit baca9692 (all 4 BLOCKERs + HIGH fixed; types use hash_id wrappers; parents[0] is baseline; missing fields reject with MissingField; tag constraints enforced; end_frame_offset >= first_frame_offset checked; new tests added: repo_commit_payload_rejects_missing_parents, repo_commit_payload_rejects_missing_changes, ref_update_payload_rejects_tag_null_target, ref_update_payload_rejects_tag_with_predecessor, ref_update_payload_rejects_tag_wrong_sequence, transaction_end_payload_rejects_end_offset_before_first_offset)
 
 ## ISSUE-0017 — F3.4/F3.5 audit regression: CanonicalValue map order silently normalized, F3.5 proof fixture evidence missing
 
