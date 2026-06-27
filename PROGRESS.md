@@ -1,5 +1,14 @@
 # Progress
 
+## F3.9 — Complete format-v1 fixtures
+
+- Status: GREEN
+- Commit: SELF
+- Completed: Generated 7 missing valid binary fixtures from FORMAT.md §21 golden vectors (canonical-cbor, ref-update-payload, ref-update-envelope, content-manifest, repo-commit-payload, encoded-chunk, encrypted-chunk-ciphertext) and 10 invalid/corrupted fixture variants (duplicate-key CBOR, trailing garbage, truncated CBOR, corrupted StoreManifest CBOR, segment-header invalid magic/CRC, pack-trailer, index checksum/truncated). All 22 fixtures registered in manifest.json with SHA-256 checksums. Added 17 F3.9 fixture consumption tests: 12 decode/reject valid fixtures, 5 verify invalid fixtures are rejected. Generator at `scripts/gen-format-v1-fixtures.ps1`.
+- Tests: 589 unit + 1 integration (`cargo test --workspace --all-features`); 17 new F3.9 tests covering decode-and-reencode of canonical CBOR, payload decoding with RecordId verification against FORMAT.md golden vectors, envelope structure, file magic/CRC detection — plus rejection of duplicate keys, trailing data, truncated CBOR, corrupted CBOR, and bad segment-header magic/CRC.
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `scripts/check-fixtures` — all pass
+- Follow-up: F3.10
+
 ## F3.8 — Implement record registry
 
 - Status: GREEN

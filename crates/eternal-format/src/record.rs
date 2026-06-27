@@ -8836,8 +8836,7 @@ mod tests {
                 is_non_frame_file(*kind),
                 "{kind:?} must be classified as non-frame"
             );
-            let info = lookup_non_frame(*kind)
-                .unwrap_or_else(|| panic!("{kind:?} must have info"));
+            let info = lookup_non_frame(*kind).unwrap_or_else(|| panic!("{kind:?} must have info"));
             assert_eq!(info.kind, *kind);
             assert_eq!(info.file_kind, RecordFileKind::StandalonePayload);
         }
