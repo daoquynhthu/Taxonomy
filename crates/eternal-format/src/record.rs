@@ -6,7 +6,8 @@ use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
     ChunkId, ContentManifestId, DataType, EncodedChunkRecordId, KeyId, KeySlotLabel, KeyringId,
     ObjectId, ObjectKey, PolicyId, RecordId, RefName, RefPattern, RefUpdateId, RelationType,
-    RepoCommitId, Signature, SmtInternalId, SmtLeafId, SmtRoot, TransactionEndId, VersionId,
+    RepoCommitId, Signature, SmtInternalId, SmtLeafId, SmtRoot, StoreManifestId, TransactionEndId,
+    VersionId,
 };
 use crate::limits::FormatLimits;
 
@@ -3790,6 +3791,426 @@ pub fn record_ids_root(record_ids: &[RecordId]) -> Result<[u8; 32], DomainHashEr
         payload.extend_from_slice(id.as_bytes());
     }
     domain_hash("EternalCore:TransactionBatch:v1", &payload)
+}
+
+// ---------------------------------------------------------------------------
+// StoreManifest schemas (§11)
+// ---------------------------------------------------------------------------
+
+fn validate_normalized_path(path: &str, key: u64) -> Result<(), PayloadError> {
+    if path.is_empty() {
+        return Err(PayloadError::InvalidText {
+            key,
+            detail: "path is empty".to_string(),
+        });
+    }
+    if path.as_bytes()[0] == b'/' {
+        return Err(PayloadError::InvalidText {
+            key,
+            detail: "path must not be absolute".to_string(),
+        });
+    }
+    if path.as_bytes()[path.len() - 1] == b'/' {
+        return Err(PayloadError::InvalidText {
+            key,
+            detail: "path must not end with '/'".to_string(),
+        });
+    }
+    for (i, &b) in path.as_bytes().iter().enumerate() {
+        if b <= 0x1f || b == 0x7f {
+            return Err(PayloadError::InvalidText {
+                key,
+                detail: format!("control character at position {i}"),
+            });
+        }
+    }
+    for segment in path.split('/') {
+        if segment.is_empty() {
+            return Err(PayloadError::InvalidText {
+                key,
+                detail: "path contains empty segment".to_string(),
+            });
+        }
+        if segment == "." {
+            return Err(PayloadError::InvalidText {
+                key,
+                detail: "path contains '.' segment".to_string(),
+            });
+        }
+        if segment == ".." {
+            return Err(PayloadError::InvalidText {
+                key,
+                detail: "path contains '..' segment".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SegmentDescriptor (§11.1)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SegmentDescriptor {
+    store_generation: u64,
+    segment_id: [u8; 16],
+    relative_path: String,
+}
+
+impl SegmentDescriptor {
+    pub fn new(
+        store_generation: u64,
+        segment_id: [u8; 16],
+        relative_path: String,
+    ) -> Result<Self, PayloadError> {
+        validate_normalized_path(&relative_path, 2)?;
+        Ok(Self {
+            store_generation,
+            segment_id,
+            relative_path,
+        })
+    }
+
+    pub fn store_generation(&self) -> u64 {
+        self.store_generation
+    }
+
+    pub fn segment_id(&self) -> &[u8; 16] {
+        &self.segment_id
+    }
+
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+}
+
+impl TryFrom<Value> for SegmentDescriptor {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 3)?;
+        let fields = parse_fields(pairs, 3);
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            field_text(&fields, 2)?,
+        )
+    }
+}
+
+impl From<&SegmentDescriptor> for Value {
+    fn from(d: &SegmentDescriptor) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(d.store_generation)),
+            (Value::U64(1), Value::Bytes(d.segment_id.to_vec())),
+            (Value::U64(2), Value::Text(d.relative_path.clone())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PackDescriptor (§11.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackDescriptor {
+    pack_checksum: [u8; 32],
+    index_checksum: [u8; 32],
+    pack_relative_path: String,
+    index_relative_path: String,
+    record_count: u64,
+}
+
+impl PackDescriptor {
+    pub fn new(
+        pack_checksum: [u8; 32],
+        index_checksum: [u8; 32],
+        pack_relative_path: String,
+        index_relative_path: String,
+        record_count: u64,
+    ) -> Result<Self, PayloadError> {
+        validate_normalized_path(&pack_relative_path, 2)?;
+        validate_normalized_path(&index_relative_path, 3)?;
+        Ok(Self {
+            pack_checksum,
+            index_checksum,
+            pack_relative_path,
+            index_relative_path,
+            record_count,
+        })
+    }
+
+    pub fn pack_checksum(&self) -> &[u8; 32] {
+        &self.pack_checksum
+    }
+
+    pub fn index_checksum(&self) -> &[u8; 32] {
+        &self.index_checksum
+    }
+
+    pub fn pack_relative_path(&self) -> &str {
+        &self.pack_relative_path
+    }
+
+    pub fn index_relative_path(&self) -> &str {
+        &self.index_relative_path
+    }
+
+    pub fn record_count(&self) -> u64 {
+        self.record_count
+    }
+}
+
+impl TryFrom<Value> for PackDescriptor {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 5)?;
+        let fields = parse_fields(pairs, 5);
+        Self::new(
+            field_bytes_exact::<32>(&fields, 0)?,
+            field_bytes_exact::<32>(&fields, 1)?,
+            field_text(&fields, 2)?,
+            field_text(&fields, 3)?,
+            field_uint(&fields, 4)?,
+        )
+    }
+}
+
+impl From<&PackDescriptor> for Value {
+    fn from(d: &PackDescriptor) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::Bytes(d.pack_checksum.to_vec())),
+            (Value::U64(1), Value::Bytes(d.index_checksum.to_vec())),
+            (Value::U64(2), Value::Text(d.pack_relative_path.clone())),
+            (Value::U64(3), Value::Text(d.index_relative_path.clone())),
+            (Value::U64(4), Value::U64(d.record_count)),
+        ])
+    }
+}
+
+/// Validate that a slice of PackDescriptor entries is sorted by pack_checksum
+/// and contains no duplicates.
+pub fn check_pack_descriptors_sorted_unique(
+    descriptors: &[PackDescriptor],
+) -> Result<(), PayloadError> {
+    for window in descriptors.windows(2) {
+        let a = &window[0].pack_checksum;
+        let b = &window[1].pack_checksum;
+        if a >= b {
+            return Err(PayloadError::UnsortedOrDuplicate { key: 6 });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// StoreManifestPayload (§11.3, unsigned record type — physical, not logical)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreManifestPayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    repository_genesis_id: [u8; 32],
+    generation: u64,
+    previous_manifest_id: Option<StoreManifestId>,
+    active_segment: SegmentDescriptor,
+    sealed_packs: Vec<PackDescriptor>,
+    created_at_ns: i64,
+}
+
+impl StoreManifestPayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        repository_genesis_id: [u8; 32],
+        generation: u64,
+        previous_manifest_id: Option<StoreManifestId>,
+        active_segment: SegmentDescriptor,
+        sealed_packs: Vec<PackDescriptor>,
+        created_at_ns: i64,
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        if generation < 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: format!("generation must be >= 1, got {generation}"),
+            });
+        }
+        // Generation 1 MUST have no predecessor; generation > 1 MUST have one.
+        match (generation, &previous_manifest_id) {
+            (1, None) => {}
+            (1, Some(_)) => {
+                return Err(PayloadError::UnsupportedValue {
+                    key: 4,
+                    detail: "generation 1 must have null previous_manifest_id".to_string(),
+                });
+            }
+            (_, None) => {
+                return Err(PayloadError::UnsupportedValue {
+                    key: 4,
+                    detail: format!("generation {generation} must have a previous_manifest_id"),
+                });
+            }
+            _ => {}
+        }
+        // Active segment store_generation must match manifest generation.
+        if active_segment.store_generation != generation {
+            return Err(PayloadError::UnsupportedValue {
+                key: 5,
+                detail: format!(
+                    "active_segment store_generation {} != manifest generation {}",
+                    active_segment.store_generation, generation,
+                ),
+            });
+        }
+        check_pack_descriptors_sorted_unique(&sealed_packs)?;
+        Ok(Self {
+            format_version,
+            repository_id,
+            repository_genesis_id,
+            generation,
+            previous_manifest_id,
+            active_segment,
+            sealed_packs,
+            created_at_ns,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+
+    pub fn repository_genesis_id(&self) -> &[u8; 32] {
+        &self.repository_genesis_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn previous_manifest_id(&self) -> Option<&StoreManifestId> {
+        self.previous_manifest_id.as_ref()
+    }
+
+    pub fn active_segment(&self) -> &SegmentDescriptor {
+        &self.active_segment
+    }
+
+    pub fn sealed_packs(&self) -> &[PackDescriptor] {
+        &self.sealed_packs
+    }
+
+    pub fn created_at_ns(&self) -> i64 {
+        self.created_at_ns
+    }
+
+    pub fn record_id(&self) -> Result<StoreManifestId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:StoreManifest:v1", &cbor)?;
+        Ok(StoreManifestId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for StoreManifestPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 8)?;
+        let fields = parse_fields(pairs, 8);
+
+        let active_segment = match fields.get(5) {
+            Some(Some(Value::Map(m))) => SegmentDescriptor::try_from(Value::Map(m.clone()))?,
+            Some(Some(_)) => {
+                return Err(PayloadError::FieldType {
+                    key: 5,
+                    expected: "SegmentDescriptor map",
+                });
+            }
+            Some(None) | None => return Err(PayloadError::MissingField(5)),
+        };
+
+        let sealed_packs = match fields.get(6).and_then(|f| *f) {
+            Some(Value::Array(items)) => {
+                let mut v = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Map(_) => v.push(PackDescriptor::try_from(item.clone())?),
+                        _ => {
+                            return Err(PayloadError::FieldType {
+                                key: 6,
+                                expected: "array of PackDescriptor maps",
+                            });
+                        }
+                    }
+                }
+                v
+            }
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 6,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(6)),
+        };
+
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            field_bytes_exact::<32>(&fields, 2)?,
+            field_uint(&fields, 3)?,
+            field_nullable_bytes_exact::<32>(&fields, 4)?.map(StoreManifestId::new),
+            active_segment,
+            sealed_packs,
+            field_int(&fields, 7)?,
+        )
+    }
+}
+
+impl From<&StoreManifestPayload> for Value {
+    fn from(p: &StoreManifestPayload) -> Self {
+        let prev_value = match &p.previous_manifest_id {
+            Some(id) => Value::Bytes(id.as_bytes().to_vec()),
+            None => Value::Null,
+        };
+        let pack_values: Vec<Value> = p.sealed_packs.iter().map(Value::from).collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (
+                Value::U64(2),
+                Value::Bytes(p.repository_genesis_id.to_vec()),
+            ),
+            (Value::U64(3), Value::U64(p.generation)),
+            (Value::U64(4), prev_value),
+            (Value::U64(5), Value::from(&p.active_segment)),
+            (Value::U64(6), Value::Array(pack_values)),
+            (Value::U64(7), Value::I64(p.created_at_ns)),
+        ])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8002,5 +8423,389 @@ mod tests {
     fn type_registry_unknown_code_returns_none() {
         assert_eq!(type_allowed_container(0), None);
         assert_eq!(type_allowed_container(99), None);
+    }
+
+    // -------------------------------------------------------------------
+    // StoreManifest tests (§11)
+    // -------------------------------------------------------------------
+
+    fn make_segment_descriptor() -> SegmentDescriptor {
+        SegmentDescriptor::new(
+            1,
+            [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ],
+            "objects/active/segment-1-00112233-4455-6677-8899-aabbccddeeff.seg".to_string(),
+        )
+        .unwrap()
+    }
+
+    fn make_pack_descriptor() -> PackDescriptor {
+        PackDescriptor::new(
+            [0x67, 0x90, 0xa3, 0x1c, 0x4a, 0x14, 0xe4, 0xe7, 0x9f, 0xae, 0xd7, 0x2d, 0x0c, 0x38, 0xb1, 0xcd, 0xb8, 0xff, 0x82, 0x34, 0xa3, 0x69, 0x8b, 0x49, 0x21, 0x64, 0xb3, 0xa6, 0x89, 0x16, 0xec, 0x26],
+            [0x30, 0x51, 0xb3, 0x21, 0xeb, 0x83, 0x54, 0xdc, 0x0f, 0x11, 0xde, 0x02, 0xa5, 0xb6, 0xee, 0x34, 0x39, 0xc0, 0xbd, 0x00, 0xcf, 0x0d, 0x71, 0x00, 0x07, 0x6e, 0x88, 0xb4, 0x22, 0x72, 0x7e, 0x77],
+            "objects/packs/pack-6790a31c4a14e4e79faed72d0c38b1cdb8ff8234a3698b492164b3a68916ec26.pack".to_string(),
+            "objects/packs/pack-6790a31c4a14e4e79faed72d0c38b1cdb8ff8234a3698b492164b3a68916ec26.idx".to_string(),
+            1,
+        )
+        .unwrap()
+    }
+
+    fn make_store_manifest() -> StoreManifestPayload {
+        let segment = make_segment_descriptor();
+        let pack = make_pack_descriptor();
+        StoreManifestPayload::new(
+            1,
+            [
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f,
+            ],
+            [0xaa; 32],
+            1,
+            None,
+            segment,
+            vec![pack],
+            0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn segment_descriptor_field_numbers() {
+        let d = make_segment_descriptor();
+        let value = Value::from(&d);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 2, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = SegmentDescriptor::try_from(value).unwrap();
+        assert_eq!(decoded, d);
+    }
+
+    #[test]
+    fn segment_descriptor_roundtrip() {
+        let d = make_segment_descriptor();
+        let value = Value::from(&d);
+        let decoded = SegmentDescriptor::try_from(value).unwrap();
+        assert_eq!(decoded, d);
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_not_a_map() {
+        let err = SegmentDescriptor::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x11; 16].to_vec())),
+            (Value::U64(2), Value::Text("path".to_string())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = SegmentDescriptor::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_absolute_path() {
+        let err = SegmentDescriptor::new(1, [0x11; 16], "/absolute/path".to_string()).unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn segment_descriptor_rejects_dotdot_path() {
+        let err =
+            SegmentDescriptor::new(1, [0x11; 16], "objects/../active/segment.seg".to_string())
+                .unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn pack_descriptor_field_numbers() {
+        let d = make_pack_descriptor();
+        let value = Value::from(&d);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 4, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = PackDescriptor::try_from(value).unwrap();
+        assert_eq!(decoded, d);
+    }
+
+    #[test]
+    fn pack_descriptor_roundtrip() {
+        let d = make_pack_descriptor();
+        let value = Value::from(&d);
+        let decoded = PackDescriptor::try_from(value).unwrap();
+        assert_eq!(decoded, d);
+    }
+
+    #[test]
+    fn pack_descriptor_rejects_not_a_map() {
+        let err = PackDescriptor::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn pack_descriptor_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::Bytes([0xaa; 32].to_vec())),
+            (Value::U64(1), Value::Bytes([0xbb; 32].to_vec())),
+            (Value::U64(2), Value::Text("p.pack".to_string())),
+            (Value::U64(3), Value::Text("p.idx".to_string())),
+            (Value::U64(4), Value::U64(1)),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = PackDescriptor::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn check_pack_descriptors_sorted_unique_accepts_sorted() {
+        let a = PackDescriptor::new(
+            [0x00; 32],
+            [0x00; 32],
+            "a.pack".to_string(),
+            "a.idx".to_string(),
+            1,
+        )
+        .unwrap();
+        let b = PackDescriptor::new(
+            [0x01; 32],
+            [0x01; 32],
+            "b.pack".to_string(),
+            "b.idx".to_string(),
+            1,
+        )
+        .unwrap();
+        assert!(check_pack_descriptors_sorted_unique(&[a, b]).is_ok());
+    }
+
+    #[test]
+    fn check_pack_descriptors_sorted_unique_rejects_unsorted() {
+        let a = PackDescriptor::new(
+            [0x01; 32],
+            [0x01; 32],
+            "a.pack".to_string(),
+            "a.idx".to_string(),
+            1,
+        )
+        .unwrap();
+        let b = PackDescriptor::new(
+            [0x00; 32],
+            [0x00; 32],
+            "b.pack".to_string(),
+            "b.idx".to_string(),
+            1,
+        )
+        .unwrap();
+        let err = check_pack_descriptors_sorted_unique(&[a, b]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
+    }
+
+    #[test]
+    fn check_pack_descriptors_sorted_unique_rejects_duplicate() {
+        let a = PackDescriptor::new(
+            [0x00; 32],
+            [0x00; 32],
+            "a.pack".to_string(),
+            "a.idx".to_string(),
+            1,
+        )
+        .unwrap();
+        let b = PackDescriptor::new(
+            [0x00; 32],
+            [0x00; 32],
+            "b.pack".to_string(),
+            "b.idx".to_string(),
+            1,
+        )
+        .unwrap();
+        let err = check_pack_descriptors_sorted_unique(&[a, b]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
+    }
+
+    #[test]
+    fn store_manifest_payload_field_numbers() {
+        let p = make_store_manifest();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 7, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = StoreManifestPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn store_manifest_payload_roundtrip() {
+        let p = make_store_manifest();
+        let value = Value::from(&p);
+        let decoded = StoreManifestPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_not_a_map() {
+        let err = StoreManifestPayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_unknown_field() {
+        let seg = make_segment_descriptor();
+        let seg_value = Value::from(&seg);
+        let pack = make_pack_descriptor();
+        let pack_value = Value::from(&pack);
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x11; 16].to_vec())),
+            (Value::U64(2), Value::Bytes([0xaa; 32].to_vec())),
+            (Value::U64(3), Value::U64(1)),
+            (Value::U64(4), Value::Null),
+            (Value::U64(5), seg_value),
+            (Value::U64(6), Value::Array(vec![pack_value])),
+            (Value::U64(7), Value::I64(0)),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = StoreManifestPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_bad_format_version() {
+        let err = StoreManifestPayload::new(
+            0,
+            [0x11; 16],
+            [0xaa; 32],
+            1,
+            None,
+            make_segment_descriptor(),
+            vec![],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_zero_generation() {
+        let err = StoreManifestPayload::new(
+            1,
+            [0x11; 16],
+            [0xaa; 32],
+            0,
+            None,
+            make_segment_descriptor(),
+            vec![],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_generation1_with_predecessor() {
+        let err = StoreManifestPayload::new(
+            1,
+            [0x11; 16],
+            [0xaa; 32],
+            1,
+            Some(StoreManifestId::new([0xbb; 32])),
+            make_segment_descriptor(),
+            vec![],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_generation2_without_predecessor() {
+        let mut seg = make_segment_descriptor();
+        seg.store_generation = 2;
+        let err = StoreManifestPayload::new(1, [0x11; 16], [0xaa; 32], 2, None, seg, vec![], 0)
+            .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_segment_generation_mismatch() {
+        let mut seg = make_segment_descriptor();
+        seg.store_generation = 2;
+        let err = StoreManifestPayload::new(1, [0x11; 16], [0xaa; 32], 1, None, seg, vec![], 0)
+            .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
+    }
+
+    #[test]
+    fn store_manifest_payload_rejects_duplicate_packs() {
+        let pack = make_pack_descriptor();
+        let err = StoreManifestPayload::new(
+            1,
+            [0x11; 16],
+            [0xaa; 32],
+            1,
+            None,
+            make_segment_descriptor(),
+            vec![pack.clone(), pack],
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
+    }
+
+    #[test]
+    fn store_manifest_payload_roundtrip_with_predecessor() {
+        let seg = SegmentDescriptor::new(
+            2,
+            [0x11; 16],
+            "objects/active/segment-2-11111111-2222-3333-4444-555555555555.seg".to_string(),
+        )
+        .unwrap();
+        let p = StoreManifestPayload::new(
+            1,
+            [0x11; 16],
+            [0xaa; 32],
+            2,
+            Some(StoreManifestId::new([0xbb; 32])),
+            seg,
+            vec![],
+            100,
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        let decoded = StoreManifestPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn store_manifest_record_id_is_deterministic() {
+        let p = make_store_manifest();
+        assert_eq!(p.record_id().unwrap(), p.record_id().unwrap());
     }
 }

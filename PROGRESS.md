@@ -1,5 +1,15 @@
 # Progress
 
+## F3.7 — Implement StoreManifest schemas
+
+- Status: GREEN
+- Commit: SELF
+- Completed: SegmentDescriptor (§11.1), PackDescriptor (§11.2), StoreManifestPayload (§11.3, unsigned record type) with `new()` constructors validating all FORMAT.md constraints: `validate_normalized_path()` (relative, no empty/dot/dotdot segments, no control chars), `check_pack_descriptors_sorted_unique()` (strictly increasing `pack_checksum`, no duplicates), generation≥1, generation-1/null-predecessor and generation>1/Some-predecessor structural rules, active_segment.store_generation must match manifest generation, format_version must be 1. `StoreManifestPayload::record_id()` returns `StoreManifestId` via `DomainHash("EternalCore:StoreManifest:v1", deterministic_cbor(payload))`. All structs use `TryFrom<Value>` decoding with `reject_unknown_keys()`, `From<&T> for Value` encoding with unsigned integer field keys, and public accessors.
+- Tests: 552 unit + 1 integration (`cargo test --workspace --all-features`); 25 F3.7 tests — segment-descriptor: field-numbers, roundtrip, rejects-not-a-map, unknown-field, absolute-path, dotdot-path. Pack-descriptor: field-numbers, roundtrip, rejects-not-a-map, unknown-field. check-packs: sorted, unsorted, duplicate. StoreManifest: field-numbers, roundtrip, roundtrip-with-predecessor, rejects-not-a-map, unknown-field, bad-format-version, zero-generation, generation1-with-predecessor, generation2-without-predecessor, segment-generation-mismatch, duplicate-packs, record-id-deterministic.
+- Evidence: All field-number tests confirm keys 0..N encode. CBOR roundtrip byte fidelity. Path validation rejects absolute, dotdot, and control-char paths. Generation structural rules enforced. Active segment generation mismatch rejected. Duplicate/unsorted pack descriptors rejected. Record ID deterministic.
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` — all pass
+- Follow-up: F3.8 Implement record registry
+
 ## F3.4 — Implement object payload schemas
 
 - Status: GREEN

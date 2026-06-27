@@ -207,21 +207,21 @@
         },
         {
           "id": "F3.5",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.9"
           ]
         },
         {
           "id": "F3.6",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.9"
           ]
         },
         {
           "id": "F3.7",
-          "status": "RED",
+          "status": "GREEN",
           "depends_on": [
             "F2.9"
           ]
