@@ -2,7 +2,7 @@
 
 ## ISSUE-0019 — F3.7 StoreManifestPayload loses RepositoryGenesisId type separation and accepts non-v1 segment paths
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: F3.7 audit 2026-06-27 (commit c88a53d)
 - Affected scope: crates/eternal-format/src/record.rs, docs/FORMAT.md §3.3, §11.1–§11.3, docs/PLAN.md F3.7
@@ -13,7 +13,7 @@
 - Violated invariant: FORMAT.md §3.3 — distinct ID types must remain distinct Rust types; FORMAT.md §11.1 — SegmentDescriptor relative_path must match v1 structure.
 - Required decision: Use RepositoryGenesisId in StoreManifestPayload constructor, fields, accessors, TryFrom, and From. Enforce SegmentDescriptor v1 path pattern. Update PROGRESS.md and plan-ledger.json only after tests pass.
 - Work stopped: F3.7, F3.8 and later tasks.
-- Resolution: pending
+- Resolution: RESOLVED by commit 5f83061 (RepositoryGenesisId newtype, v1 path pattern enforcement, 4 new tests, 556 tests + fmt + clippy clean). PROGRESS.md and plan-ledger.json updated.
 
 ## ISSUE-0018 — F3.6 audit regression: raw [u8; 32] types, missing-field defaulting, no tag constraints
 

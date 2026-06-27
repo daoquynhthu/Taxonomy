@@ -2,13 +2,12 @@
 
 ## F3.7 — Implement StoreManifest schemas
 
-- Status: RED (ISSUE-0019)
-- Commit: SELF
-- Completed: SegmentDescriptor (§11.1), PackDescriptor (§11.2), StoreManifestPayload (§11.3, unsigned record type) with `new()` constructors validating all FORMAT.md constraints. `StoreManifestPayload::record_id()` returns `StoreManifestId` via `DomainHash("EternalCore:StoreManifest:v1", deterministic_cbor(payload))`. All structs use `TryFrom<Value>` decoding with `reject_unknown_keys()`, `From<&T> for Value` encoding with unsigned integer field keys, and public accessors.
-- Remaining issues (ISSUE-0019): (1) BLOCKER — `repository_genesis_id` was raw `[u8; 32]`, fixed to `RepositoryGenesisId` newtype in same commit; (2) HIGH — v1 segment path pattern (`objects/active/segment-<generation>-<uuid>.seg`) now enforced via `SegmentDescriptor::new()` with generation/uuid cross-check; (3) PROGRESS.md and plan-ledger.json prematurely marked GREEN.
+- Status: GREEN
+- Commit: SELF (ISSUE-0019 fixes: 5f83061)
+- Completed: SegmentDescriptor (§11.1), PackDescriptor (§11.2), StoreManifestPayload (§11.3, unsigned record type) with `new()` constructors validating all FORMAT.md constraints. `StoreManifestPayload::record_id()` returns `StoreManifestId` via `DomainHash("EternalCore:StoreManifest:v1", deterministic_cbor(payload))`. All structs use `TryFrom<Value>` decoding with `reject_unknown_keys()`, `From<&T> for Value` encoding with unsigned integer field keys, and public accessors. Issues found in audit (ISSUE-0019) fixed: `repository_genesis_id` changed from raw `[u8; 32]` to `RepositoryGenesisId` newtype; v1 segment path pattern (`objects/active/segment-<generation>-<uuid>.seg`) enforced via `SegmentDescriptor::new()` with generation/uuid cross-check.
 - Tests: 556 unit + 1 integration (`cargo test --workspace --all-features`); 29 F3.7 tests — 25 original + 4 v1 path rejection tests (non-v1-prefix, wrong-generation, wrong-uuid, missing-.seg).
-- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` — all pass (ISSUE-0019 fixes applied)
-- Follow-up: F3.8 blocked until ISSUE-0019 is verified RESOLVED
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` — all pass
+- Follow-up: F3.8
 
 ## F3.4 — Implement object payload schemas
 
