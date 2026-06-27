@@ -1,5 +1,24 @@
 # Issues
 
+## ISSUE-0015 — F3.3 content payload schemas accept invalid descriptors and lose ChunkId type separation
+
+- Status: RESOLVED
+- Severity: BLOCKER
+- Discovered in: F3.3 audit 2026-06-26 (commit 5e1d8f1)
+- Affected scope: crates/eternal-format/src/record.rs, docs/FORMAT.md §7.4, §8.3, §9.9–§9.12, docs/PLAN.md F3.3
+- Evidence:
+  1. ChunkingDescriptor validates only algorithm/version but not fixed v1 sizes (minimum_size=1_048_576, average_size=4_194_304, maximum_size=8_388_608, normalization=2) or fixed gear_table_id. Caller can pass arbitrary values via `new()` or via decoder.
+  2. CodecDescriptor::try_from calls `reject_unknown_keys(pairs, 3)` which accepts algorithm=0 maps containing zstd-only fields (keys 1 and 2). The level/profile are silently set to None instead of being rejected.
+  3. EncodedChunkPayload and ContentManifestChunkEntry store chunk_id as raw `[u8; 32]` instead of `ChunkId`, violating the F3.3 Green requirement that "logical and physical identifiers remain distinct Rust types."
+  4. codec=none + encryption=null does not enforce `encoded_bytes.len() == plaintext_length`. FORMAT.md §9.9 specifies encoded_bytes equals raw chunk bytes in this case.
+  5. ContentManifestChunkEntry::new accepts plaintext_length=0 (zero-length chunks invalid per FORMAT.md §7.3). ContentManifestPayload::new sums chunk lengths with `u64::Iterator::sum()` (not checked_add; wraps in release).
+  6. CI clippy fails on Rust 1.96.0: `clippy::unnecessary_sort_by` on `sort_by(|a,b| ...)` at record.rs:1530.
+
+- Violated invariant: (1) Fixed chunking descriptor must be exactly fixed; (2) codec algorithm 0 schema must reject zstd-only fields; (3) logical ChunkId and physical EncodedChunkRecordId must be distinct Rust types per PLAN.md Green; (4) public no-codec/no-encryption encoded_bytes must equal plaintext_length; (5) chunk entries must reject zero length and total_size must use checked arithmetic; (6) clippy must pass.
+- Required fix: (1) ChunkingDescriptor::new() verify all fixed v1 parameters exactly; (2) CodecDescriptor::try_from reject algorithm=0 maps with extraneous keys by checking key count or using an algorithm-dependent `reject_unknown_keys`; (3) use `ChunkId` newtype for chunk_id fields; (4) enforce `encoded_bytes.len() == plaintext_length` when codec=none and encryption=null; (5) reject zero plaintext_length in ContentManifestChunkEntry; use `checked_add` for total_size summation; (6) change `sort_by` to `sort_by_key` at record.rs:1530.
+- Work stopped: F3.3, all downstream F3 tasks.
+- Resolution: Fixed in commit 91b0afb. All 6 items addressed: (1) ChunkingDescriptor::new() validates all fixed v1 parameters exactly; (2) CodecDescriptor::try_from reads algorithm first, then rejects keys based on algorithm; (3) EncodedChunkPayload and ContentManifestChunkEntry use ChunkId newtype; (4) codec=none + encryption=null enforces encoded_bytes.len() == plaintext_length; (5) ContentManifestChunkEntry rejects zero plaintext_length, ContentManifestPayload uses checked_add for total_size; (6) sort_by → sort_by_key for clippy 1.96.0. 421 tests pass, fmt + clippy clean.
+
 ## ISSUE-0013 — F2.8 fuzz targets incomplete: missing CI job, lossy UTF-8, partial decoder coverage, ledger corruption
 
 - Status: RESOLVED

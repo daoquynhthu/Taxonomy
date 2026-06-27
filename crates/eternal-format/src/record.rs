@@ -1,7 +1,8 @@
 use crate::canonical::{CanonicalDecoder, DecodeError, Value};
 use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
-    ContentManifestId, EncodedChunkRecordId, KeyId, KeySlotLabel, RecordId, RefPattern, Signature,
+    ChunkId, ContentManifestId, EncodedChunkRecordId, KeyId, KeySlotLabel, RecordId, RefPattern,
+    Signature,
 };
 use crate::limits::FormatLimits;
 
@@ -1527,7 +1528,7 @@ impl SignedRecord<Value> {
             Value::Map(pairs) => pairs,
             _ => return Err(SignedRecordError::PayloadNotAMap),
         };
-        pairs.sort_by(|a, b| a.0.reencode().cmp(&b.0.reencode()));
+        pairs.sort_by_key(|a| a.0.reencode());
         for w in pairs.windows(2) {
             if w[0].0.reencode() == w[1].0.reencode() {
                 return Err(SignedRecordError::DuplicatePayloadKey);
@@ -1790,9 +1791,13 @@ impl TryFrom<Value> for CodecDescriptor {
             Value::Map(pairs) => pairs,
             _ => return Err(PayloadError::NotAMap),
         };
-        reject_unknown_keys(pairs, 3)?;
+        // Read algorithm first to determine valid field set for this algorithm
+        let algorithm = field_uint(&parse_fields(pairs, 1), 0)?;
+        match algorithm {
+            0 => reject_unknown_keys(pairs, 1)?,
+            _ => reject_unknown_keys(pairs, 3)?,
+        };
         let fields = parse_fields(pairs, 3);
-        let algorithm = field_uint(&fields, 0)?;
         let level = match algorithm {
             0 => None,
             _ => Some(field_int(&fields, 1)?),
@@ -1957,6 +1962,30 @@ impl ChunkingDescriptor {
                 detail: format!("unknown chunking version {version}"),
             });
         }
+        if minimum_size != 1_048_576 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 2,
+                detail: format!("fixed minimum_size must be 1048576, got {minimum_size}"),
+            });
+        }
+        if average_size != 4_194_304 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: format!("fixed average_size must be 4194304, got {average_size}"),
+            });
+        }
+        if maximum_size != 8_388_608 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 4,
+                detail: format!("fixed maximum_size must be 8388608, got {maximum_size}"),
+            });
+        }
+        if normalization != 2 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 5,
+                detail: format!("fixed normalization must be 2, got {normalization}"),
+            });
+        }
         Ok(Self {
             algorithm,
             version,
@@ -2033,19 +2062,25 @@ impl From<&ChunkingDescriptor> for Value {
 /// A single chunk entry within a ContentManifestPayload.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContentManifestChunkEntry {
-    chunk_id: [u8; 32],
+    chunk_id: ChunkId,
     plaintext_length: u64,
 }
 
 impl ContentManifestChunkEntry {
-    pub fn new(chunk_id: [u8; 32], plaintext_length: u64) -> Self {
-        Self {
-            chunk_id,
-            plaintext_length,
+    pub fn new(chunk_id: [u8; 32], plaintext_length: u64) -> Result<Self, PayloadError> {
+        if plaintext_length == 0 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 1,
+                detail: "chunk plaintext_length must be nonzero".into(),
+            });
         }
+        Ok(Self {
+            chunk_id: ChunkId::new(chunk_id),
+            plaintext_length,
+        })
     }
 
-    pub fn chunk_id(&self) -> &[u8; 32] {
+    pub fn chunk_id(&self) -> &ChunkId {
         &self.chunk_id
     }
     pub fn plaintext_length(&self) -> u64 {
@@ -2062,17 +2097,17 @@ impl TryFrom<Value> for ContentManifestChunkEntry {
         };
         reject_unknown_keys(pairs, 2)?;
         let fields = parse_fields(pairs, 2);
-        Ok(Self::new(
+        Self::new(
             field_bytes_exact::<32>(&fields, 0)?,
             field_uint(&fields, 1)?,
-        ))
+        )
     }
 }
 
 impl From<&ContentManifestChunkEntry> for Value {
     fn from(e: &ContentManifestChunkEntry) -> Self {
         Value::Map(vec![
-            (Value::U64(0), Value::Bytes(e.chunk_id.to_vec())),
+            (Value::U64(0), Value::Bytes(e.chunk_id.as_bytes().to_vec())),
             (Value::U64(1), Value::U64(e.plaintext_length)),
         ])
     }
@@ -2086,7 +2121,7 @@ impl From<&ContentManifestChunkEntry> for Value {
 pub struct EncodedChunkPayload {
     format_version: u64,
     repository_id: [u8; 16],
-    chunk_id: [u8; 32],
+    chunk_id: ChunkId,
     plaintext_length: u64,
     codec: CodecDescriptor,
     encryption: Option<EncryptionDescriptor>,
@@ -2118,12 +2153,23 @@ impl EncodedChunkPayload {
         if encoded_bytes.is_empty() {
             return Err(PayloadError::EmptyArray { key: 6 });
         }
-        // For codec none and encryption null, encoded_bytes == raw chunk bytes
-        // (no structural constraint beyond non-empty)
+        // For codec none and encryption null, encoded_bytes must equal plaintext length
+        if codec.algorithm() == 0
+            && encryption.is_none()
+            && encoded_bytes.len() != plaintext_length as usize
+        {
+            return Err(PayloadError::UnsupportedValue {
+                key: 6,
+                detail: format!(
+                    "encoded_bytes length {} does not match plaintext_length {plaintext_length} for codec none + no encryption",
+                    encoded_bytes.len(),
+                ),
+            });
+        }
         Ok(Self {
             format_version,
             repository_id,
-            chunk_id,
+            chunk_id: ChunkId::new(chunk_id),
             plaintext_length,
             codec,
             encryption,
@@ -2137,7 +2183,7 @@ impl EncodedChunkPayload {
     pub fn repository_id(&self) -> &[u8; 16] {
         &self.repository_id
     }
-    pub fn chunk_id(&self) -> &[u8; 32] {
+    pub fn chunk_id(&self) -> &ChunkId {
         &self.chunk_id
     }
     pub fn plaintext_length(&self) -> u64 {
@@ -2215,7 +2261,7 @@ impl From<&EncodedChunkPayload> for Value {
         Value::Map(vec![
             (Value::U64(0), Value::U64(p.format_version)),
             (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
-            (Value::U64(2), Value::Bytes(p.chunk_id.to_vec())),
+            (Value::U64(2), Value::Bytes(p.chunk_id.as_bytes().to_vec())),
             (Value::U64(3), Value::U64(p.plaintext_length)),
             (Value::U64(4), Value::from(&p.codec)),
             (Value::U64(5), enc),
@@ -2237,7 +2283,7 @@ pub fn compute_content_root(
     let mut level: Vec<[u8; 32]> = Vec::with_capacity(chunks.len());
     for entry in chunks {
         let mut preimage = Vec::with_capacity(40);
-        preimage.extend_from_slice(&entry.chunk_id);
+        preimage.extend_from_slice(entry.chunk_id.as_bytes());
         preimage.extend_from_slice(&entry.plaintext_length.to_le_bytes());
         let leaf = domain_hash("EternalCore:ContentLeaf:v1", &preimage)?;
         level.push(leaf);
@@ -2287,7 +2333,13 @@ impl ContentManifestPayload {
                 detail: format!("unsupported format_version {format_version}"),
             });
         }
-        let computed_total: u64 = chunks.iter().map(|e| e.plaintext_length).sum();
+        let computed_total: u64 = chunks
+            .iter()
+            .try_fold(0u64, |acc, e| acc.checked_add(e.plaintext_length))
+            .ok_or(PayloadError::UnsupportedValue {
+                key: 3,
+                detail: "total_size overflow".into(),
+            })?;
         if total_size != computed_total {
             return Err(PayloadError::UnsupportedValue {
                 key: 3,
@@ -4450,7 +4502,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_chunk_entry() -> ContentManifestChunkEntry {
-        ContentManifestChunkEntry::new([0xCCu8; 32], 65536)
+        ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap()
     }
 
     #[test]
@@ -4622,7 +4674,7 @@ mod tests {
         let p = make_encoded_chunk();
         let rid = p.record_id().expect("record_id");
         // RecordId is 32 bytes, distinct from ChunkId in derivation
-        assert_ne!(rid.as_bytes(), p.chunk_id());
+        assert_ne!(rid.as_bytes(), p.chunk_id().as_bytes());
     }
 
     // -----------------------------------------------------------------------
@@ -4638,7 +4690,7 @@ mod tests {
 
     #[test]
     fn compute_content_root_single_leaf() {
-        let entry = ContentManifestChunkEntry::new([0xCCu8; 32], 65536);
+        let entry = ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap();
         let root = compute_content_root(&[entry]).unwrap();
         // Single leaf: leaf is the root
         let mut preimage = Vec::with_capacity(40);
@@ -4650,8 +4702,8 @@ mod tests {
 
     #[test]
     fn compute_content_root_two_leaves() {
-        let e1 = ContentManifestChunkEntry::new([0xCCu8; 32], 65536);
-        let e2 = ContentManifestChunkEntry::new([0xDDu8; 32], 131072);
+        let e1 = ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap();
+        let e2 = ContentManifestChunkEntry::new([0xDDu8; 32], 131072).unwrap();
         let root = compute_content_root(&[e1, e2]).unwrap();
         // Two leaves produce a parent node
         let mut preimage1 = Vec::with_capacity(40);
@@ -4680,8 +4732,8 @@ mod tests {
 
     fn make_manifest_with_chunks() -> ContentManifestPayload {
         let chunks = vec![
-            ContentManifestChunkEntry::new([0xCCu8; 32], 65536),
-            ContentManifestChunkEntry::new([0xDDu8; 32], 131072),
+            ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap(),
+            ContentManifestChunkEntry::new([0xDDu8; 32], 131072).unwrap(),
         ];
         let root = compute_content_root(&chunks).unwrap();
         ContentManifestPayload::new(
@@ -4734,7 +4786,7 @@ mod tests {
 
     #[test]
     fn content_manifest_rejects_bad_content_root() {
-        let chunks = vec![ContentManifestChunkEntry::new([0xCCu8; 32], 65536)];
+        let chunks = vec![ContentManifestChunkEntry::new([0xCCu8; 32], 65536).unwrap()];
         let err = ContentManifestPayload::new(
             1,
             [0x01u8; 16],
@@ -4783,5 +4835,89 @@ mod tests {
         let p = make_manifest_empty();
         let mid = p.record_id().expect("record_id");
         assert_eq!(mid.as_bytes().len(), 32);
+    }
+
+    // -----------------------------------------------------------------------
+    // ISSUE-0015 regression tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn codec_descriptor_algorithm0_rejects_zstd_fields_via_decoder() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::U64(0)),
+            (Value::U64(1), Value::I64(3)),
+            (Value::U64(2), Value::U64(1)),
+        ]);
+        let err = CodecDescriptor::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(1)));
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_wrong_minimum_size() {
+        let err =
+            ChunkingDescriptor::new(1, 1, 1, 4_194_304, 8_388_608, 2, [0xABu8; 32]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 2, .. }));
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_wrong_average_size() {
+        let err =
+            ChunkingDescriptor::new(1, 1, 1_048_576, 2, 8_388_608, 2, [0xABu8; 32]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_wrong_maximum_size() {
+        let err =
+            ChunkingDescriptor::new(1, 1, 1_048_576, 4_194_304, 3, 2, [0xABu8; 32]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn chunking_descriptor_rejects_wrong_normalization() {
+        let err = ChunkingDescriptor::new(1, 1, 1_048_576, 4_194_304, 8_388_608, 99, [0xABu8; 32])
+            .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
+    }
+
+    #[test]
+    fn chunk_entry_rejects_zero_plaintext_length() {
+        let err = ContentManifestChunkEntry::new([0xCCu8; 32], 0).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
+    }
+
+    #[test]
+    fn encoded_chunk_rejects_mismatched_encoded_bytes_codec_none_no_encryption() {
+        let err = EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            1024,
+            make_codec_none(),
+            None,
+            vec![0xAAu8; 512], // 512 != 1024
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 6, .. }));
+    }
+
+    #[test]
+    fn encoded_chunk_accepts_matching_encoded_bytes_codec_none_no_encryption() {
+        let p = EncodedChunkPayload::new(
+            1,
+            [0x01u8; 16],
+            [0x02u8; 32],
+            1024,
+            make_codec_none(),
+            None,
+            vec![0xAAu8; 1024],
+        )
+        .unwrap();
+        assert_eq!(p.plaintext_length(), 1024);
+        assert_eq!(p.encoded_bytes().len(), 1024);
+        // chunk_id is now ChunkId distinct from EncodedChunkRecordId
+        let _: &ChunkId = p.chunk_id();
+        let rid = p.record_id().unwrap();
+        assert_ne!(rid.as_bytes(), p.chunk_id().as_bytes());
     }
 }
