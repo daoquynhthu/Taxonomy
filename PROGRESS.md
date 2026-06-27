@@ -1,5 +1,15 @@
 # Progress
 
+## F3.4 — Implement object payload schemas
+
+- Status: GREEN
+- Commit: SELF
+- Completed: `Relation` (§9.13) and `ObjectVersionPayload` (§9.14, signed type 6) with `new()` constructors validating constraints per FORMAT.md, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with `reject_unknown_keys()`. `check_relations_sorted_unique()` enforces relation ordering by `(target_object_id, relation_type)`. Tombstone invariant: tombstone=true ⇒ content_manifest_id=None, tombstone=false ⇒ content_manifest_id=Some(ContentManifestId). Parent count limited to `ABSOLUTE_MAX_OBJECT_VERSION_PARENTS` (64) with duplicate rejection. Metadata field passes through any `Value` (CanonicalValue). `record_id()` produces `VersionId` via domain hash `"EternalCore:ObjectVersion:v1"`.
+- Tests: 444 unit + 1 integration (`cargo test --workspace --all-features`); 21 new F3.4 tests — Relation: roundtrip, field-number fixture, rejects unknown field, rejects not a map, rejects empty ObjectId, rejects empty RelationType; ObjectVersionPayload: roundtrip (normal, tombstone, multi-parent), field-number fixture (11 keys 0..10), rejects unknown field, rejects not a map, rejects bad format_version, rejects tombstone+content_manifest, rejects non-tombstone without content_manifest, rejects >64 parents, rejects duplicate parents, rejects unsorted relations, rejects duplicate relations, `record_id` distinct from ContentManifestId, accepts zero parents with arbitrary metadata.
+- Evidence: All field-number tests confirm sorted 0..N encodes. CBOR roundtrip byte fidelity. Tombstone consistency enforced at constructor. Parent and relation limits validated.
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
+- Follow-up: F3.5 Implement SMT payload and proof schemas
+
 ## F3.2 — Implement repository authority payload schemas
 
 - Status: GREEN
@@ -8,7 +18,7 @@
 - Tests: 366 unit + 1 integration (`cargo test --workspace --all-features`); 18 new regression tests — 7 field_int direct (U64 zero/positive/i64::max/overflow/I64 negative/reject type/reject missing), 2 encode canonicalization (unsorted keys sorted, duplicate keys rejected), 9 CBOR roundtrip across 3 additional payload types (PolicyRecordPayload, RepositoryGenesisPayload, KeyringRecordPayload at created_at_ns = 0/42/-1) — CBOR byte roundtrip (created_at_ns = 0, 42, -1), key_slot_rejects_missing_password_kdf_key, signed_record_encode_rejects_non_map_payload; wrapped_secret negative tests expanded to 0/47/49 bytes.
 - Evidence: field-number tests for all 8 types; sorted-unique rejection for all 6 array fields; KeyId mismatch rejected; 3 negative wrapped_secret length tests; CBOR roundtrip catches field_int U64→i64 conversion; encode rejects non-map and duplicate payload keys; KeySlot rejects missing optional field.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
-- Follow-up: F3.4 Implement object payload schemas (Relation, ObjectVersionPayload, tombstone field invariants)
+- Follow-up: F3.5 Implement SMT payload and proof schemas
 
 ## F3.3 — Implement content payload schemas
 

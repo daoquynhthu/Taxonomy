@@ -1,8 +1,8 @@
 use crate::canonical::{CanonicalDecoder, DecodeError, Value};
 use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
-    ChunkId, ContentManifestId, EncodedChunkRecordId, KeyId, KeySlotLabel, RecordId, RefPattern,
-    Signature,
+    ChunkId, ContentManifestId, DataType, EncodedChunkRecordId, KeyId, KeySlotLabel, ObjectId,
+    RecordId, RefPattern, RelationType, Signature, VersionId,
 };
 use crate::limits::FormatLimits;
 
@@ -2479,6 +2479,325 @@ impl From<&ContentManifestPayload> for Value {
             (Value::U64(5), Value::Bytes(p.content_root.to_vec())),
         ])
     }
+}
+
+// ---------------------------------------------------------------------------
+// Relation (FORMAT.md §9.13) — inline struct in ObjectVersionPayload
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Relation {
+    target_object_id: ObjectId,
+    relation_type: RelationType,
+}
+
+impl Relation {
+    pub fn new(target_object_id: ObjectId, relation_type: RelationType) -> Self {
+        Self {
+            target_object_id,
+            relation_type,
+        }
+    }
+
+    pub fn target_object_id(&self) -> &ObjectId {
+        &self.target_object_id
+    }
+
+    pub fn relation_type(&self) -> &RelationType {
+        &self.relation_type
+    }
+}
+
+impl TryFrom<Value> for Relation {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 2)?;
+        let fields = parse_fields(pairs, 2);
+        let target_str = field_text(&fields, 0)?;
+        let target = ObjectId::new(&target_str).map_err(|e| PayloadError::InvalidText {
+            key: 0,
+            detail: e.to_string(),
+        })?;
+        let rel_str = field_text(&fields, 1)?;
+        let rel = RelationType::new(&rel_str).map_err(|e| PayloadError::InvalidText {
+            key: 1,
+            detail: e.to_string(),
+        })?;
+        Ok(Self::new(target, rel))
+    }
+}
+
+impl From<&Relation> for Value {
+    fn from(r: &Relation) -> Self {
+        Value::Map(vec![
+            (
+                Value::U64(0),
+                Value::Text(r.target_object_id.as_str().to_string()),
+            ),
+            (
+                Value::U64(1),
+                Value::Text(r.relation_type.as_str().to_string()),
+            ),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ObjectVersionPayload (FORMAT.md §9.14 — record type 6, signed)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectVersionPayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    object_id: ObjectId,
+    content_manifest_id: Option<ContentManifestId>,
+    parents: Vec<VersionId>,
+    data_type: DataType,
+    metadata: Value,
+    relations: Vec<Relation>,
+    tombstone: bool,
+    created_at_ns: i64,
+    author_key_id: [u8; 32],
+}
+
+impl ObjectVersionPayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        object_id: ObjectId,
+        content_manifest_id: Option<ContentManifestId>,
+        parents: Vec<VersionId>,
+        data_type: DataType,
+        metadata: Value,
+        relations: Vec<Relation>,
+        tombstone: bool,
+        created_at_ns: i64,
+        author_key_id: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        // tombstone consistency: null content_manifest_id iff tombstone
+        match (&content_manifest_id, tombstone) {
+            (None, false) => {
+                return Err(PayloadError::UnsupportedValue {
+                    key: 3,
+                    detail: "non-tombstone version must have content_manifest_id".into(),
+                });
+            }
+            (Some(_), true) => {
+                return Err(PayloadError::UnsupportedValue {
+                    key: 8,
+                    detail: "tombstone version must not have content_manifest_id".into(),
+                });
+            }
+            _ => {}
+        }
+        // parent count limit (0..ABSOLUTE_MAX)
+        let max_parents = FormatLimits::ABSOLUTE_MAX_OBJECT_VERSION_PARENTS as usize;
+        if parents.len() > max_parents {
+            return Err(PayloadError::UnsupportedValue {
+                key: 4,
+                detail: format!(
+                    "parent count {} exceeds maximum {}",
+                    parents.len(),
+                    max_parents,
+                ),
+            });
+        }
+        // parent duplicates
+        {
+            let mut seen = std::collections::HashSet::new();
+            for p in &parents {
+                if !seen.insert(p.as_bytes()) {
+                    return Err(PayloadError::UnsortedOrDuplicate { key: 4 });
+                }
+            }
+        }
+        // relations sorted and unique by (target_object_id, relation_type)
+        check_relations_sorted_unique(&relations)?;
+        Ok(Self {
+            format_version,
+            repository_id,
+            object_id,
+            content_manifest_id,
+            parents,
+            data_type,
+            metadata,
+            relations,
+            tombstone,
+            created_at_ns,
+            author_key_id,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+    pub fn object_id(&self) -> &ObjectId {
+        &self.object_id
+    }
+    pub fn content_manifest_id(&self) -> Option<&ContentManifestId> {
+        self.content_manifest_id.as_ref()
+    }
+    pub fn parents(&self) -> &[VersionId] {
+        &self.parents
+    }
+    pub fn data_type(&self) -> &DataType {
+        &self.data_type
+    }
+    pub fn metadata(&self) -> &Value {
+        &self.metadata
+    }
+    pub fn relations(&self) -> &[Relation] {
+        &self.relations
+    }
+    pub fn tombstone(&self) -> bool {
+        self.tombstone
+    }
+    pub fn created_at_ns(&self) -> i64 {
+        self.created_at_ns
+    }
+    pub fn author_key_id(&self) -> &[u8; 32] {
+        &self.author_key_id
+    }
+
+    pub fn record_id(&self) -> Result<VersionId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:ObjectVersion:v1", &cbor)?;
+        Ok(VersionId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for ObjectVersionPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 11)?;
+        let fields = parse_fields(pairs, 11);
+        let object_str = field_text(&fields, 2)?;
+        let object_id = ObjectId::new(&object_str).map_err(|e| PayloadError::InvalidText {
+            key: 2,
+            detail: e.to_string(),
+        })?;
+        let content_manifest_id =
+            field_nullable_bytes_exact::<32>(&fields, 3)?.map(ContentManifestId::new);
+        let parents: Vec<VersionId> = {
+            let parent_bytes = bytes_array_field(&fields, 4)?;
+            parent_bytes
+                .into_iter()
+                .map(|b| {
+                    let actual = b.len();
+                    let arr: [u8; 32] = b.try_into().map_err(|_| PayloadError::WrongLength {
+                        key: 4,
+                        expected: 32,
+                        actual,
+                    })?;
+                    Ok(VersionId::new(arr))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let data_str = field_text(&fields, 5)?;
+        let data_type = DataType::new(&data_str).map_err(|e| PayloadError::InvalidText {
+            key: 5,
+            detail: e.to_string(),
+        })?;
+        let metadata = match fields.get(6).and_then(|f| *f) {
+            Some(v) => v.clone(),
+            None => return Err(PayloadError::MissingField(6)),
+        };
+        let relations = match fields.get(7).and_then(|f| *f) {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| Relation::try_from(v.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 7,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(7)),
+        };
+        let tombstone = match fields.get(8).and_then(|f| *f) {
+            Some(Value::Boolean(b)) => *b,
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 8,
+                    expected: "bool",
+                });
+            }
+            None => return Err(PayloadError::MissingField(8)),
+        };
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            object_id,
+            content_manifest_id,
+            parents,
+            data_type,
+            metadata,
+            relations,
+            tombstone,
+            field_int(&fields, 9)?,
+            field_bytes_exact::<32>(&fields, 10)?,
+        )
+    }
+}
+
+impl From<&ObjectVersionPayload> for Value {
+    fn from(p: &ObjectVersionPayload) -> Self {
+        let content_manifest: Value = match &p.content_manifest_id {
+            Some(id) => Value::Bytes(id.as_bytes().to_vec()),
+            None => Value::Null,
+        };
+        let parents: Vec<Value> = p
+            .parents
+            .iter()
+            .map(|id| Value::Bytes(id.as_bytes().to_vec()))
+            .collect();
+        let relations: Vec<Value> = p.relations.iter().map(Value::from).collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::Text(p.object_id.as_str().to_string())),
+            (Value::U64(3), content_manifest),
+            (Value::U64(4), Value::Array(parents)),
+            (Value::U64(5), Value::Text(p.data_type.as_str().to_string())),
+            (Value::U64(6), p.metadata.clone()),
+            (Value::U64(7), Value::Array(relations)),
+            (Value::U64(8), Value::Boolean(p.tombstone)),
+            (Value::U64(9), Value::I64(p.created_at_ns)),
+            (Value::U64(10), Value::Bytes(p.author_key_id.to_vec())),
+        ])
+    }
+}
+
+fn check_relations_sorted_unique(relations: &[Relation]) -> Result<(), PayloadError> {
+    for w in relations.windows(2) {
+        let a_key = (w[0].target_object_id.as_str(), w[0].relation_type.as_str());
+        let b_key = (w[1].target_object_id.as_str(), w[1].relation_type.as_str());
+        if a_key >= b_key {
+            return Err(PayloadError::UnsortedOrDuplicate { key: 7 });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4997,5 +5316,340 @@ mod tests {
         let _: &ChunkId = p.chunk_id();
         let rid = p.record_id().unwrap();
         assert_ne!(rid.as_bytes(), p.chunk_id().as_bytes());
+    }
+
+    // -----------------------------------------------------------------------
+    // F3.4 — Relation helpers
+    // -----------------------------------------------------------------------
+
+    fn make_relation(target: &str, rel: &str) -> Relation {
+        Relation::new(
+            ObjectId::new(target).unwrap(),
+            RelationType::new(rel).unwrap(),
+        )
+    }
+
+    #[test]
+    fn relation_roundtrip() {
+        let r = make_relation("a/b/c", "related");
+        let decoded = Relation::try_from(Value::from(&r)).unwrap();
+        assert_eq!(decoded, r);
+    }
+
+    #[test]
+    fn relation_field_numbers() {
+        let pairs = match Value::from(&make_relation("a/b/c", "related")) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 2);
+        for (i, pair) in pairs.iter().enumerate() {
+            assert_eq!(pair.0, Value::U64(i as u64), "field {i} key mismatch");
+        }
+    }
+
+    #[test]
+    fn relation_rejects_unknown_field() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Text("a".into())),
+            (Value::U64(1), Value::Text("b".into())),
+            (Value::U64(2), Value::U64(99)),
+        ]);
+        let err = Relation::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(2)));
+    }
+
+    #[test]
+    fn relation_rejects_not_a_map() {
+        let err = Relation::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn relation_rejects_empty_object_id() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Text("".into())),
+            (Value::U64(1), Value::Text("rel".into())),
+        ]);
+        let err = Relation::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 0, .. }));
+    }
+
+    #[test]
+    fn relation_rejects_empty_relation_type() {
+        let value = Value::Map(vec![
+            (Value::U64(0), Value::Text("a".into())),
+            (Value::U64(1), Value::Text("".into())),
+        ]);
+        let err = Relation::try_from(value).unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 1, .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // F3.4 — ObjectVersionPayload helpers
+    // -----------------------------------------------------------------------
+
+    fn make_object_version_payload(
+        tombstone: bool,
+        content_manifest: Option<bool>,
+    ) -> ObjectVersionPayload {
+        let cm_id = if content_manifest.unwrap_or(!tombstone) {
+            Some(ContentManifestId::new([0xAAu8; 32]))
+        } else {
+            None
+        };
+        ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("path/to/obj").unwrap(),
+            cm_id,
+            vec![VersionId::new([0xBBu8; 32])],
+            DataType::new("text/plain").unwrap(),
+            Value::U64(42),
+            vec![make_relation("a/b/c", "related")],
+            tombstone,
+            -1_234_567_890,
+            [0xCCu8; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn object_version_roundtrip_normal() {
+        let p = make_object_version_payload(false, None);
+        let decoded = ObjectVersionPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn object_version_roundtrip_tombstone() {
+        let p = make_object_version_payload(true, Some(false));
+        let decoded = ObjectVersionPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn object_version_roundtrip_with_many_parents() {
+        let parents: Vec<VersionId> = (0..5).map(|i| VersionId::new([i as u8; 32])).collect();
+        let p = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("path").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            parents,
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap();
+        let decoded = ObjectVersionPayload::try_from(Value::from(&p)).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn object_version_field_numbers() {
+        let pairs = match Value::from(&make_object_version_payload(false, None)) {
+            Value::Map(pairs) => pairs,
+            _ => panic!("not a map"),
+        };
+        assert_eq!(pairs.len(), 11);
+        for (i, pair) in pairs.iter().enumerate() {
+            assert_eq!(pair.0, Value::U64(i as u64), "field {i} key mismatch");
+        }
+    }
+
+    #[test]
+    fn object_version_rejects_unknown_field() {
+        let mut pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes(vec![0x11u8; 16])),
+            (Value::U64(2), Value::Text("obj".into())),
+            (Value::U64(3), Value::Bytes(vec![0xAAu8; 32])),
+            (Value::U64(4), Value::Array(vec![])),
+            (Value::U64(5), Value::Text("t".into())),
+            (Value::U64(6), Value::Null),
+            (Value::U64(7), Value::Array(vec![])),
+            (Value::U64(8), Value::Boolean(false)),
+            (Value::U64(9), Value::I64(0)),
+            (Value::U64(10), Value::Bytes(vec![0xCCu8; 32])),
+        ];
+        pairs.push((Value::U64(11), Value::U64(99)));
+        let err = ObjectVersionPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(11)));
+    }
+
+    #[test]
+    fn object_version_rejects_not_a_map() {
+        let err = ObjectVersionPayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn object_version_rejects_bad_format_version() {
+        let err = ObjectVersionPayload::new(
+            2,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![],
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn object_version_rejects_tombstone_with_content_manifest() {
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![],
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![],
+            true,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 8, .. }));
+    }
+
+    #[test]
+    fn object_version_rejects_non_tombstone_without_content_manifest() {
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            None,
+            vec![],
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
+    }
+
+    #[test]
+    fn object_version_rejects_too_many_parents() {
+        let parents: Vec<VersionId> = (0..65).map(|i| VersionId::new([i as u8; 32])).collect();
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            parents,
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn object_version_rejects_duplicate_parents() {
+        let dup_id = VersionId::new([0xBBu8; 32]);
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![dup_id, dup_id],
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 4 }));
+    }
+
+    #[test]
+    fn object_version_rejects_unsorted_relations() {
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![],
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![make_relation("z", "later"), make_relation("a", "first")],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 7 }));
+    }
+
+    #[test]
+    fn object_version_rejects_duplicate_relations() {
+        let err = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("obj").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![],
+            DataType::new("text").unwrap(),
+            Value::Null,
+            vec![make_relation("a", "x"), make_relation("a", "x")],
+            false,
+            0,
+            [0xCCu8; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 7 }));
+    }
+
+    #[test]
+    fn object_version_record_id_distinct_from_content_manifest() {
+        let p = make_object_version_payload(false, None);
+        let vid = p.record_id().unwrap();
+        // VersionId should differ from ContentManifestId even when using
+        // the same underlying content_manifest_id bytes
+        assert_ne!(vid.as_bytes(), p.content_manifest_id().unwrap().as_bytes());
+    }
+
+    #[test]
+    fn object_version_accepts_no_parents() {
+        let p = ObjectVersionPayload::new(
+            1,
+            [0x11u8; 16],
+            ObjectId::new("genesis").unwrap(),
+            Some(ContentManifestId::new([0xAAu8; 32])),
+            vec![],
+            DataType::new("text").unwrap(),
+            Value::Map(vec![(Value::Text("key".into()), Value::U64(1))]),
+            vec![],
+            false,
+            99_999,
+            [0xCCu8; 32],
+        )
+        .unwrap();
+        assert!(p.parents().is_empty());
+        assert_eq!(p.created_at_ns(), 99_999);
+        // metadata retains map type
+        assert!(matches!(p.metadata(), Value::Map(_)));
     }
 }
