@@ -4266,8 +4266,16 @@ impl From<&StoreManifestPayload> for Value {
 }
 
 // ---------------------------------------------------------------------------
-// Type registry (§21, record type → physical container mapping)
+// Type registry (§12, physical record type codes)
 // ---------------------------------------------------------------------------
+
+/// Class of a record type: signed (wrapped in SignedRecord envelope) or
+/// unsigned (raw payload recorded directly).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordClass {
+    Signed,
+    Unsigned,
+}
 
 /// Physical container where records of a given type may be stored.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4278,14 +4286,102 @@ pub enum PhysicalContainer {
     Any,
 }
 
+/// Metadata for a known physical record type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordTypeInfo {
+    pub type_code: u8,
+    pub name: &'static str,
+    pub class: RecordClass,
+    pub allowed_container: PhysicalContainer,
+}
+
+const RECORD_TYPES: &[RecordTypeInfo] = &[
+    RecordTypeInfo {
+        type_code: 1,
+        name: "RepositoryGenesis",
+        class: RecordClass::Signed,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 2,
+        name: "PolicyRecord",
+        class: RecordClass::Signed,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 3,
+        name: "KeyringRecord",
+        class: RecordClass::Signed,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 4,
+        name: "EncodedChunk",
+        class: RecordClass::Unsigned,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 5,
+        name: "ContentManifest",
+        class: RecordClass::Unsigned,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 6,
+        name: "ObjectVersion",
+        class: RecordClass::Signed,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 7,
+        name: "SMTLeaf",
+        class: RecordClass::Unsigned,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 8,
+        name: "SMTInternal",
+        class: RecordClass::Unsigned,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 9,
+        name: "RepoCommit",
+        class: RecordClass::Signed,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 10,
+        name: "RefUpdate",
+        class: RecordClass::Signed,
+        allowed_container: PhysicalContainer::Any,
+    },
+    RecordTypeInfo {
+        type_code: 11,
+        name: "TransactionEnd",
+        class: RecordClass::Unsigned,
+        allowed_container: PhysicalContainer::Segment,
+    },
+];
+
+/// Returns the [`RecordTypeInfo`] for a known record type code.
+///
+/// Returns `None` for codes 0 and 12..=255 (invalid in format v1).
+pub fn lookup_record_type(type_code: u8) -> Option<&'static RecordTypeInfo> {
+    RECORD_TYPES.iter().find(|info| info.type_code == type_code)
+}
+
 /// Returns the allowed physical container for a record type code.
 ///
-/// Returns `None` for unknown type codes (which will be resolved in F3.8).
+/// Returns `None` for unknown type codes (invalid in format v1).
 pub fn type_allowed_container(type_code: u64) -> Option<PhysicalContainer> {
-    match type_code {
-        11 => Some(PhysicalContainer::Segment),
-        _ => None,
-    }
+    let code = u8::try_from(type_code).ok()?;
+    lookup_record_type(code).map(|info| info.allowed_container)
+}
+
+/// Returns `true` if `type_code` is a known format-v1 record type (1..=11).
+pub fn is_known_record_type(type_code: u8) -> bool {
+    lookup_record_type(type_code).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -8463,18 +8559,104 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Type registry tests (§21)
+    // Type registry tests (§12)
     // -------------------------------------------------------------------
 
     #[test]
+    fn type_registry_all_codes_mapped() {
+        for code in 1..=11u8 {
+            let info = lookup_record_type(code)
+                .unwrap_or_else(|| panic!("code {code} should be known"));
+            assert_eq!(info.type_code, code, "type_code mismatch for code {code}");
+            assert!(
+                !info.name.is_empty(),
+                "name must not be empty for code {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn type_registry_invalid_codes_rejected() {
+        assert!(lookup_record_type(0).is_none(), "code 0 must be unknown");
+        for code in 12..=255u8 {
+            assert!(
+                lookup_record_type(code).is_none(),
+                "code {code} must be unknown"
+            );
+        }
+    }
+
+    #[test]
+    fn type_registry_signed_codes() {
+        let signed: Vec<u8> = RECORD_TYPES
+            .iter()
+            .filter(|t| matches!(t.class, RecordClass::Signed))
+            .map(|t| t.type_code)
+            .collect();
+        assert_eq!(signed, vec![1, 2, 3, 6, 9, 10]);
+    }
+
+    #[test]
+    fn type_registry_unsigned_codes() {
+        let unsigned: Vec<u8> = RECORD_TYPES
+            .iter()
+            .filter(|t| matches!(t.class, RecordClass::Unsigned))
+            .map(|t| t.type_code)
+            .collect();
+        assert_eq!(unsigned, vec![4, 5, 7, 8, 11]);
+    }
+
+    #[test]
+    fn type_registry_container_segment_only() {
+        let seg_only: Vec<u8> = RECORD_TYPES
+            .iter()
+            .filter(|t| matches!(t.allowed_container, PhysicalContainer::Segment))
+            .map(|t| t.type_code)
+            .collect();
+        assert_eq!(seg_only, vec![11]);
+    }
+
+    #[test]
+    fn type_registry_container_any() {
+        let any: Vec<u8> = RECORD_TYPES
+            .iter()
+            .filter(|t| matches!(t.allowed_container, PhysicalContainer::Any))
+            .map(|t| t.type_code)
+            .collect();
+        assert_eq!(any, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    }
+
+    #[test]
     fn type_registry_transaction_end_is_segment_only() {
-        assert_eq!(type_allowed_container(11), Some(PhysicalContainer::Segment),);
+        assert_eq!(type_allowed_container(11), Some(PhysicalContainer::Segment));
     }
 
     #[test]
     fn type_registry_unknown_code_returns_none() {
         assert_eq!(type_allowed_container(0), None);
         assert_eq!(type_allowed_container(99), None);
+    }
+
+    #[test]
+    fn type_registry_is_known() {
+        for code in 1..=11u8 {
+            assert!(is_known_record_type(code), "code {code} should be known");
+        }
+        assert!(!is_known_record_type(0), "code 0 must be unknown");
+        assert!(!is_known_record_type(12), "code 12 must be unknown");
+        assert!(!is_known_record_type(255), "code 255 must be unknown");
+    }
+
+    #[test]
+    fn type_registry_allowed_container_delegates_to_lookup() {
+        for code in 1..=11u64 {
+            let expected = lookup_record_type(code as u8).map(|i| i.allowed_container);
+            assert_eq!(
+                type_allowed_container(code),
+                expected,
+                "type_allowed_container({code}) must match lookup"
+            );
+        }
     }
 
     // -------------------------------------------------------------------

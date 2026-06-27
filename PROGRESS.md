@@ -1,13 +1,13 @@
 # Progress
 
-## F3.7 — Implement StoreManifest schemas
+## F3.8 — Implement record registry
 
 - Status: GREEN
-- Commit: SELF (ISSUE-0019 fixes: 5f83061)
-- Completed: SegmentDescriptor (§11.1), PackDescriptor (§11.2), StoreManifestPayload (§11.3, unsigned record type) with `new()` constructors validating all FORMAT.md constraints. `StoreManifestPayload::record_id()` returns `StoreManifestId` via `DomainHash("EternalCore:StoreManifest:v1", deterministic_cbor(payload))`. All structs use `TryFrom<Value>` decoding with `reject_unknown_keys()`, `From<&T> for Value` encoding with unsigned integer field keys, and public accessors. Issues found in audit (ISSUE-0019) fixed: `repository_genesis_id` changed from raw `[u8; 32]` to `RepositoryGenesisId` newtype; v1 segment path pattern (`objects/active/segment-<generation>-<uuid>.seg`) enforced via `SegmentDescriptor::new()` with generation/uuid cross-check.
-- Tests: 556 unit + 1 integration (`cargo test --workspace --all-features`); 29 F3.7 tests — 25 original + 4 v1 path rejection tests (non-v1-prefix, wrong-generation, wrong-uuid, missing-.seg).
+- Commit: SELF
+- Completed: `RecordClass` enum (Signed/Unsigned), `RecordTypeInfo` struct (`type_code`, `name`, `class`, `allowed_container`), static `RECORD_TYPES` table covering all 11 format-v1 codes (1..=11) per FORMAT.md §12 — RepositoryGenesis, PolicyRecord, KeyringRecord, EncodedChunk, ContentManifest, ObjectVersion, SMTLeaf, SMTInternal, RepoCommit, RefUpdate, TransactionEnd. `lookup_record_type(u8)` returns full metadata; `type_allowed_container(u64)` expanded to all codes; `is_known_record_type(u8)` validates code. Codes 0 and 12..=255 rejected as invalid. Signed codes: 1,2,3,6,9,10. Unsigned codes: 4,5,7,8,11. TransactionEnd is segment-only (code 11); all others allow segment+pack.
+- Tests: 564 unit + 1 integration (`cargo test --workspace --all-features`); 8 new F3.8 tests — `all_codes_mapped`, `invalid_codes_rejected` (codes 0..=255), `signed_codes`, `unsigned_codes`, `container_segment_only`, `container_any`, `is_known`, `allowed_container_delegates_to_lookup`.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` — all pass
-- Follow-up: F3.8
+- Follow-up: F3.9
 
 ## F3.4 — Implement object payload schemas
 
