@@ -313,6 +313,18 @@ hash_id!(
 );
 
 hash_id!(
+    /// SMT leaf record identifier (record type 7).
+    SmtLeafId,
+    "SmtLeafId"
+);
+
+hash_id!(
+    /// SMT internal node record identifier (record type 8).
+    SmtInternalId,
+    "SmtInternalId"
+);
+
+hash_id!(
     /// Key fingerprint identifier.
     KeyId,
     "KeyId"

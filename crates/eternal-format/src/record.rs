@@ -5,7 +5,8 @@ use crate::canonical::{
 use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
     ChunkId, ContentManifestId, DataType, EncodedChunkRecordId, KeyId, KeySlotLabel, ObjectId,
-    RecordId, RefPattern, RelationType, Signature, VersionId,
+    ObjectKey, RecordId, RefPattern, RelationType, Signature, SmtInternalId, SmtLeafId, SmtRoot,
+    VersionId,
 };
 use crate::limits::FormatLimits;
 
@@ -2827,6 +2828,322 @@ fn check_relations_sorted_unique(relations: &[Relation]) -> Result<(), PayloadEr
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SMTLeafPayload (FORMAT.md §9.15 — record type 7, unsigned semantic ID)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SMTLeafPayload {
+    format_version: u64,
+    object_key: ObjectKey,
+    version_id: VersionId,
+}
+
+impl SMTLeafPayload {
+    pub fn new(
+        format_version: u64,
+        object_key: ObjectKey,
+        version_id: VersionId,
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        Ok(Self {
+            format_version,
+            object_key,
+            version_id,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    pub fn version_id(&self) -> &VersionId {
+        &self.version_id
+    }
+
+    pub fn record_id(&self) -> Result<SmtLeafId, DomainHashError> {
+        let mut payload = Vec::with_capacity(64);
+        payload.extend_from_slice(self.object_key.as_bytes());
+        payload.extend_from_slice(self.version_id.as_bytes());
+        let hash = domain_hash("EternalCore:SMTLeaf:v1", &payload)?;
+        Ok(SmtLeafId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for SMTLeafPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 3)?;
+        let fields = parse_fields(pairs, 3);
+        let object_key_bytes = field_bytes_exact::<32>(&fields, 1)?;
+        let version_id_bytes = field_bytes_exact::<32>(&fields, 2)?;
+        Self::new(
+            field_uint(&fields, 0)?,
+            ObjectKey::new(object_key_bytes),
+            VersionId::new(version_id_bytes),
+        )
+    }
+}
+
+impl From<&SMTLeafPayload> for Value {
+    fn from(p: &SMTLeafPayload) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (
+                Value::U64(1),
+                Value::Bytes(p.object_key.as_bytes().to_vec()),
+            ),
+            (
+                Value::U64(2),
+                Value::Bytes(p.version_id.as_bytes().to_vec()),
+            ),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SMTInternalPayload (FORMAT.md §9.16 — record type 8, unsigned semantic ID)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SMTInternalPayload {
+    format_version: u64,
+    left_child: [u8; 32],
+    right_child: [u8; 32],
+}
+
+impl SMTInternalPayload {
+    pub fn new(
+        format_version: u64,
+        left_child: [u8; 32],
+        right_child: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        Ok(Self {
+            format_version,
+            left_child,
+            right_child,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn left_child(&self) -> &[u8; 32] {
+        &self.left_child
+    }
+
+    pub fn right_child(&self) -> &[u8; 32] {
+        &self.right_child
+    }
+
+    pub fn record_id(&self) -> Result<SmtInternalId, DomainHashError> {
+        let mut payload = Vec::with_capacity(64);
+        payload.extend_from_slice(&self.left_child);
+        payload.extend_from_slice(&self.right_child);
+        let hash = domain_hash("EternalCore:SMTInternal:v1", &payload)?;
+        Ok(SmtInternalId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for SMTInternalPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 3)?;
+        let fields = parse_fields(pairs, 3);
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<32>(&fields, 1)?,
+            field_bytes_exact::<32>(&fields, 2)?,
+        )
+    }
+}
+
+impl From<&SMTInternalPayload> for Value {
+    fn from(p: &SMTInternalPayload) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.left_child.to_vec())),
+            (Value::U64(2), Value::Bytes(p.right_child.to_vec())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SMTProof (FORMAT.md §10.6 — protocol object, not a stored record)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SMTProof {
+    format_version: u64,
+    root: SmtRoot,
+    object_key: ObjectKey,
+    version_id: Option<VersionId>,
+    siblings: Vec<[u8; 32]>,
+}
+
+impl SMTProof {
+    pub fn new(
+        format_version: u64,
+        root: SmtRoot,
+        object_key: ObjectKey,
+        version_id: Option<VersionId>,
+        siblings: Vec<[u8; 32]>,
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        if siblings.len() != 256 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 4,
+                detail: format!(
+                    "siblings count {} does not match required 256",
+                    siblings.len(),
+                ),
+            });
+        }
+        Ok(Self {
+            format_version,
+            root,
+            object_key,
+            version_id,
+            siblings,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn root(&self) -> &SmtRoot {
+        &self.root
+    }
+
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    pub fn version_id(&self) -> Option<&VersionId> {
+        self.version_id.as_ref()
+    }
+
+    pub fn siblings(&self) -> &[[u8; 32]] {
+        &self.siblings
+    }
+}
+
+impl TryFrom<Value> for SMTProof {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 5)?;
+        let fields = parse_fields(pairs, 5);
+        let root_bytes = field_bytes_exact::<32>(&fields, 1)?;
+        let object_key_bytes = field_bytes_exact::<32>(&fields, 2)?;
+        let version_id = field_nullable_bytes_exact::<32>(&fields, 3)?.map(VersionId::new);
+        let siblings = match fields.get(4).and_then(|f| *f) {
+            Some(Value::Array(items)) => {
+                if items.len() != 256 {
+                    return Err(PayloadError::UnsupportedValue {
+                        key: 4,
+                        detail: format!(
+                            "siblings count {} does not match required 256",
+                            items.len(),
+                        ),
+                    });
+                }
+                items
+                    .iter()
+                    .map(|v| {
+                        let b = match v {
+                            Value::Bytes(b) => b.clone(),
+                            _ => {
+                                return Err(PayloadError::FieldType {
+                                    key: 4,
+                                    expected: "array of bytes(32)",
+                                });
+                            }
+                        };
+                        let actual = b.len();
+                        <[u8; 32]>::try_from(b).map_err(|_| PayloadError::WrongLength {
+                            key: 4,
+                            expected: 32,
+                            actual,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 4,
+                    expected: "array",
+                });
+            }
+            None => return Err(PayloadError::MissingField(4)),
+        };
+        Self::new(
+            field_uint(&fields, 0)?,
+            SmtRoot::new(root_bytes),
+            ObjectKey::new(object_key_bytes),
+            version_id,
+            siblings,
+        )
+    }
+}
+
+impl From<&SMTProof> for Value {
+    fn from(p: &SMTProof) -> Self {
+        let version_value = match &p.version_id {
+            Some(id) => Value::Bytes(id.as_bytes().to_vec()),
+            None => Value::Null,
+        };
+        let sibling_values: Vec<Value> = p
+            .siblings
+            .iter()
+            .map(|b| Value::Bytes(b.to_vec()))
+            .collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.root.as_bytes().to_vec())),
+            (
+                Value::U64(2),
+                Value::Bytes(p.object_key.as_bytes().to_vec()),
+            ),
+            (Value::U64(3), version_value),
+            (Value::U64(4), Value::Array(sibling_values)),
+        ])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5819,5 +6136,337 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.parents().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // SMT leaf payload tests (§9.15)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn smt_leaf_field_numbers() {
+        let p = SMTLeafPayload::new(
+            1,
+            ObjectKey::new([0x01u8; 32]),
+            VersionId::new([0x02u8; 32]),
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 2, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        // Verify roundtrip
+        let decoded = SMTLeafPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_leaf_roundtrip() {
+        let p = SMTLeafPayload::new(
+            1,
+            ObjectKey::new([0xABu8; 32]),
+            VersionId::new([0xCDu8; 32]),
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        let decoded = SMTLeafPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_leaf_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x01u8; 32].to_vec())),
+            (Value::U64(2), Value::Bytes([0x02u8; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = SMTLeafPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn smt_leaf_rejects_not_a_map() {
+        let err = SMTLeafPayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn smt_leaf_rejects_bad_format_version() {
+        let err = SMTLeafPayload::new(
+            0,
+            ObjectKey::new([0x01u8; 32]),
+            VersionId::new([0x02u8; 32]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn smt_leaf_record_id() {
+        let p = SMTLeafPayload::new(
+            1,
+            ObjectKey::new([0xABu8; 32]),
+            VersionId::new([0xCDu8; 32]),
+        )
+        .unwrap();
+        let rid = p.record_id().unwrap();
+        // Check non-zero and deterministic
+        assert_ne!(rid.as_bytes(), &[0u8; 32]);
+        let rid2 = p.record_id().unwrap();
+        assert_eq!(rid, rid2);
+    }
+
+    // -----------------------------------------------------------------------
+    // SMT internal payload tests (§9.16)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn smt_internal_field_numbers() {
+        let p = SMTInternalPayload::new(1, [0x01u8; 32], [0x02u8; 32]).unwrap();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 2, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = SMTInternalPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_internal_roundtrip() {
+        let p = SMTInternalPayload::new(1, [0x11u8; 32], [0x22u8; 32]).unwrap();
+        let value = Value::from(&p);
+        let decoded = SMTInternalPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_internal_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x01u8; 32].to_vec())),
+            (Value::U64(2), Value::Bytes([0x02u8; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = SMTInternalPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn smt_internal_rejects_not_a_map() {
+        let err = SMTInternalPayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn smt_internal_rejects_bad_format_version() {
+        let err = SMTInternalPayload::new(0, [0x01u8; 32], [0x02u8; 32]).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn smt_internal_record_id() {
+        let p = SMTInternalPayload::new(1, [0xABu8; 32], [0xCDu8; 32]).unwrap();
+        let rid = p.record_id().unwrap();
+        assert_ne!(rid.as_bytes(), &[0u8; 32]);
+        let rid2 = p.record_id().unwrap();
+        assert_eq!(rid, rid2);
+    }
+
+    // -----------------------------------------------------------------------
+    // SMT proof tests (§10.6)
+    // -----------------------------------------------------------------------
+
+    fn make_256_siblings() -> Vec<[u8; 32]> {
+        (0..256).map(|i| [i as u8; 32]).collect()
+    }
+
+    #[test]
+    fn smt_proof_field_numbers() {
+        let siblings = make_256_siblings();
+        let p = SMTProof::new(
+            1,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            Some(VersionId::new([0x03u8; 32])),
+            siblings,
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 4, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = SMTProof::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_proof_roundtrip_with_version() {
+        let siblings = make_256_siblings();
+        let p = SMTProof::new(
+            1,
+            SmtRoot::new([0x11u8; 32]),
+            ObjectKey::new([0x22u8; 32]),
+            Some(VersionId::new([0x33u8; 32])),
+            siblings,
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        let decoded = SMTProof::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_proof_roundtrip_null_version() {
+        let siblings = make_256_siblings();
+        let p = SMTProof::new(
+            1,
+            SmtRoot::new([0x44u8; 32]),
+            ObjectKey::new([0x55u8; 32]),
+            None,
+            siblings,
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        let decoded = SMTProof::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn smt_proof_rejects_unknown_field() {
+        let siblings = make_256_siblings();
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x01u8; 32].to_vec())),
+            (Value::U64(2), Value::Bytes([0x02u8; 32].to_vec())),
+            (Value::U64(3), Value::Null),
+            (
+                Value::U64(4),
+                Value::Array(siblings.iter().map(|b| Value::Bytes(b.to_vec())).collect()),
+            ),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = SMTProof::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn smt_proof_rejects_not_a_map() {
+        let err = SMTProof::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn smt_proof_rejects_bad_format_version() {
+        let siblings = make_256_siblings();
+        let err = SMTProof::new(
+            0,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            None,
+            siblings,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn smt_proof_rejects_too_few_siblings() {
+        let err = SMTProof::new(
+            1,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            None,
+            vec![[0x00u8; 32]; 255],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn smt_proof_rejects_too_many_siblings() {
+        let err = SMTProof::new(
+            1,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            None,
+            vec![[0x00u8; 32]; 257],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn smt_proof_rejects_zero_siblings() {
+        let err = SMTProof::new(
+            1,
+            SmtRoot::new([0x01u8; 32]),
+            ObjectKey::new([0x02u8; 32]),
+            None,
+            vec![],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn smt_proof_decoder_rejects_wrong_sibling_count() {
+        let siblings: Vec<Value> = (0..255)
+            .map(|i| Value::Bytes([i as u8; 32].to_vec()))
+            .collect();
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x01u8; 32].to_vec())),
+            (Value::U64(2), Value::Bytes([0x02u8; 32].to_vec())),
+            (Value::U64(3), Value::Null),
+            (Value::U64(4), Value::Array(siblings)),
+        ];
+        let err = SMTProof::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 4, .. }));
+    }
+
+    #[test]
+    fn smt_proof_decoder_rejects_wrong_sibling_bytes_length() {
+        let siblings = vec![
+            Value::Bytes([0x01u8; 32].to_vec()),
+            Value::Bytes([0x02u8; 16].to_vec()), // 16 bytes, not 32
+        ];
+        let remaining = (2..256)
+            .map(|i| Value::Bytes([i as u8; 32].to_vec()))
+            .collect::<Vec<_>>();
+        let mut all_siblings = siblings;
+        all_siblings.extend(remaining);
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x01u8; 32].to_vec())),
+            (Value::U64(2), Value::Bytes([0x02u8; 32].to_vec())),
+            (Value::U64(3), Value::Null),
+            (Value::U64(4), Value::Array(all_siblings)),
+        ];
+        let err = SMTProof::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::WrongLength { key: 4, .. }));
     }
 }
