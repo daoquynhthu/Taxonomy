@@ -5,8 +5,8 @@ use crate::canonical::{
 use crate::domain::{DomainHashError, domain_hash};
 use crate::ids::{
     ChunkId, ContentManifestId, DataType, EncodedChunkRecordId, KeyId, KeySlotLabel, ObjectId,
-    ObjectKey, RecordId, RefPattern, RelationType, Signature, SmtInternalId, SmtLeafId, SmtRoot,
-    VersionId,
+    ObjectKey, RecordId, RefName, RefPattern, RefUpdateId, RelationType, RepoCommitId, Signature,
+    SmtInternalId, SmtLeafId, SmtRoot, TransactionEndId, VersionId,
 };
 use crate::limits::FormatLimits;
 
@@ -3161,6 +3161,581 @@ impl From<&SMTProof> for Value {
             (Value::U64(4), Value::Array(sibling_values)),
         ])
     }
+}
+
+// ---------------------------------------------------------------------------
+// ObjectChange (§9.17)
+// ---------------------------------------------------------------------------
+
+/// A single object change within a RepoCommit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectChange {
+    object_id: ObjectId,
+    old_version_id: Option<[u8; 32]>,
+    new_version_id: [u8; 32],
+}
+
+impl ObjectChange {
+    pub fn new(
+        object_id: ObjectId,
+        old_version_id: Option<[u8; 32]>,
+        new_version_id: [u8; 32],
+    ) -> Self {
+        Self {
+            object_id,
+            old_version_id,
+            new_version_id,
+        }
+    }
+
+    pub fn object_id(&self) -> &ObjectId {
+        &self.object_id
+    }
+
+    pub fn old_version_id(&self) -> Option<&[u8; 32]> {
+        self.old_version_id.as_ref()
+    }
+
+    pub fn new_version_id(&self) -> &[u8; 32] {
+        &self.new_version_id
+    }
+}
+
+impl TryFrom<Value> for ObjectChange {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 3)?;
+        let fields = parse_fields(pairs, 3);
+        Ok(Self {
+            object_id: {
+                let text = field_text(&fields, 0)?;
+                ObjectId::new(&text).map_err(|e| PayloadError::InvalidText {
+                    key: 0,
+                    detail: e.to_string(),
+                })?
+            },
+            old_version_id: field_nullable_bytes_exact::<32>(&fields, 1)?,
+            new_version_id: field_bytes_exact::<32>(&fields, 2)?,
+        })
+    }
+}
+
+impl From<&ObjectChange> for Value {
+    fn from(c: &ObjectChange) -> Self {
+        let old_value = match &c.old_version_id {
+            Some(id) => Value::Bytes(id.to_vec()),
+            None => Value::Null,
+        };
+        Value::Map(vec![
+            (Value::U64(0), Value::Text(c.object_id.as_str().to_string())),
+            (Value::U64(1), old_value),
+            (Value::U64(2), Value::Bytes(c.new_version_id.to_vec())),
+        ])
+    }
+}
+
+/// Validate that a slice of ObjectChange entries is sorted by ObjectId and has no duplicates.
+pub fn check_changes_sorted_unique(changes: &[ObjectChange]) -> Result<(), PayloadError> {
+    for window in changes.windows(2) {
+        let a = window[0].object_id.as_str().as_bytes();
+        let b = window[1].object_id.as_str().as_bytes();
+        if a >= b {
+            return Err(PayloadError::UnsortedOrDuplicate { key: 3 });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// RepoCommitPayload (§9.18, signed record type 9)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoCommitPayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    parents: Vec<[u8; 32]>,
+    changes: Vec<ObjectChange>,
+    object_state_root: [u8; 32],
+    policy_id: [u8; 32],
+    keyring_id: [u8; 32],
+    created_at_ns: i64,
+    message: String,
+    author_key_id: [u8; 32],
+}
+
+impl RepoCommitPayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        parents: Vec<[u8; 32]>,
+        changes: Vec<ObjectChange>,
+        object_state_root: [u8; 32],
+        policy_id: [u8; 32],
+        keyring_id: [u8; 32],
+        created_at_ns: i64,
+        message: String,
+        author_key_id: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        if parents.len() > 64 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 2,
+                detail: format!("parent count {} exceeds 64", parents.len()),
+            });
+        }
+        for window in parents.windows(2) {
+            if window[0] >= window[1] {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 2 });
+            }
+        }
+        check_changes_sorted_unique(&changes)?;
+        Ok(Self {
+            format_version,
+            repository_id,
+            parents,
+            changes,
+            object_state_root,
+            policy_id,
+            keyring_id,
+            created_at_ns,
+            message,
+            author_key_id,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+
+    pub fn parents(&self) -> &[[u8; 32]] {
+        &self.parents
+    }
+
+    pub fn changes(&self) -> &[ObjectChange] {
+        &self.changes
+    }
+
+    pub fn object_state_root(&self) -> &[u8; 32] {
+        &self.object_state_root
+    }
+
+    pub fn policy_id(&self) -> &[u8; 32] {
+        &self.policy_id
+    }
+
+    pub fn keyring_id(&self) -> &[u8; 32] {
+        &self.keyring_id
+    }
+
+    pub fn created_at_ns(&self) -> i64 {
+        self.created_at_ns
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn author_key_id(&self) -> &[u8; 32] {
+        &self.author_key_id
+    }
+
+    pub fn record_id(&self) -> Result<RepoCommitId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:RepoCommit:v1", &cbor)?;
+        Ok(RepoCommitId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for RepoCommitPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 10)?;
+        let fields = parse_fields(pairs, 10);
+
+        let parents = match fields.get(2).and_then(|f| *f) {
+            Some(Value::Array(items)) => {
+                let mut v = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Bytes(b) if b.len() == 32 => {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(b);
+                            v.push(arr);
+                        }
+                        _ => {
+                            return Err(PayloadError::FieldType {
+                                key: 2,
+                                expected: "array of bytes(32)",
+                            });
+                        }
+                    }
+                }
+                v
+            }
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 2,
+                    expected: "array",
+                });
+            }
+            None => vec![],
+        };
+
+        let changes = match fields.get(3).and_then(|f| *f) {
+            Some(Value::Array(items)) => {
+                let mut v = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Map(_) => {
+                            v.push(ObjectChange::try_from(item.clone())?);
+                        }
+                        _ => {
+                            return Err(PayloadError::FieldType {
+                                key: 3,
+                                expected: "array of ObjectChange maps",
+                            });
+                        }
+                    }
+                }
+                v
+            }
+            Some(_) => {
+                return Err(PayloadError::FieldType {
+                    key: 3,
+                    expected: "array",
+                });
+            }
+            None => vec![],
+        };
+
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            parents,
+            changes,
+            field_bytes_exact::<32>(&fields, 4)?,
+            field_bytes_exact::<32>(&fields, 5)?,
+            field_bytes_exact::<32>(&fields, 6)?,
+            field_int(&fields, 7)?,
+            field_text(&fields, 8)?,
+            field_bytes_exact::<32>(&fields, 9)?,
+        )
+    }
+}
+
+impl From<&RepoCommitPayload> for Value {
+    fn from(p: &RepoCommitPayload) -> Self {
+        let parent_values: Vec<Value> = p
+            .parents
+            .iter()
+            .map(|id| Value::Bytes(id.to_vec()))
+            .collect();
+        let change_values: Vec<Value> = p.changes.iter().map(Value::from).collect();
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::Array(parent_values)),
+            (Value::U64(3), Value::Array(change_values)),
+            (Value::U64(4), Value::Bytes(p.object_state_root.to_vec())),
+            (Value::U64(5), Value::Bytes(p.policy_id.to_vec())),
+            (Value::U64(6), Value::Bytes(p.keyring_id.to_vec())),
+            (Value::U64(7), Value::I64(p.created_at_ns)),
+            (Value::U64(8), Value::Text(p.message.clone())),
+            (Value::U64(9), Value::Bytes(p.author_key_id.to_vec())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefUpdatePayload (§9.19, signed record type 10)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefUpdatePayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    ref_name: RefName,
+    previous_ref_update_id: Option<[u8; 32]>,
+    target_commit_id: Option<[u8; 32]>,
+    sequence: u64,
+    created_at_ns: i64,
+    author_key_id: [u8; 32],
+}
+
+impl RefUpdatePayload {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        ref_name: RefName,
+        previous_ref_update_id: Option<[u8; 32]>,
+        target_commit_id: Option<[u8; 32]>,
+        sequence: u64,
+        created_at_ns: i64,
+        author_key_id: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        if sequence < 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 5,
+                detail: format!("sequence must be >= 1, got {sequence}"),
+            });
+        }
+        Ok(Self {
+            format_version,
+            repository_id,
+            ref_name,
+            previous_ref_update_id,
+            target_commit_id,
+            sequence,
+            created_at_ns,
+            author_key_id,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+
+    pub fn ref_name(&self) -> &RefName {
+        &self.ref_name
+    }
+
+    pub fn previous_ref_update_id(&self) -> Option<&[u8; 32]> {
+        self.previous_ref_update_id.as_ref()
+    }
+
+    pub fn target_commit_id(&self) -> Option<&[u8; 32]> {
+        self.target_commit_id.as_ref()
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    pub fn created_at_ns(&self) -> i64 {
+        self.created_at_ns
+    }
+
+    pub fn author_key_id(&self) -> &[u8; 32] {
+        &self.author_key_id
+    }
+
+    pub fn record_id(&self) -> Result<RefUpdateId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:RefUpdate:v1", &cbor)?;
+        Ok(RefUpdateId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for RefUpdatePayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 8)?;
+        let fields = parse_fields(pairs, 8);
+
+        let ref_name = {
+            let text = field_text(&fields, 2)?;
+            RefName::new(&text).map_err(|e| PayloadError::InvalidText {
+                key: 2,
+                detail: e.to_string(),
+            })?
+        };
+
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            ref_name,
+            field_nullable_bytes_exact::<32>(&fields, 3)?,
+            field_nullable_bytes_exact::<32>(&fields, 4)?,
+            field_uint(&fields, 5)?,
+            field_int(&fields, 6)?,
+            field_bytes_exact::<32>(&fields, 7)?,
+        )
+    }
+}
+
+impl From<&RefUpdatePayload> for Value {
+    fn from(p: &RefUpdatePayload) -> Self {
+        let prev_value = match &p.previous_ref_update_id {
+            Some(id) => Value::Bytes(id.to_vec()),
+            None => Value::Null,
+        };
+        let target_value = match &p.target_commit_id {
+            Some(id) => Value::Bytes(id.to_vec()),
+            None => Value::Null,
+        };
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::Text(p.ref_name.as_str().to_string())),
+            (Value::U64(3), prev_value),
+            (Value::U64(4), target_value),
+            (Value::U64(5), Value::U64(p.sequence)),
+            (Value::U64(6), Value::I64(p.created_at_ns)),
+            (Value::U64(7), Value::Bytes(p.author_key_id.to_vec())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TransactionEndPayload (§9.20, unsigned record type 11, segment-only)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransactionEndPayload {
+    format_version: u64,
+    repository_id: [u8; 16],
+    transaction_id: [u8; 16],
+    first_frame_offset: u64,
+    end_frame_offset: u64,
+    record_count: u64,
+    record_ids_root: [u8; 32],
+}
+
+impl TransactionEndPayload {
+    pub fn new(
+        format_version: u64,
+        repository_id: [u8; 16],
+        transaction_id: [u8; 16],
+        first_frame_offset: u64,
+        end_frame_offset: u64,
+        record_count: u64,
+        record_ids_root: [u8; 32],
+    ) -> Result<Self, PayloadError> {
+        if format_version != 1 {
+            return Err(PayloadError::UnsupportedValue {
+                key: 0,
+                detail: format!("unsupported format_version {format_version}"),
+            });
+        }
+        Ok(Self {
+            format_version,
+            repository_id,
+            transaction_id,
+            first_frame_offset,
+            end_frame_offset,
+            record_count,
+            record_ids_root,
+        })
+    }
+
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
+
+    pub fn repository_id(&self) -> &[u8; 16] {
+        &self.repository_id
+    }
+
+    pub fn transaction_id(&self) -> &[u8; 16] {
+        &self.transaction_id
+    }
+
+    pub fn first_frame_offset(&self) -> u64 {
+        self.first_frame_offset
+    }
+
+    pub fn end_frame_offset(&self) -> u64 {
+        self.end_frame_offset
+    }
+
+    pub fn record_count(&self) -> u64 {
+        self.record_count
+    }
+
+    pub fn record_ids_root(&self) -> &[u8; 32] {
+        &self.record_ids_root
+    }
+
+    pub fn record_id(&self) -> Result<TransactionEndId, DomainHashError> {
+        let value = Value::from(self);
+        let cbor = value.reencode();
+        let hash = domain_hash("EternalCore:TransactionEnd:v1", &cbor)?;
+        Ok(TransactionEndId::new(hash))
+    }
+}
+
+impl TryFrom<Value> for TransactionEndPayload {
+    type Error = PayloadError;
+    fn try_from(value: Value) -> Result<Self, PayloadError> {
+        let pairs = match &value {
+            Value::Map(pairs) => pairs,
+            _ => return Err(PayloadError::NotAMap),
+        };
+        reject_unknown_keys(pairs, 7)?;
+        let fields = parse_fields(pairs, 7);
+        Self::new(
+            field_uint(&fields, 0)?,
+            field_bytes_exact::<16>(&fields, 1)?,
+            field_bytes_exact::<16>(&fields, 2)?,
+            field_uint(&fields, 3)?,
+            field_uint(&fields, 4)?,
+            field_uint(&fields, 5)?,
+            field_bytes_exact::<32>(&fields, 6)?,
+        )
+    }
+}
+
+impl From<&TransactionEndPayload> for Value {
+    fn from(p: &TransactionEndPayload) -> Self {
+        Value::Map(vec![
+            (Value::U64(0), Value::U64(p.format_version)),
+            (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
+            (Value::U64(2), Value::Bytes(p.transaction_id.to_vec())),
+            (Value::U64(3), Value::U64(p.first_frame_offset)),
+            (Value::U64(4), Value::U64(p.end_frame_offset)),
+            (Value::U64(5), Value::U64(p.record_count)),
+            (Value::U64(6), Value::Bytes(p.record_ids_root.to_vec())),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// record_ids_root (§9.21)
+// ---------------------------------------------------------------------------
+
+/// Compute the root hash of a list of record IDs in physical append order.
+pub fn record_ids_root(record_ids: &[RecordId]) -> Result<[u8; 32], DomainHashError> {
+    let mut payload = Vec::with_capacity(record_ids.len() * 32);
+    for id in record_ids {
+        payload.extend_from_slice(id.as_bytes());
+    }
+    domain_hash("EternalCore:TransactionBatch:v1", &payload)
 }
 
 // ---------------------------------------------------------------------------
@@ -6704,5 +7279,507 @@ mod tests {
             }
             _ => panic!("SMTProof CBOR must be a map"),
         }
+    }
+
+    // -------------------------------------------------------------------
+    // ObjectChange tests (§9.17)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn object_change_field_numbers() {
+        let c = ObjectChange::new(ObjectId::new("obj").unwrap(), Some([0xaa; 32]), [0xbb; 32]);
+        let value = Value::from(&c);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 2, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = ObjectChange::try_from(value).unwrap();
+        assert_eq!(decoded, c);
+    }
+
+    #[test]
+    fn object_change_roundtrip() {
+        let c = ObjectChange::new(ObjectId::new("some/path").unwrap(), None, [0xcc; 32]);
+        let value = Value::from(&c);
+        let decoded = ObjectChange::try_from(value).unwrap();
+        assert_eq!(decoded, c);
+    }
+
+    #[test]
+    fn object_change_rejects_not_a_map() {
+        let err = ObjectChange::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn object_change_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::Text("obj".to_string())),
+            (Value::U64(1), Value::Null),
+            (Value::U64(2), Value::Bytes([0xbb; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = ObjectChange::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn object_change_rejects_invalid_object_id() {
+        let pairs = vec![
+            (Value::U64(0), Value::Text("".to_string())),
+            (Value::U64(1), Value::Null),
+            (Value::U64(2), Value::Bytes([0xbb; 32].to_vec())),
+        ];
+        let err = ObjectChange::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 0, .. }));
+    }
+
+    // -------------------------------------------------------------------
+    // RepoCommitPayload tests (§9.18)
+    // -------------------------------------------------------------------
+
+    fn make_repo_commit() -> RepoCommitPayload {
+        let change = ObjectChange::new(ObjectId::new("obj").unwrap(), None, [0xcc; 32]);
+        RepoCommitPayload::new(
+            1,
+            [0x11; 16],
+            vec![],
+            vec![change],
+            [0x22; 32],
+            [0x33; 32],
+            [0x44; 32],
+            42,
+            "test commit".to_string(),
+            [0x55; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn repo_commit_payload_field_numbers() {
+        let p = make_repo_commit();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 9, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = RepoCommitPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn repo_commit_payload_roundtrip() {
+        let p = make_repo_commit();
+        let value = Value::from(&p);
+        let decoded = RepoCommitPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn repo_commit_payload_roundtrip_with_parents() {
+        let change = ObjectChange::new(ObjectId::new("obj").unwrap(), None, [0xcc; 32]);
+        let p = RepoCommitPayload::new(
+            1,
+            [0x11; 16],
+            vec![[0xaa; 32], [0xbb; 32]],
+            vec![change],
+            [0x22; 32],
+            [0x33; 32],
+            [0x44; 32],
+            42,
+            "merge commit".to_string(),
+            [0x55; 32],
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        let decoded = RepoCommitPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn repo_commit_payload_rejects_not_a_map() {
+        let err = RepoCommitPayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn repo_commit_payload_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x11; 16].to_vec())),
+            (Value::U64(2), Value::Array(vec![])),
+            (Value::U64(3), Value::Array(vec![])),
+            (Value::U64(4), Value::Bytes([0x22; 32].to_vec())),
+            (Value::U64(5), Value::Bytes([0x33; 32].to_vec())),
+            (Value::U64(6), Value::Bytes([0x44; 32].to_vec())),
+            (Value::U64(7), Value::I64(42)),
+            (Value::U64(8), Value::Text("msg".to_string())),
+            (Value::U64(9), Value::Bytes([0x55; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = RepoCommitPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn repo_commit_payload_rejects_bad_format_version() {
+        let err = RepoCommitPayload::new(
+            0,
+            [0x11; 16],
+            vec![],
+            vec![],
+            [0x22; 32],
+            [0x33; 32],
+            [0x44; 32],
+            0,
+            "bad version".to_string(),
+            [0x55; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn repo_commit_payload_rejects_too_many_parents() {
+        let parents = vec![[0x00; 32]; 65];
+        let change = ObjectChange::new(ObjectId::new("obj").unwrap(), None, [0xcc; 32]);
+        let err = RepoCommitPayload::new(
+            1,
+            [0x11; 16],
+            parents,
+            vec![change],
+            [0x22; 32],
+            [0x33; 32],
+            [0x44; 32],
+            0,
+            "too many parents".to_string(),
+            [0x55; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 2, .. }));
+    }
+
+    #[test]
+    fn repo_commit_payload_rejects_unsorted_parents() {
+        let parents = vec![[0xbb; 32], [0xaa; 32]];
+        let change = ObjectChange::new(ObjectId::new("obj").unwrap(), None, [0xcc; 32]);
+        let err = RepoCommitPayload::new(
+            1,
+            [0x11; 16],
+            parents,
+            vec![change],
+            [0x22; 32],
+            [0x33; 32],
+            [0x44; 32],
+            0,
+            "unsorted parents".to_string(),
+            [0x55; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 2 }));
+    }
+
+    #[test]
+    fn repo_commit_payload_rejects_unsorted_changes() {
+        let change_b = ObjectChange::new(ObjectId::new("b").unwrap(), None, [0xcc; 32]);
+        let change_a = ObjectChange::new(ObjectId::new("a").unwrap(), None, [0xdd; 32]);
+        let err = RepoCommitPayload::new(
+            1,
+            [0x11; 16],
+            vec![],
+            vec![change_b, change_a],
+            [0x22; 32],
+            [0x33; 32],
+            [0x44; 32],
+            0,
+            "unsorted changes".to_string(),
+            [0x55; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 3 }));
+    }
+
+    #[test]
+    fn repo_commit_record_id_is_deterministic() {
+        let p = make_repo_commit();
+        assert_eq!(p.record_id().unwrap(), p.record_id().unwrap());
+    }
+
+    // -------------------------------------------------------------------
+    // RefUpdatePayload tests (§9.19)
+    // -------------------------------------------------------------------
+
+    fn make_ref_update() -> RefUpdatePayload {
+        RefUpdatePayload::new(
+            1,
+            [0x11; 16],
+            RefName::new("refs/heads/main").unwrap(),
+            None,
+            Some([0xaa; 32]),
+            1,
+            99,
+            [0x55; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ref_update_payload_field_numbers() {
+        let p = make_ref_update();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 7, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = RefUpdatePayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn ref_update_payload_roundtrip() {
+        let p = make_ref_update();
+        let value = Value::from(&p);
+        let decoded = RefUpdatePayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn ref_update_payload_roundtrip_tag_deletion() {
+        // A tag deletion: null target_commit_id
+        let p = RefUpdatePayload::new(
+            1,
+            [0x11; 16],
+            RefName::new("refs/tags/v1.0").unwrap(),
+            None,
+            None,
+            1,
+            99,
+            [0x55; 32],
+        )
+        .unwrap();
+        let value = Value::from(&p);
+        // Verify target_commit_id is encoded as null
+        match &value {
+            Value::Map(pairs) => {
+                for (k, v) in pairs {
+                    if let Value::U64(4) = k {
+                        assert_eq!(v, &Value::Null, "deletion target must be null");
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = RefUpdatePayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+        assert!(decoded.target_commit_id().is_none());
+    }
+
+    #[test]
+    fn ref_update_payload_rejects_not_a_map() {
+        let err = RefUpdatePayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn ref_update_payload_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x11; 16].to_vec())),
+            (Value::U64(2), Value::Text("refs/heads/main".to_string())),
+            (Value::U64(3), Value::Null),
+            (Value::U64(4), Value::Bytes([0xaa; 32].to_vec())),
+            (Value::U64(5), Value::U64(1)),
+            (Value::U64(6), Value::I64(99)),
+            (Value::U64(7), Value::Bytes([0x55; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = RefUpdatePayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn ref_update_payload_rejects_bad_format_version() {
+        let err = RefUpdatePayload::new(
+            0,
+            [0x11; 16],
+            RefName::new("refs/heads/main").unwrap(),
+            None,
+            Some([0xaa; 32]),
+            1,
+            0,
+            [0x55; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn ref_update_payload_rejects_zero_sequence() {
+        let err = RefUpdatePayload::new(
+            1,
+            [0x11; 16],
+            RefName::new("refs/heads/main").unwrap(),
+            None,
+            Some([0xaa; 32]),
+            0,
+            0,
+            [0x55; 32],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 5, .. }));
+    }
+
+    #[test]
+    fn ref_update_payload_rejects_invalid_ref_name() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x11; 16].to_vec())),
+            (Value::U64(2), Value::Text("".to_string())),
+            (Value::U64(3), Value::Null),
+            (Value::U64(4), Value::Bytes([0xaa; 32].to_vec())),
+            (Value::U64(5), Value::U64(1)),
+            (Value::U64(6), Value::I64(99)),
+            (Value::U64(7), Value::Bytes([0x55; 32].to_vec())),
+        ];
+        let err = RefUpdatePayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::InvalidText { key: 2, .. }));
+    }
+
+    #[test]
+    fn ref_update_record_id_is_deterministic() {
+        let p = make_ref_update();
+        assert_eq!(p.record_id().unwrap(), p.record_id().unwrap());
+    }
+
+    // -------------------------------------------------------------------
+    // TransactionEndPayload tests (§9.20)
+    // -------------------------------------------------------------------
+
+    fn make_transaction_end() -> TransactionEndPayload {
+        TransactionEndPayload::new(1, [0x11; 16], [0x22; 16], 0, 1000, 5, [0x99; 32]).unwrap()
+    }
+
+    #[test]
+    fn transaction_end_payload_field_numbers() {
+        let p = make_transaction_end();
+        let value = Value::from(&p);
+        match &value {
+            Value::Map(pairs) => {
+                for (k, _) in pairs {
+                    match k {
+                        Value::U64(n) => assert!(*n <= 6, "unexpected key {n}"),
+                        _ => panic!("non-uint key"),
+                    }
+                }
+            }
+            _ => panic!("not a map"),
+        }
+        let decoded = TransactionEndPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn transaction_end_payload_roundtrip() {
+        let p = make_transaction_end();
+        let value = Value::from(&p);
+        let decoded = TransactionEndPayload::try_from(value).unwrap();
+        assert_eq!(decoded, p);
+    }
+
+    #[test]
+    fn transaction_end_payload_rejects_not_a_map() {
+        let err = TransactionEndPayload::try_from(Value::U64(0)).unwrap_err();
+        assert!(matches!(err, PayloadError::NotAMap));
+    }
+
+    #[test]
+    fn transaction_end_payload_rejects_bad_format_version() {
+        let err = TransactionEndPayload::new(0, [0x11; 16], [0x22; 16], 0, 1000, 5, [0x99; 32])
+            .unwrap_err();
+        assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
+    }
+
+    #[test]
+    fn transaction_end_payload_rejects_unknown_field() {
+        let pairs = vec![
+            (Value::U64(0), Value::U64(1)),
+            (Value::U64(1), Value::Bytes([0x11; 16].to_vec())),
+            (Value::U64(2), Value::Bytes([0x22; 16].to_vec())),
+            (Value::U64(3), Value::U64(0)),
+            (Value::U64(4), Value::U64(1000)),
+            (Value::U64(5), Value::U64(5)),
+            (Value::U64(6), Value::Bytes([0x99; 32].to_vec())),
+            (Value::U64(99), Value::U64(0)),
+        ];
+        let err = TransactionEndPayload::try_from(Value::Map(pairs)).unwrap_err();
+        assert!(matches!(err, PayloadError::UnknownField(99)));
+    }
+
+    #[test]
+    fn transaction_end_record_id_is_deterministic() {
+        let p = make_transaction_end();
+        assert_eq!(p.record_id().unwrap(), p.record_id().unwrap());
+    }
+
+    // -------------------------------------------------------------------
+    // record_ids_root tests (§9.21)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn record_ids_root_empty() {
+        let root = record_ids_root(&[]).unwrap();
+        let expected = domain_hash("EternalCore:TransactionBatch:v1", &[]).unwrap();
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn record_ids_root_one() {
+        let id = RecordId::new([0xaa; 32]);
+        let root = record_ids_root(&[id]).unwrap();
+        let expected = domain_hash("EternalCore:TransactionBatch:v1", &[0xaa; 32]).unwrap();
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn record_ids_root_two() {
+        let id_a = RecordId::new([0xaa; 32]);
+        let id_b = RecordId::new([0xbb; 32]);
+        let mut concat = Vec::with_capacity(64);
+        concat.extend_from_slice(&[0xaa; 32]);
+        concat.extend_from_slice(&[0xbb; 32]);
+        let root = record_ids_root(&[id_a, id_b]).unwrap();
+        let expected = domain_hash("EternalCore:TransactionBatch:v1", &concat).unwrap();
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn record_ids_root_deterministic() {
+        let id_a = RecordId::new([0xaa; 32]);
+        let id_b = RecordId::new([0xbb; 32]);
+        assert_eq!(
+            record_ids_root(&[id_a, id_b]).unwrap(),
+            record_ids_root(&[id_a, id_b]).unwrap(),
+        );
     }
 }

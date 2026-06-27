@@ -13,6 +13,16 @@
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
 - Follow-up: F3.5
 
+## F3.6 — Implement state and ref payload schemas
+
+- Status: GREEN
+- Commit: SELF
+- Completed: `ObjectChange` (§9.17) with sorted-unique ObjectId check via `check_changes_sorted_unique()`. `RepoCommitPayload` (§9.18, signed type 9) with parent count ≤64, sorted parents, sorted-unique changes, CBOR-based `record_id()`. `RefUpdatePayload` (§9.19, signed type 10) with sequence ≥1, nullable target/deletion representation, CBOR-based `record_id()`. `TransactionEndPayload` (§9.20, unsigned type 11, segment-only) with CBOR-based `record_id()`. `record_ids_root()` (§9.21) via `DomainHash("EternalCore:TransactionBatch:v1", concat_record_ids)`. All structs have `TryFrom<Value>` decoding with `reject_unknown_keys()`, `From<&T> for Value` encoding with unsigned integer field keys, and public accessors. New ID type `TransactionEndId` added to `ids.rs`.
+- Tests: 519 unit + 1 integration (`cargo test --workspace --all-features`); 34 F3.6 tests — ObjectChange: field-numbers, roundtrip, rejects-not-a-map, unknown-field, invalid-object-id. RepoCommitPayload: field-numbers, roundtrip, roundtrip-with-parents, rejects-not-a-map, unknown-field, bad-format-version, too-many-parents, unsorted-parents, unsorted-changes, record-id-deterministic. RefUpdatePayload: field-numbers, roundtrip, tag-deletion-null-target, rejects-not-a-map, unknown-field, bad-format-version, zero-sequence, invalid-ref-name, record-id-deterministic. TransactionEndPayload: field-numbers, roundtrip, rejects-not-a-map, bad-format-version, unknown-field, record-id-deterministic. record_ids_root: empty, one, two, deterministic.
+- Evidence: All field-number tests confirm keys 0..N encode. CBOR roundtrip byte fidelity. Deletion target encoded as null for RefUpdate with None target. RefUpdatePayload rejects sequence=0. Parents >64 and unsorted parents rejected. Unsorted ObjectChange entries rejected. Empty ref name rejected as InvalidText. Deterministic record_id passes for all three payload types. Empty/single/multi record_ids_root matches direct DomainHash.
+- Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
+- Follow-up: F3.7 Implement StoreManifest schemas
+
 ## F3.5 — Implement SMT payload and proof schemas
 
 - Status: GREEN

@@ -330,6 +330,12 @@ hash_id!(
     "KeyId"
 );
 
+hash_id!(
+    /// Transaction end payload identifier (record type 11).
+    TransactionEndId,
+    "TransactionEndId"
+);
+
 // ---------------------------------------------------------------------------
 // Signature and public keys
 // ---------------------------------------------------------------------------
