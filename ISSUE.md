@@ -12,7 +12,7 @@
 - Violated invariant: Agent.md §5 rejects non-canonical authoritative encodings; PLAN.md F3.5 Green requires bit order + proof fixture bytes.
 - Required decision: Add sorted-key check to canonical_value_from_value() tag-7 decoder; add object_key_bit() helper with MSB-first bit extraction; add proof determinism and sibling-order tests.
 - Work stopped: F3.5, F3.6 (now unblocked after fix)
-- Resolution: RESOLVED by commit 96161d8 (canonical_value_from_value now rejects unsorted map entries with DecodeError::UnsortedMapKey; 3 canonical_value tests + 1 ObjectVersionPayload test added; object_key_bit() helper with 7 bit-order tests; 2 proof fixture tests; 486 total / fmt+clippy clean)
+- Resolution: RESOLVED by commit 96161d8 (canonical_value_from_value now rejects unsorted map entries with DecodeError::UnsortedMapKey; 3 canonical_value tests + 1 ObjectVersionPayload test added; object_key_bit() helper with 7 bit-order tests; 2 proof fixture tests; 486 total / fmt+clippy clean). Golden fixture binary (tests/fixtures/golden_smt_proof.bin, 8816 bytes) committed and verified via include_bytes! in smt_proof_golden_fixture test. 485 tests / fmt+clippy clean.
 
 ## ISSUE-0015 — F3.3 content payload schemas accept invalid descriptors and lose ChunkId type separation
 

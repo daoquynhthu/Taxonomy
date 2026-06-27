@@ -6618,7 +6618,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn smt_proof_encoding_is_deterministic() {
+    fn smt_proof_golden_fixture() {
+        // Construct a known SMTProof with deterministic data,
+        // reencode to CBOR, and verify the exact bytes match a golden vector.
         let siblings: Vec<[u8; 32]> = (0..256).map(|i| [i as u8; 32]).collect();
         let proof = SMTProof::new(
             1,
@@ -6629,39 +6631,78 @@ mod tests {
         )
         .unwrap();
         let value = Value::from(&proof);
-        let bytes_a = value.reencode();
-        let bytes_b = value.reencode();
-        assert_eq!(bytes_a, bytes_b, "SMTProof CBOR must be deterministic");
-    }
+        let encoded = value.reencode();
 
-    #[test]
-    fn smt_proof_sibling_order_leaf_to_root() {
-        // Verify sibling 0 is at leaf depth (depth 255) and sibling 255 is
-        // at root depth (depth 0), consistent with leaf-to-root ordering.
-        let mut siblings: Vec<[u8; 32]> = Vec::with_capacity(256);
-        for i in 0..256 {
-            let mut bytes = [0u8; 32];
-            bytes[0] = i as u8;
-            siblings.push(bytes);
+        // 1. Determinism check
+        assert_eq!(
+            encoded,
+            value.reencode(),
+            "SMTProof CBOR must be deterministic"
+        );
+
+        // 2. Golden fixture: compare against known-good CBOR bytes
+        let golden = include_bytes!("../tests/fixtures/golden_smt_proof.bin");
+        assert_eq!(
+            encoded.as_slice(),
+            golden.as_slice(),
+            "SMTProof CBOR must match golden fixture"
+        );
+
+        // 3. Decode CBOR bytes back to Value and verify structural invariants
+        let mut dec = CanonicalDecoder::from_limits(&encoded, &FormatLimits::default());
+        let decoded = dec.decode().expect("valid CBOR");
+        match &decoded {
+            Value::Map(pairs) => {
+                // Must have 5 entries (keys 0..4)
+                assert_eq!(pairs.len(), 5, "SMTProof must have 5 map entries");
+                for (k, v) in pairs {
+                    match k {
+                        Value::U64(0) => assert_eq!(v, &Value::U64(1), "format_version must be 1"),
+                        Value::U64(4) => {
+                            match v {
+                                Value::Array(items) => {
+                                    assert_eq!(items.len(), 256, "siblings must have 256 entries");
+                                    // sibling 0 = leaf-depth (depth 255), sibling 255 = root-depth (depth 0)
+                                    assert_eq!(
+                                        items[0],
+                                        Value::Bytes(vec![0x00u8; 32]),
+                                        "sibling[0] must be [0x00; 32]"
+                                    );
+                                    assert_eq!(
+                                        items[255],
+                                        Value::Bytes(vec![0xFFu8; 32]),
+                                        "sibling[255] must be [0xFF; 32]"
+                                    );
+                                }
+                                _ => panic!("key 4 must be array"),
+                            }
+                        }
+                        Value::U64(1) => {
+                            assert_eq!(
+                                v,
+                                &Value::Bytes(vec![0x01u8; 32]),
+                                "root must be [0x01; 32]"
+                            )
+                        }
+                        Value::U64(2) => {
+                            assert_eq!(
+                                v,
+                                &Value::Bytes(vec![0x02u8; 32]),
+                                "object_key must be [0x02; 32]"
+                            )
+                        }
+                        Value::U64(3) => {
+                            assert_eq!(
+                                v,
+                                &Value::Bytes(vec![0x03u8; 32]),
+                                "version_id must be [0x03; 32]"
+                            )
+                        }
+                        _ => panic!("unexpected key {k:?}"),
+                    }
+                }
+            }
+            _ => panic!("SMTProof CBOR must be a map"),
         }
-        let proof = SMTProof::new(
-            1,
-            SmtRoot::new([0x01u8; 32]),
-            ObjectKey::new([0x02u8; 32]),
-            None,
-            siblings,
-        )
-        .unwrap();
-        // After roundtrip, sibling 0 and 255 must be preserved
-        assert_eq!(
-            proof.siblings()[0][0],
-            0,
-            "sibling 0 must correspond to depth 255 (leaf)"
-        );
-        assert_eq!(
-            proof.siblings()[255][0],
-            255,
-            "sibling 255 must correspond to depth 0 (root)"
-        );
     }
 }
