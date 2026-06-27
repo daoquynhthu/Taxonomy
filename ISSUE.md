@@ -14,7 +14,7 @@
 - Violated invariant: PLAN.md F3.8 Green — registry must encode RecordIdRule; non-frame files must be distinguishable from frame records.
 - Required decision: Add RecordIdRule enum (CborDomainHash, SMTLeafConcat, SMTInternalConcat); add RecordFileKind enum (FrameRecord, StandalonePayload); add NON_FRAME_RECORD_TYPES for StoreManifest; restore F3.7 PROGRESS entry.
 - Work stopped: F3.8, F3.9 and later tasks.
-- Resolution: RESOLVED by commit SELF (all 4 findings fixed: RecordIdRule + tags for types 1..=11, RecordFileKind, StoreManifest non-frame classification and tests, F3.7 PROGRESS entry restored. 571 tests / fmt + clippy clean.)
+- Resolution: RESOLVED by commit SELF (all findings fixed: RecordIdRule + tags for types 1..=11, RecordFileKind, NonFrameFileKind with StoreManifest/CURRENT/RefPointer classification, F3.7 PROGRESS entry restored. 572 tests / fmt + clippy clean.)
 
 ## ISSUE-0019 — F3.7 StoreManifestPayload loses RepositoryGenesisId type separation and accepts non-v1 segment paths
 

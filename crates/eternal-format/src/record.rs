@@ -4413,18 +4413,41 @@ const RECORD_TYPES: &[RecordTypeInfo] = &[
 /// Metadata for a known non-frame record payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NonFrameRecordTypeInfo {
-    pub name: &'static str,
+    pub kind: NonFrameFileKind,
     pub file_kind: RecordFileKind,
-    pub id_rule: RecordIdRule,
+    pub id_rule: Option<RecordIdRule>,
+}
+
+/// Kind of non-frame file that must not be interpreted as a frame record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NonFrameFileKind {
+    /// Standalone CBOR payload file: `manifests/store-<g>-<id>.cbor`.
+    StoreManifest,
+    /// Mutable pointer file: `.eternal/CURRENT` — stores a hex StoreManifestId.
+    CurrentPointer,
+    /// Mutable pointer file: `refs/heads/<name>`, `refs/tags/<name>`, etc. — stores a hex RefUpdateId.
+    RefPointer,
 }
 
 /// Non-frame record payloads that are stored as standalone files rather than
-/// as frames inside segments or packs (e.g., StoreManifest, pointer files).
-const NON_FRAME_RECORD_TYPES: &[NonFrameRecordTypeInfo] = &[NonFrameRecordTypeInfo {
-    name: "StoreManifest",
-    file_kind: RecordFileKind::StandalonePayload,
-    id_rule: RecordIdRule::CborDomainHash("EternalCore:StoreManifest:v1"),
-}];
+/// as frames inside segments or packs.
+const NON_FRAME_RECORD_TYPES: &[NonFrameRecordTypeInfo] = &[
+    NonFrameRecordTypeInfo {
+        kind: NonFrameFileKind::StoreManifest,
+        file_kind: RecordFileKind::StandalonePayload,
+        id_rule: Some(RecordIdRule::CborDomainHash("EternalCore:StoreManifest:v1")),
+    },
+    NonFrameRecordTypeInfo {
+        kind: NonFrameFileKind::CurrentPointer,
+        file_kind: RecordFileKind::StandalonePayload,
+        id_rule: None,
+    },
+    NonFrameRecordTypeInfo {
+        kind: NonFrameFileKind::RefPointer,
+        file_kind: RecordFileKind::StandalonePayload,
+        id_rule: None,
+    },
+];
 
 /// Returns the [`RecordTypeInfo`] for a known frame record type code.
 ///
@@ -4456,10 +4479,15 @@ pub fn record_file_kind(type_code: u8) -> Option<RecordFileKind> {
     lookup_record_type(type_code).map(|info| info.file_kind)
 }
 
-/// Returns `true` if `type_code` corresponds to a non-frame payload
-/// (e.g., StoreManifest) that must NOT be interpreted as a frame record.
-pub fn is_non_frame_record(name: &str) -> bool {
-    NON_FRAME_RECORD_TYPES.iter().any(|info| info.name == name)
+/// Returns `true` if `kind` corresponds to a non-frame payload that must NOT
+/// be interpreted as a frame record.
+pub fn is_non_frame_file(kind: NonFrameFileKind) -> bool {
+    NON_FRAME_RECORD_TYPES.iter().any(|info| info.kind == kind)
+}
+
+/// Returns the [`NonFrameRecordTypeInfo`] for a non-frame file kind.
+pub fn lookup_non_frame(kind: NonFrameFileKind) -> Option<&'static NonFrameRecordTypeInfo> {
+    NON_FRAME_RECORD_TYPES.iter().find(|info| info.kind == kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -8793,28 +8821,48 @@ mod tests {
     }
 
     #[test]
-    fn type_registry_store_manifest_is_not_a_frame_record() {
-        assert!(
-            lookup_record_type(12).is_none(),
-            "StoreManifest must not be a frame record type"
-        );
-        assert!(
-            is_non_frame_record("StoreManifest"),
-            "StoreManifest must be classified as non-frame"
+    fn type_registry_non_frame_files_not_in_frame_registry() {
+        let all_non_frame = [
+            NonFrameFileKind::StoreManifest,
+            NonFrameFileKind::CurrentPointer,
+            NonFrameFileKind::RefPointer,
+        ];
+        for kind in &all_non_frame {
+            assert!(
+                lookup_record_type(12).is_none(),
+                "no non-frame file should match a frame type code"
+            );
+            assert!(
+                is_non_frame_file(*kind),
+                "{kind:?} must be classified as non-frame"
+            );
+            let info = lookup_non_frame(*kind)
+                .unwrap_or_else(|| panic!("{kind:?} must have info"));
+            assert_eq!(info.kind, *kind);
+            assert_eq!(info.file_kind, RecordFileKind::StandalonePayload);
+        }
+    }
+
+    #[test]
+    fn type_registry_store_manifest_id_rule() {
+        let sm = lookup_non_frame(NonFrameFileKind::StoreManifest)
+            .expect("StoreManifest must be in NON_FRAME_RECORD_TYPES");
+        assert_eq!(
+            sm.id_rule,
+            Some(RecordIdRule::CborDomainHash("EternalCore:StoreManifest:v1"))
         );
     }
 
     #[test]
-    fn type_registry_non_frame_has_correct_id_rule() {
-        let sm = NON_FRAME_RECORD_TYPES
-            .iter()
-            .find(|t| t.name == "StoreManifest")
-            .expect("StoreManifest must be in NON_FRAME_RECORD_TYPES");
-        assert_eq!(sm.file_kind, RecordFileKind::StandalonePayload);
-        assert_eq!(
-            sm.id_rule,
-            RecordIdRule::CborDomainHash("EternalCore:StoreManifest:v1")
-        );
+    fn type_registry_pointer_files_have_no_id_rule() {
+        for kind in &[
+            NonFrameFileKind::CurrentPointer,
+            NonFrameFileKind::RefPointer,
+        ] {
+            let info = lookup_non_frame(*kind)
+                .unwrap_or_else(|| panic!("{kind:?} must be in NON_FRAME_RECORD_TYPES"));
+            assert!(info.id_rule.is_none(), "{kind:?} must have no id_rule");
+        }
     }
 
     // -------------------------------------------------------------------
