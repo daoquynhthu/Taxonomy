@@ -176,9 +176,31 @@ mod f3_9_tests {
         let bytes = fixture("ref-update-envelope-v1.bin");
         let env = SignedRecord::decode(&bytes, &FormatLimits::default())
             .expect("valid SignedRecord envelope");
-        assert_eq!(env.record_id().as_bytes().len(), 32);
-        assert_eq!(env.signer_key_id().as_bytes().len(), 32);
-        assert_eq!(env.signature().as_bytes().len(), 64);
+
+        // Verify golden field values from FORMAT.md §21.4 / format-v1.json
+        let expected_record_id =
+            hex_bytes("7dea7eee1b4158006eda482d51e7c70e80e35da194aff957736cf1492c60166d");
+        assert_eq!(
+            env.record_id().as_bytes().as_slice(),
+            expected_record_id.as_slice(),
+            "envelope record_id must match RefUpdateId §21.4"
+        );
+        let expected_signer_key_id =
+            hex_bytes("4b03e0e78b0994370a31bae8c31269f6b22f08f45c1f2952fa4002ae16cbd3a9");
+        assert_eq!(
+            env.signer_key_id().as_bytes().as_slice(),
+            expected_signer_key_id.as_slice(),
+            "envelope signer_key_id must match key_id from format-v1.json"
+        );
+        let expected_signature = hex_bytes(
+            "b834c21ac47a566b9193c906a43151beac6ea8318c7eb7fe04b2699fd6bc7d59dcb82a392a0a83c33308d049d7dc500be26bd95ce984ef56cdaed042b53fb40e",
+        );
+        assert_eq!(
+            env.signature().as_bytes().as_slice(),
+            expected_signature.as_slice(),
+            "envelope signature must match ref_sig from format-v1.json"
+        );
+
         let reencoded = env.encode(&FormatLimits::default()).expect("re-encode");
         assert_eq!(reencoded, bytes, "envelope re-encode identity");
     }
@@ -298,6 +320,13 @@ mod f3_9_tests {
         assert_eq!(
             trailer, expected,
             "pack checksum must match DomainHash per FORMAT.md §15"
+        );
+        // Verify against FORMAT.md §21.11 golden value
+        let golden = hex_bytes("6790a31c4a14e4e79faed72d0c38b1cdb8ff8234a3698b492164b3a68916ec26");
+        assert_eq!(
+            trailer,
+            golden.as_slice(),
+            "pack checksum must match FORMAT.md §21.11 golden value"
         );
     }
 
