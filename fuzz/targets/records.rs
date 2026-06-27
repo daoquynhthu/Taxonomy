@@ -53,53 +53,51 @@ fuzz_target!(|data: &[u8]| {
     let mut dec = CanonicalDecoder::from_limits(data, &limits);
     let Ok(value) = dec.decode() else { return };
 
-    // 3. Try every payload decoder over the same Value.
+    // 3. Try every payload decoder over this Value.
     //    Each call returns Err(...) when the bytes don't match the expected
     //    schema — that is the intended rejection path.
-    let map_value = |pairs: &[(Value, Value)]| Value::Map(pairs.to_vec());
-
-    match &value {
-        Value::Map(pairs) => {
-            let v = map_value(pairs);
-
-            // F3.2 — Repository authority payload schemas
-            let _ = PasswordKdfDescriptor::try_from(v.clone());
-            let _ = PublicKeyEntry::try_from(v.clone());
-            let _ = RefPermissionEntry::try_from(v.clone());
-            let _ = RepositoryGenesisPayload::try_from(v.clone());
-            let _ = PolicyRecordPayload::try_from(v.clone());
-            let _ = KeySlot::try_from(v.clone());
-            let _ = WrappedDek::try_from(v.clone());
-            let _ = KeyringRecordPayload::try_from(v.clone());
-
-            // F3.3 — Content payload schemas
-            let _ = CodecDescriptor::try_from(v.clone());
-            let _ = EncryptionDescriptor::try_from(v.clone());
-            let _ = ChunkingDescriptor::try_from(v.clone());
-            let _ = ContentManifestChunkEntry::try_from(v.clone());
-            let _ = EncodedChunkPayload::try_from(v.clone());
-            let _ = ContentManifestPayload::try_from(v.clone());
-
-            // F3.4 — Object payload schemas
-            let _ = Relation::try_from(v.clone());
-            let _ = ObjectVersionPayload::try_from(v.clone());
-
-            // F3.5 — SMT payload and proof schemas
-            let _ = SMTLeafPayload::try_from(v.clone());
-            let _ = SMTInternalPayload::try_from(v.clone());
-            let _ = SMTProof::try_from(v.clone());
-
-            // F3.6 — State and ref payload schemas
-            let _ = ObjectChange::try_from(v.clone());
-            let _ = RepoCommitPayload::try_from(v.clone());
-            let _ = RefUpdatePayload::try_from(v.clone());
-            let _ = TransactionEndPayload::try_from(v.clone());
-
-            // F3.7 — StoreManifest schemas
-            let _ = SegmentDescriptor::try_from(v.clone());
-            let _ = PackDescriptor::try_from(v.clone());
-            let _ = StoreManifestPayload::try_from(v);
-        }
-        _ => {}
-    }
+    //    Non-map inputs (array, bytes, text, int, null, bool) exercise the
+    //    decoder's NotAMap / field-type rejection paths.
+    invoke_all_decoders(value);
 });
+
+#[inline(never)]
+fn invoke_all_decoders(value: Value) {
+    // F3.2 — Repository authority payload schemas
+    let _ = PasswordKdfDescriptor::try_from(value.clone());
+    let _ = PublicKeyEntry::try_from(value.clone());
+    let _ = RefPermissionEntry::try_from(value.clone());
+    let _ = RepositoryGenesisPayload::try_from(value.clone());
+    let _ = PolicyRecordPayload::try_from(value.clone());
+    let _ = KeySlot::try_from(value.clone());
+    let _ = WrappedDek::try_from(value.clone());
+    let _ = KeyringRecordPayload::try_from(value.clone());
+
+    // F3.3 — Content payload schemas
+    let _ = CodecDescriptor::try_from(value.clone());
+    let _ = EncryptionDescriptor::try_from(value.clone());
+    let _ = ChunkingDescriptor::try_from(value.clone());
+    let _ = ContentManifestChunkEntry::try_from(value.clone());
+    let _ = EncodedChunkPayload::try_from(value.clone());
+    let _ = ContentManifestPayload::try_from(value.clone());
+
+    // F3.4 — Object payload schemas
+    let _ = Relation::try_from(value.clone());
+    let _ = ObjectVersionPayload::try_from(value.clone());
+
+    // F3.5 — SMT payload and proof schemas
+    let _ = SMTLeafPayload::try_from(value.clone());
+    let _ = SMTInternalPayload::try_from(value.clone());
+    let _ = SMTProof::try_from(value.clone());
+
+    // F3.6 — State and ref payload schemas
+    let _ = ObjectChange::try_from(value.clone());
+    let _ = RepoCommitPayload::try_from(value.clone());
+    let _ = RefUpdatePayload::try_from(value.clone());
+    let _ = TransactionEndPayload::try_from(value.clone());
+
+    // F3.7 — StoreManifest schemas
+    let _ = SegmentDescriptor::try_from(value.clone());
+    let _ = PackDescriptor::try_from(value.clone());
+    let _ = StoreManifestPayload::try_from(value);
+}

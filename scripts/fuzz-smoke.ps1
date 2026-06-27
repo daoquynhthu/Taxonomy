@@ -42,7 +42,7 @@ if ("$output" -match "nightly") {
     $nightlyAvailable = $true
 }
 if (-not $nightlyAvailable) {
-    Write-Host "[SKIP] nightly toolchain not installed — cannot build fuzz targets" -ForegroundColor Yellow
+    Write-Host "[FAIL] nightly toolchain not installed — cannot build fuzz targets" -ForegroundColor Red
     $report = @{
         skipped = $true
         reason = "nightly toolchain not installed"
@@ -50,13 +50,13 @@ if (-not $nightlyAvailable) {
     }
     $json = $report | ConvertTo-Json -Depth 5
     Set-Content -LiteralPath $outputPath -Value $json -Encoding UTF8
-    exit 0   # skip is not a failure
+    exit 1   # F3.10+ requires fuzz gate; fail closed
 }
 
 # ── Ensure cargo-fuzz ─────────────────────────────────────────────────────
 $cargoFuzzCheck = Get-Command "cargo-fuzz" -ErrorAction SilentlyContinue
 if (-not $cargoFuzzCheck) {
-    Write-Host "[SKIP] cargo-fuzz not installed — run 'cargo install cargo-fuzz'" -ForegroundColor Yellow
+    Write-Host "[FAIL] cargo-fuzz not installed — run 'cargo install cargo-fuzz'" -ForegroundColor Red
     $report = @{
         skipped = $true
         reason = "cargo-fuzz not installed"
@@ -64,7 +64,7 @@ if (-not $cargoFuzzCheck) {
     }
     $json = $report | ConvertTo-Json -Depth 5
     Set-Content -LiteralPath $outputPath -Value $json -Encoding UTF8
-    exit 0
+    exit 1   # F3.10+ requires fuzz gate; fail closed
 }
 
 # ── LLVM/ASan path detection (Windows) ────────────────────────────────────
@@ -184,6 +184,21 @@ if ($LASTEXITCODE -eq 0) {
 $results = @()
 $results += Run-FuzzTarget "cbor"
 $results += Run-FuzzTarget "names"
+
+# Seed records corpus from committed format-v1 fixtures (F3.10)
+$fixturesDir = Join-Path $root "tests/vectors/format-v1"
+$recordsCorpus = Join-Path $fuzzDir "corpus/records"
+if (-not (Test-Path -LiteralPath $recordsCorpus)) {
+    New-Item -ItemType Directory -Path $recordsCorpus -Force | Out-Null
+}
+Get-ChildItem -LiteralPath $fixturesDir -Include *.bin,*.cbor,*.pack,*.idx -Recurse | ForEach-Object {
+    $dst = Join-Path $recordsCorpus $_.Name
+    if (-not (Test-Path -LiteralPath $dst)) {
+        Copy-Item -LiteralPath $_.FullName -Destination $dst
+    }
+}
+Write-Host "records corpus seeded: $(@(Get-ChildItem -LiteralPath $recordsCorpus).Count) files" -ForegroundColor Cyan
+
 $results += Run-FuzzTarget "records"
 
 # ── Assemble report ──────────────────────────────────────────────────────

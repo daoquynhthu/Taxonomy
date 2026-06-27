@@ -3,9 +3,9 @@
 ## F3.10 — Fuzz all record decoders
 
 - Status: GREEN
-- Commit: SELF
-- Completed: Added `fuzz/targets/records.rs` fuzz target exercising `SignedRecord::decode()` + 25 `TryFrom<Value>` payload decoders (F3.2–F3.7) under `FormatLimits`. Seeded corpus with all format-v1 fixtures. 50000 runs, 52MB RSS, 0 crashes/timeouts/panics. Registered in `fuzz/Cargo.toml` and `scripts/fuzz-smoke.ps1`.
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `scripts/fuzz-smoke.ps1` (cbor + names + records: 3×50000 runs, all clean)
+- Commit: SELF (audit-fix: `fuzz-smoke.ps1` fail-closed on missing nightly/cargo-fuzz; auto-seed records corpus from `tests/vectors/format-v1`; invoke decoders on arbitrary `Value` not only `Map`)
+- Completed: Added `fuzz/targets/records.rs` fuzz target exercising `SignedRecord::decode()` + 25 `TryFrom<Value>` payload decoders (F3.2–F3.7) under `FormatLimits`. Decoders invoked on every decoded `Value` variant (not only `Map`), exercising both successful schema paths and `rejects_not_a_map` rejection paths. `fuzz-smoke.ps1` now fails (exit 1) when nightly or cargo-fuzz is missing, and auto-seeds the records corpus from committed `tests/vectors/format-v1` fixtures (256 files) before running. 50000 runs, 57MB RSS, 0 crashes/timeouts/panics. Registered in `fuzz/Cargo.toml` and `scripts/fuzz-smoke.ps1`.
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `scripts/fuzz-smoke.ps1` (cbor + names + records: 3×50000 runs, all clean, records corpus = 256 seed files)
 - Gate: standard task gate + fuzz-smoke — all pass
 - Follow-up: F3.11
 
