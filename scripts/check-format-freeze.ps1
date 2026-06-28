@@ -29,10 +29,18 @@ Write-Host "=== Format v1 freeze baseline check (git-authority mode) ===" -Foreg
 Write-Host "Frozen commit: $frozenCommit"
 Write-Host ""
 
-# Verify frozen_commit exists in git history
+# Verify frozen_commit exists and is an ancestor of HEAD
 $null = git rev-parse --verify "$frozenCommit^{commit}" 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[FAIL] frozen_commit '$frozenCommit' is not a valid git commit" -ForegroundColor Red
+    exit 1
+}
+
+git merge-base --is-ancestor $frozenCommit HEAD 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] frozen_commit '$frozenCommit' is not an ancestor of HEAD" -ForegroundColor Red
+    Write-Host "       The baseline commit has been replaced — this is a tamper attempt." -ForegroundColor Red
+    Write-Host "       Re-freeze by setting frozen_commit to a valid ancestor of HEAD." -ForegroundColor Yellow
     exit 1
 }
 
@@ -85,8 +93,9 @@ foreach ($entry in $allEntries) {
 }
 
 # ── Result ────────────────────────────────────────────────────────────────
+$g3Reopened = ($exitCode -ne 0)
 Write-Host ""
-if ($exitCode -eq 0) {
+if (-not $g3Reopened) {
     Write-Host "Freeze baseline intact. No v1 bytes changed since $frozenCommit." -ForegroundColor Green
 } else {
     Write-Host "[FAIL] $changedCount file(s) changed since $frozenCommit." -ForegroundColor Red
@@ -95,4 +104,7 @@ if ($exitCode -eq 0) {
     Write-Host "         git checkout $frozenCommit -- tests/vectors/format-v1/freeze-baseline.json" -ForegroundColor Yellow
     Write-Host "         # then: set frozen_commit to new HEAD, update documentary hashes" -ForegroundColor Yellow
 }
+
+# Machine-readable marker for check-plan-ledger.ps1
+Write-Host "##G3_STATUS=$(if ($g3Reopened) { 'OPEN' } else { 'FROZEN' })##"
 exit $exitCode

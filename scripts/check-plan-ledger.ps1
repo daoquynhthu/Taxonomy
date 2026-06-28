@@ -190,6 +190,62 @@ if ($phaseMismatched -eq 0) {
     Write-Host "  [OK] All tasks belong to the correct phase" -ForegroundColor Green
 }
 
+# ── Check 8: G3_REOPENED marker consistency ───────────────────────────────
+Write-Host "--- Checking G3 freeze marker consistency ---"
+$f3_11 = $allTasks["F3.11"]
+if ($f3_11 -ne $null) {
+    $baselinePath = Join-Path $root "tests/vectors/format-v1/freeze-baseline.json"
+    if (Test-Path -LiteralPath $baselinePath) {
+        $baseline = Get-Content -Raw -LiteralPath $baselinePath | ConvertFrom-Json
+        $frozenCommit = $baseline.frozen_commit
+
+        # Verify frozen_commit is a valid ancestor of HEAD
+        $null = git rev-parse --verify "$frozenCommit^{commit}" 2>&1
+        $commitValid = ($LASTEXITCODE -eq 0)
+        if ($commitValid) {
+            git merge-base --is-ancestor $frozenCommit HEAD 2>$null
+            $isAncestor = ($LASTEXITCODE -eq 0)
+        } else {
+            $isAncestor = $false
+        }
+
+        if (-not $commitValid) {
+            $g3Open = $true
+            Write-Host "  [WARN] frozen_commit '$frozenCommit' is not a valid git commit" -ForegroundColor Yellow
+        } elseif (-not $isAncestor) {
+            $g3Open = $true
+            Write-Host "  [WARN] frozen_commit '$frozenCommit' is not an ancestor of HEAD" -ForegroundColor Yellow
+        } else {
+            # Check if any frozen file differs from frozen_commit
+            $anyChanged = $false
+            foreach ($section in @('source_files', 'fuzz_targets', 'fixtures')) {
+                $baseline.$section.PSObject.Properties | ForEach-Object {
+                    $path = if ($section -eq 'fixtures') { "tests/vectors/format-v1/$($_.Name)" } else { $_.Name }
+                    git diff --quiet $frozenCommit -- $path 2>$null
+                    if ($LASTEXITCODE -ne 0) { $anyChanged = $true }
+                }
+            }
+            $g3Open = $anyChanged
+        }
+
+        $ledgerStatus = $f3_11.status
+        if ($ledgerStatus -eq "GREEN" -and $g3Open) {
+            Write-Host "  [FAIL] F3.11 is GREEN in ledger but G3 is OPEN (files changed since freeze)" -ForegroundColor Red
+            $exitCode = 1
+        } elseif ($ledgerStatus -eq "RED" -and -not $g3Open) {
+            Write-Host "  [FAIL] F3.11 is RED in ledger but G3 is FROZEN (no files changed since freeze)" -ForegroundColor Red
+            Write-Host "         Update F3.11 status to GREEN in plan-ledger.json" -ForegroundColor Yellow
+            $exitCode = 1
+        } else {
+            Write-Host "  [OK] F3.11 ledger status ($ledgerStatus) matches G3_STATUS ($(if ($g3Open) {'OPEN'} else {'FROZEN'}))" -ForegroundColor Green
+        }
+    } else {
+        Write-Host "  [WARN] freeze-baseline.json not found — skipping G3 marker check" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  [WARN] Task F3.11 not found in ledger — skipping G3 marker check" -ForegroundColor Yellow
+}
+
 # ── Summary counts ─────────────────────────────────────────────────────
 $allStatuses = $allTasks.Values | ForEach-Object { $_.status }
 $redCount = @($allStatuses | Where-Object { $_ -eq "RED" }).Count

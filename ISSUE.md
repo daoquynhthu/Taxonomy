@@ -384,7 +384,7 @@
 
 ## ISSUE-0031 — G3_REOPENED plan-ledger marker not implemented, freeze baseline not tamper-proof
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: F3.11 audit 2026-06-28 (round 2)
 - Affected scope: scripts/check-format-freeze.ps1, scripts/plan-ledger.json, docs/PLAN.md
@@ -395,7 +395,7 @@
 - Violated invariant: PLAN.md G3 requires tamper-proof freeze — the baseline must be auditable independently of the baseline file's own content.
 - Required decision: (A) Add `G3_REOPENED` as a computed ledger marker in `check-format-freeze.ps1` that `check-plan-ledger.ps1` can read; or (B) add a separate CI step that verifies the freeze baseline commit is an ancestor of HEAD.
 - Work stopped: none (F3 already RED for other reasons)
-- Resolution: (none yet)
+- Resolution: RESOLVED — option (A) implemented (SELF). `check-format-freeze.ps1` now verifies `frozen_commit` is an ancestor of HEAD via `git merge-base --is-ancestor`, rejecting tampered or replaced baseline commits. `check-plan-ledger.ps1` reads `freeze-baseline.json` directly and cross-references the computed G3 status (FROZEN/OPEN) against F3.11's ledger status, producing a FAIL if they disagree. `plan-ledger.json` F3.11 status updated to RED to match real G3 state.
 
 ## ISSUE-0032 — Historical PROGRESS.md entries use `Commit: SELF` instead of actual SHA
 
