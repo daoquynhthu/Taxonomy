@@ -212,7 +212,11 @@ if ($f3_11 -ne $null) {
             if ($parentFrozen -ne $frozenCommit) {
                 # frozen_commit changed — verify parent F3.11 was RED
                 $parentLedgerRaw = git show "HEAD^:scripts/plan-ledger.json" 2>$null
-                if ($LASTEXITCODE -eq 0 -and $parentLedgerRaw) {
+                if ($LASTEXITCODE -ne 0 -or -not $parentLedgerRaw) {
+                    Write-Host "  [FAIL] frozen_commit changed from $parentFrozen to $frozenCommit" -ForegroundColor Red
+                    Write-Host "         but parent ledger cannot be read — cannot verify F3.11 was RED" -ForegroundColor Red
+                    $exitCode = 1
+                } else {
                     $parentLedger = $parentLedgerRaw | ConvertFrom-Json
                     $parentF311 = $null
                     foreach ($phase in $parentLedger.phases) {
