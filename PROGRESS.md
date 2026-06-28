@@ -1,5 +1,14 @@
 # Progress
 
+## ISSUE-0022 — F3.2 authority payload schemas: raw `[u8; 32]` → newtypes
+
+- Status: GREEN
+- Commit: b1e291f
+- Completed: All 13 authority payload fields changed from raw `[u8; 32]` to `KeyId`/`PolicyId`/`KeyringId`: RefPermissionEntry.writers, RepositoryGenesisPayload (3 fields), PolicyRecordPayload (6 fields), KeySlot.recipient_key_id, KeyringRecordPayload (2 fields). Sorted-uniqueness checks use `Ord` on newtypes directly; `check_sorted_unique_bytes` helper removed. Freeze baseline `record.rs` hash updated. Only `PublicKeyEntry.key_id` remains `[u8; 32]` (fingerprint, not simple ID alias — out of scope per audit).
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `scripts/check-format-freeze.ps1` (G3 reopens — record.rs hash changed, expected)
+- Evidence: `b1e291f` — 3 files changed, 339 insertions, 158 deletions. All 592 existing tests unchanged and passing.
+- Follow-up: F3 overall remains RED due to remaining BLOCKERs (ISSUE-0021, ISSUE-0023). Corrected F3.2 entry below.
+
 ## F3.11 — Freeze format v1 (Hard Gate G3)
 
 - Status: GREEN
@@ -83,9 +92,9 @@
 
 ## F3.2 — Implement repository authority payload schemas
 
-- Status: GREEN
-- Commit: SELF
-- Completed: All 8 payload structs (RepositoryGenesisPayload, PublicKeyEntry, RefPermissionEntry, PolicyRecordPayload, PasswordKdfDescriptor, KeySlot, WrappedDek, KeyringRecordPayload) with `new()` constructors validating constraints per FORMAT.md §9.1–§9.8 and CRYPTO.md §10.1, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with shared field-extraction helpers. Audit loop: (1) reject_unknown_keys in every TryFrom; (2) field_nullable_bytes returns Err(MissingField) on missing key; (3) RefPattern::new() validates permission patterns; (4) all payload struct fields private with accessors; (5) KeySlotLabel::new() rejects control chars; (6) KeyId recomputation via domain_hash in PublicKeyEntry/RepositoryGenesisPayload; (7) checked usize::try_from replaces as usize; (8) field_int accepts Value::U64 <= i64::MAX (CBOR major type 0); (9) KeySlot::try_from rejects missing password_kdf key (3) instead of treating as None; (10) SignedRecord fields private with accessors, encode() validates payload is map and canonicalizes keys (sort + dedup); (11) KeySlot.wrapped_secret exactly 48 bytes (32-byte ciphertext + 16-byte tag).
+- Status: GREEN (corrected: ISSUE-0022 BLOCKER fixed in b1e291f)
+- Commit: SELF (ISSUE-0022 fixes: b1e291f)
+- Completed: All 8 payload structs (RepositoryGenesisPayload, PublicKeyEntry, RefPermissionEntry, PolicyRecordPayload, PasswordKdfDescriptor, KeySlot, WrappedDek, KeyringRecordPayload) with `new()` constructors validating constraints per FORMAT.md §9.1–§9.8 and CRYPTO.md §10.1, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with shared field-extraction helpers. Audit loop: (1) reject_unknown_keys in every TryFrom; (2) field_nullable_bytes returns Err(MissingField) on missing key; (3) RefPattern::new() validates permission patterns; (4) all payload struct fields private with accessors; (5) KeySlotLabel::new() rejects control chars; (6) KeyId recomputation via domain_hash in PublicKeyEntry/RepositoryGenesisPayload; (7) checked usize::try_from replaces as usize; (8) field_int accepts Value::U64 <= i64::MAX (CBOR major type 0); (9) KeySlot::try_from rejects missing password_kdf key (3) instead of treating as None; (10) SignedRecord fields private with accessors, encode() validates payload is map and canonicalizes keys (sort + dedup); (11) KeySlot.wrapped_secret exactly 48 bytes (32-byte ciphertext + 16-byte tag). ISSUE-0022 (BLOCKER, F3.11 audit 2026-06-28): all 13 authority payload ID fields changed from raw `[u8; 32]` to `KeyId`/`PolicyId`/`KeyringId` newtypes per FORMAT.md §3.3.
 - Tests: 366 unit + 1 integration (`cargo test --workspace --all-features`); 18 new regression tests — 7 field_int direct (U64 zero/positive/i64::max/overflow/I64 negative/reject type/reject missing), 2 encode canonicalization (unsorted keys sorted, duplicate keys rejected), 9 CBOR roundtrip across 3 additional payload types (PolicyRecordPayload, RepositoryGenesisPayload, KeyringRecordPayload at created_at_ns = 0/42/-1) — CBOR byte roundtrip (created_at_ns = 0, 42, -1), key_slot_rejects_missing_password_kdf_key, signed_record_encode_rejects_non_map_payload; wrapped_secret negative tests expanded to 0/47/49 bytes.
 - Evidence: field-number tests for all 8 types; sorted-unique rejection for all 6 array fields; KeyId mismatch rejected; 3 negative wrapped_secret length tests; CBOR roundtrip catches field_int U64→i64 conversion; encode rejects non-map and duplicate payload keys; KeySlot rejects missing optional field.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
