@@ -2,7 +2,7 @@
 
 ## ISSUE-0030 — `check-format-freeze.ps1` references non-existent baseline generator script
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: WARNING
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: scripts/check-format-freeze.ps1:16
@@ -10,11 +10,11 @@
 - Violated invariant: Agent.md §2 — a gate script must not reference non-existent tools.
 - Required decision: Either commit `scripts/gen-format-freeze-baseline.ps1` or replace the prompt with manual steps.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED — replaced misleading "Run scripts/gen-format-freeze-baseline.ps1 to create it." with manual instructions describing the baseline structure.
 
 ## ISSUE-0029 — Freeze baseline does not cover gate scripts, Cargo.toml, Cargo.lock, or lib.rs
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: WARNING
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: tests/vectors/format-v1/freeze-baseline.json

@@ -16,7 +16,9 @@ $exitCode = 0
 
 if (-not (Test-Path -LiteralPath $baselinePath)) {
     Write-Host "[FAIL] freeze-baseline.json not found at $baselinePath" -ForegroundColor Red
-    Write-Host "  Run scripts/gen-format-freeze-baseline.ps1 to create it." -ForegroundColor Yellow
+    Write-Host "  To create baseline: set frozen_commit to current HEAD, then add" -ForegroundColor Yellow
+    Write-Host "  SHA-256 hashes for every format-defining source file, fuzz target," -ForegroundColor Yellow
+    Write-Host "  and fixture. See existing freeze-baseline.json for structure." -ForegroundColor Yellow
     exit 1
 }
 
