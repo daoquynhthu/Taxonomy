@@ -26,7 +26,7 @@
 
 ## ISSUE-0028 — `ISSUE.md` resolutions use `SELF`, long-term audit imprecise
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: WARNING
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: ISSUE.md (ISSUE-0020, ISSUE-0015, ISSUE-0012)
@@ -122,32 +122,24 @@
   - `KeyringRecordPayload.previous_keyring_id: Option<[u8; 32]>` (should be `Option<KeyringId>`)
   - `KeyringRecordPayload.author_key_id: [u8; 32]` (should be `KeyId`)
   - `RefUpdateEnvelopePayload.writers: Vec<[u8; 32]>` (should be `Vec<KeyId>`)
+  - **`PublicKeyEntry.key_id: [u8; 32]`** (additional field found in audit round 2 — see note)
   This is the same class of defect that was fixed as BLOCKER in ISSUE-0018 (F3.6) and ISSUE-0015 (F3.3). The inconsistency suggests F3.2 was never audited against the same standard.
 - Violated invariant: FORMAT.md §3.3 — distinct ID types must remain distinct Rust types at the public API boundary.
 - Required decision: Replace all raw `[u8; 32]` ID fields in authority payloads with the corresponding newtype (`KeyId`, `PolicyId`, `KeyringId`). Update constructors, accessors, `TryFrom`, `From`, encoder, decoder, and tests. Verify sorted-uniqueness constraints still apply on decoded `Vec<KeyId>` fields.
 - Work stopped: F3.2 (must be fixed before F3 can be overall GREEN)
-- Resolution: RESOLVED by commit b1e291f (all 13 field types changed to newtypes: RefPermissionEntry.writers → Vec<KeyId>, RepositoryGenesisPayload 3 fields, PolicyRecordPayload 6 fields, KeySlot.recipient_key_id → Option<KeyId>, KeyringRecordPayload 2 fields. Sorted-uniqueness checks use Ord on newtypes directly. check_sorted_unique_bytes helper removed. 592 tests + fmt + clippy + all gate scripts pass.)
+- Resolution: RESOLVED by commit b1e291f (all 13 originally-listed field types changed to newtypes). `PublicKeyEntry.key_id` was initially omitted with an unauthorized "out of scope" caveat; the second audit round found this caveat invalid. The `PublicKeyEntry.key_id` fix extends the resolution to all 14 authority ID fields (committed as SELF).
 
 ## ISSUE-0021 — `FORMAT.md §24` completion criteria not satisfied, F3.11 freeze premature
 
-- Status: SUPERSEDED
+- Status: OPEN
 - Severity: BLOCKER
 - Discovered in: F3.11 audit 2026-06-28
-- Affected scope: tests/vectors/format-v1/ (fixture inventory)
-- Evidence: FORMAT.md §24 defines the completion criteria for freezing format v1. Current state:
-  - ✅ all Section 21 vectors committed as files (7 valid CBOR + 10 invalid + format-v1.json + manifest.json = 22 files)
-  - ❌ FastCDC boundary vectors covering inputs around MIN (1 MiB), AVG (4 MiB), and MAX (8 MiB) — not committed (requires variable-sized fixture files up to 8 MiB)
-  - ❌ canonical metadata vectors for every CanonicalValue variant — only a subset is covered by existing fixtures
-  - ❌ both public and private ChunkId mode vectors — only public mode fixtures exist
-  - ❌ every signed record type has a valid AND tampered fixture — some signed types missing tampered variants (e.g., RepoCommitPayload, RefUpdatePayload only have valid fixtures)
-  - ❌ SMT membership and non-membership fixtures — not committed
-  - ❌ pack/index mismatch fixtures — only pack-v1-invalid-trailer.bin and pack-v1-idx-invalid-checksum.bin exist; no structural mismatches (e.g., fanout/record_count disagreement)
-  - ❌ crash tests truncating segment files at every byte boundary of a complete transaction — not implemented (requires ~62-byte truncation sequences at each boundary)
-  - ❌ Rust encoder output matches independent reference generator byte-for-byte — `gen-format-v1-fixtures.ps1` reads hex from format-v1.json and writes binary; it is not an independent encoder
-- Violated invariant: FORMAT.md §24 — "Format version 1 is frozen only when [all 9 criteria]."
-- Required decision: Either (A) implement all 9 FORMAT §24 criteria (FastCDC vectors, CanonicalValue all-variant vectors, public/private ChunkId vectors, all signed types valid+tampered, SMT fixtures, pack/index mismatch fixtures, byte-boundary crash truncation tests, independent reference generator), or (B) formally amend FORMAT.md §24 to narrow the freeze criteria. Option (A) is architecturally correct but requires significant new fixture generation (including multi-megabyte FastCDC files). Option (B) requires a spec amendment task. Until one is complete, F3.11 cannot be GREEN.
-- Work stopped: F3.11 (currently marked GREEN but must return RED), S4.1 (blocked)
-- Resolution: SUPERSEDED — audit misjudgment. §24 is a cumulative format-freeze specification for the entire v4 lifecycle. PLAN.md §9 F3.11/G3 has its own bounded criteria (fixtures exist, decode/re-encode, invalid rejection, fuzz-smoke, no v1 byte changes) and never references §24. §24 criteria 2/4/6/7/8 require deliverables from phases after F3 (C7, E18, M10, S5, S4) and cannot be satisfied within F3 scope. The audit overreached by importing later-phase gate criteria into G3. Closing: no action needed.
+- Affected scope: tests/vectors/format-v1/ (fixture inventory); docs/PLAN.md F3.11; docs/FORMAT.md §24
+- Evidence: FORMAT.md §24 defines 9 completion criteria for freezing format v1 (FastCDC boundary vectors, CanonicalValue all variants, public/private ChunkId, all signed types valid+tampered, SMT fixtures, pack/index mismatch fixtures, byte-boundary crash tests, independent reference generator). Current F3.11/G3 gate criteria in PLAN.md §9 do not reference §24, and several §24 items require deliverables from later phases (C7, E18, M10, S5, S4). This creates a normative conflict between FORMAT.md §24 (claims to define freeze-complete) and PLAN.md F3.11 (freezes without satisfying §24). Per Agent.md §1, a normative conflict requires explicit resolution — the agent cannot choose an interpretation.
+- Violated invariant: FORMAT.md §24 completion criteria are not satisfied; PLAN.md F3.11 does not reference §24; the two specifications conflict on what constitutes a complete freeze.
+- Required decision: Either (A) implement all 9 §24 criteria, (B) formally amend FORMAT.md §24 to defer later-phase items, or (C) amend PLAN.md F3.11 to clarify that G3 freezes the §21–22 fixture subset and §24 is a cumulative lifecycle gate. Options B and C require spec amendment authorization.
+- Work stopped: none (F3 is already RED)
+- Resolution: REOPENED — previous SUPERSEDED was an agent overreach without spec amendment. The conflict between FORMAT.md §24 and PLAN.md F3.11 remains unresolved pending a spec amendment decision from the project maintainer.
 
 ## ISSUE-0020 — F3.8 record registry lacked RecordIdRule and non-frame classification
 
@@ -389,3 +381,30 @@
 - Required decision: Add structured `CanonicalEncodeError`. Make `finish()` return `Result<(), CanonicalEncodeError>`. Make `insert_u64` and `CanonicalSortedMap` pub(crate). Document that F3 record encoders call through controlled field encoding.
 - Work stopped: F2.3
 - Resolution: RESOLVED (CanonicalSortedMap made pub(crate); insert_u64 made pub(crate); finish() returns Result<(), CanonicalEncodeError>; CanonicalEncodeError enum with DuplicateMapKey variant)
+
+## ISSUE-0031 — G3_REOPENED plan-ledger marker not implemented, freeze baseline not tamper-proof
+
+- Status: OPEN
+- Severity: BLOCKER
+- Discovered in: F3.11 audit 2026-06-28 (round 2)
+- Affected scope: scripts/check-format-freeze.ps1, scripts/plan-ledger.json, docs/PLAN.md
+- Evidence: `check-format-freeze.ps1` uses `git diff --quiet <frozen_commit> -- <path>` which correctly detects changes in the working tree. However:
+  1. The `frozen_commit` value in `freeze-baseline.json` can be silently updated by a subsequent commit without triggering G3 re-open — nothing cross-checks that the baseline commit is reachable from HEAD.
+  2. There is no `G3_REOPENED` marker in `scripts/plan-ledger.json` — the plan-ledger audit (`check-plan-ledger.ps1`) has no knowledge of the freeze state.
+  3. If a malicious or mistaken commit changes both the frozen file and the baseline SHA simultaneously, `git diff` against the old SHA would show the change, but the baseline itself would claim a different `frozen_commit` — no invariant cross-check exists.
+- Violated invariant: PLAN.md G3 requires tamper-proof freeze — the baseline must be auditable independently of the baseline file's own content.
+- Required decision: (A) Add `G3_REOPENED` as a computed ledger marker in `check-format-freeze.ps1` that `check-plan-ledger.ps1` can read; or (B) add a separate CI step that verifies the freeze baseline commit is an ancestor of HEAD.
+- Work stopped: none (F3 already RED for other reasons)
+- Resolution: (none yet)
+
+## ISSUE-0032 — Historical PROGRESS.md entries use `Commit: SELF` instead of actual SHA
+
+- Status: OPEN
+- Severity: WARNING
+- Discovered in: F3.11 audit 2026-06-28 (round 2)
+- Affected scope: PROGRESS.md (P0.0–P1.6 entries)
+- Evidence: The following PROGRESS entries have `Commit: SELF` without an actual commit SHA: P0.0, P0.1, P0.2, P0.3, P0.4, P0.5, P1.1, P1.2, P1.3, P1.4, P1.5, P1.6, P0 baseline, F2.1, F2.2, F2.3, F2.4. These predate the `SELF → actual SHA` convention established by ISSUE-0027. The actual fix commits could be recovered from `git log --all` but the current state does not preserve an audit trail.
+- Violated invariant: Agent.md §3.2 — preserve resolved issues as an audit trail with exact references.
+- Required decision: Either (A) recover the actual SHAs from git history for each task and replace SELF (requires per-task log archaeology), or (B) accept that pre-ISSUE-0027 entries predate the SHA convention and leave them as historical SELF with a note. Option (B) is pragmatic but violates Agent.md §3.2.
+- Work stopped: none
+- Resolution: (none yet)

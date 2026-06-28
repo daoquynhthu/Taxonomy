@@ -417,7 +417,7 @@ impl TryFrom<Value> for PasswordKdfDescriptor {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PublicKeyEntry {
-    key_id: [u8; 32],
+    key_id: KeyId,
     algorithm: u64,
     public_key: [u8; 32],
     label: String,
@@ -425,7 +425,7 @@ pub struct PublicKeyEntry {
 
 impl PublicKeyEntry {
     pub fn new(
-        key_id: [u8; 32],
+        key_id: KeyId,
         algorithm: u64,
         public_key: [u8; 32],
         label: String,
@@ -461,12 +461,12 @@ impl PublicKeyEntry {
                     detail: "domain hash tag too long (infallible)".into(),
                 }
             })?;
-        if key_id != expected {
+        if key_id.as_bytes() != &expected {
             return Err(PayloadError::UnsupportedValue {
                 key: 0,
                 detail: format!(
                     "key_id {}... does not match computed fingerprint {}...",
-                    hex_prefix(&key_id),
+                    hex_prefix(key_id.as_bytes()),
                     hex_prefix(&expected)
                 ),
             });
@@ -479,7 +479,7 @@ impl PublicKeyEntry {
         })
     }
 
-    pub fn key_id(&self) -> &[u8; 32] {
+    pub fn key_id(&self) -> &KeyId {
         &self.key_id
     }
     pub fn algorithm(&self) -> u64 {
@@ -496,7 +496,7 @@ impl PublicKeyEntry {
 impl From<&PublicKeyEntry> for Value {
     fn from(p: &PublicKeyEntry) -> Self {
         Value::Map(vec![
-            (Value::U64(0), Value::Bytes(p.key_id.to_vec())),
+            (Value::U64(0), Value::Bytes(p.key_id.as_bytes().to_vec())),
             (Value::U64(1), Value::U64(p.algorithm)),
             (Value::U64(2), Value::Bytes(p.public_key.to_vec())),
             (Value::U64(3), Value::Text(p.label.clone())),
@@ -514,7 +514,7 @@ impl TryFrom<Value> for PublicKeyEntry {
         reject_unknown_keys(pairs, 4)?;
         let fields = parse_fields(pairs, 4);
         Self::new(
-            field_bytes_exact::<32>(&fields, 0)?,
+            KeyId::new(field_bytes_exact::<32>(&fields, 0)?),
             field_uint(&fields, 1)?,
             field_bytes_exact::<32>(&fields, 2)?,
             field_text(&fields, 3)?,
@@ -5027,8 +5027,8 @@ mod tests {
             Some(PolicyId::from([0xAAu8; 32])),
             3,
             vec![
-                PublicKeyEntry::new(k1_key_id, 1, [0x20u8; 32], "key1".into()).unwrap(),
-                PublicKeyEntry::new(k2_key_id, 2, [0x21u8; 32], "key2".into()).unwrap(),
+                PublicKeyEntry::new(KeyId::new(k1_key_id), 1, [0x20u8; 32], "key1".into()).unwrap(),
+                PublicKeyEntry::new(KeyId::new(k2_key_id), 2, [0x21u8; 32], "key2".into()).unwrap(),
             ],
             vec![KeyId::from([0xA0u8; 32]), KeyId::from([0xA1u8; 32])],
             vec![KeyId::from([0xB0u8; 32]), KeyId::from([0xB1u8; 32])],
@@ -5230,7 +5230,7 @@ mod tests {
 
     fn make_public_key_entry() -> PublicKeyEntry {
         let key_id = compute_key_id(1, &[0xBBu8; 32]);
-        PublicKeyEntry::new(key_id, 1, [0xBBu8; 32], "test key".into()).unwrap()
+        PublicKeyEntry::new(KeyId::new(key_id), 1, [0xBBu8; 32], "test key".into()).unwrap()
     }
 
     #[test]
@@ -5255,13 +5255,13 @@ mod tests {
 
     #[test]
     fn public_key_entry_rejects_bad_algorithm() {
-        let err = PublicKeyEntry::new([0xAAu8; 32], 3, [0xBBu8; 32], "test".into()).unwrap_err();
+        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 3, [0xBBu8; 32], "test".into()).unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
     }
 
     #[test]
     fn public_key_entry_rejects_long_label() {
-        let err = PublicKeyEntry::new([0xAAu8; 32], 1, [0xBBu8; 32], "x".repeat(129)).unwrap_err();
+        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 1, [0xBBu8; 32], "x".repeat(129)).unwrap_err();
         assert!(matches!(err, PayloadError::InvalidText { key: 3, .. }));
     }
 
@@ -5298,7 +5298,7 @@ mod tests {
 
     #[test]
     fn public_key_entry_rejects_key_id_mismatch() {
-        let err = PublicKeyEntry::new([0xAAu8; 32], 1, [0xBBu8; 32], "test".into()).unwrap_err();
+        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 1, [0xBBu8; 32], "test".into()).unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
     }
 
@@ -5497,8 +5497,8 @@ mod tests {
             Some(PolicyId::from([0xAAu8; 32])),
             3,
             vec![
-                PublicKeyEntry::new(k1_key_id, 1, [0x20u8; 32], "key1".into()).unwrap(),
-                PublicKeyEntry::new(k2_key_id, 2, [0x21u8; 32], "key2".into()).unwrap(),
+                PublicKeyEntry::new(KeyId::new(k1_key_id), 1, [0x20u8; 32], "key1".into()).unwrap(),
+                PublicKeyEntry::new(KeyId::new(k2_key_id), 2, [0x21u8; 32], "key2".into()).unwrap(),
             ],
             vec![KeyId::from([0xA0u8; 32]), KeyId::from([0xA1u8; 32])],
             vec![KeyId::from([0xB0u8; 32]), KeyId::from([0xB1u8; 32])],
@@ -5592,8 +5592,8 @@ mod tests {
             None,
             1,
             vec![
-                PublicKeyEntry::new(k1_key_id, 1, [0x20u8; 32], "b".into()).unwrap(),
-                PublicKeyEntry::new(k2_key_id, 1, [0x21u8; 32], "a".into()).unwrap(),
+                PublicKeyEntry::new(KeyId::new(k1_key_id), 1, [0x20u8; 32], "b".into()).unwrap(),
+                PublicKeyEntry::new(KeyId::new(k2_key_id), 1, [0x21u8; 32], "a".into()).unwrap(),
             ],
             vec![],
             vec![],

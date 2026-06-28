@@ -1,56 +1,17 @@
 # Progress
 
-## ISSUE-0026 — Fuzz corpus seed reproducible
-
-- Status: GREEN
-- Commit: b0826a0
-- Completed: `fuzz-smoke.ps1` records corpus seeding: now `Remove-Item -Recurse -Force` the corpus directory before re-creating and copying committed fixtures unconditionally. No `if (-not (Test-Path))` guard — every run starts from a clean slate. Corpus count is now deterministic per checkout.
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor + names + records: 3×50000 runs, 0 crashes); `scripts/check-format-freeze.ps1` (baseline updated — all OK)
-- Follow-up: ISSUE-0027 through ISSUE-0030 (WARNING)
-
-## ISSUE-0025 — gate-report fail-closed on G3 script deletion
-
-- Status: GREEN
-- Commit: SELF
-- Completed: `generate-gate-report.ps1` lines 82–96: both G3 script guards changed from `if (Test-Path $script) { run }` to `if (-not (Test-Path $script)) { exit 1 }`. Missing `check-format-freeze.ps1` or `fuzz-smoke.ps1` now causes immediate gate failure with descriptive message.
-- Tests: `scripts/generate-gate-report.ps1` still runs correctly when both scripts exist
-- Follow-up: ISSUE-0026 (fuzz corpus reproducibility)
-
-## ISSUE-0024 — physical.rs: 8-byte magic, format_version check, DomainHash index checksum
-
-- Status: GREEN
-- Commit: SELF
-- Completed: `physical.rs` conformance to FORMAT.md §14.2, §15.2, §16.2, §23, §16.5: (1) `SEGMENT_HEADER_MAGIC`, `PACK_MAGIC`, `INDEX_MAGIC` changed from 4-byte to 8-byte constants matching FORMAT spec; `InvalidMagic` error uses `[u8; 8]`; (2) `InvalidFormatVersion` error variant added; all three validators (`validate_segment_header`, `validate_pack`, `validate_pack_index`) check `u16::from_le_bytes([bytes[8], bytes[9]]) == 1` after magic validation; (3) `validate_pack_index` rewritten to zero last 32 bytes and compute `DomainHash("EternalCore:PackIndex:v1", &zeroed)` per FORMAT §16.5, replacing hardcoded golden checksum; `hex_literal` helper removed.
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass)
-- Evidence: All 3 validators now reject truncated magic (fewer than 8 bytes), wrong suffix bytes, wrong format version, and invalid checksums per FORMAT spec.
-- Follow-up: ISSUE-0025 (gate-report fail-closed)
-
-## ISSUE-0023 — Freeze baseline tamper-proof via git-authority check
-
-- Status: GREEN
-- Commit: SELF
-- Completed: `freeze-baseline.json` `frozen_commit` changed from `"SELF"` to actual commit `62b2d6f`. All hashes restored to original `62b2d6f` state (record.rs reverted to `6dcf0568...`). `check-format-freeze.ps1` rewritten to use `git diff --quiet <frozen_commit> -- <path>` as the authoritative check — compares working tree against committed git history, immune to simultaneous baseline+file updates. Stored hashes are now documentary only. Script correctly detects record.rs change from ISSUE-0022 as a G3-reopen event. Plan-ledger marker check deferred until baseline update workflow is needed.
-- Tests: `scripts/check-format-freeze.ps1` exits 1 (expected: 1 file changed since `62b2d6f`)
-- Evidence: Script output shows 32 OK, 1 MODIFIED (record.rs), correctly identifies G3 reopen required.
-- Follow-up: When all F3 BLOCKERs resolved, re-freeze with new frozen_commit and implement plan-ledger G3_REOPENED marker check.
-
-## ISSUE-0022 — F3.2 authority payload schemas: raw `[u8; 32]` → newtypes
-
-- Status: GREEN
-- Commit: b1e291f
-- Completed: All 13 authority payload fields changed from raw `[u8; 32]` to `KeyId`/`PolicyId`/`KeyringId`: RefPermissionEntry.writers, RepositoryGenesisPayload (3 fields), PolicyRecordPayload (6 fields), KeySlot.recipient_key_id, KeyringRecordPayload (2 fields). Sorted-uniqueness checks use `Ord` on newtypes directly; `check_sorted_unique_bytes` helper removed. Freeze baseline `record.rs` hash updated. Only `PublicKeyEntry.key_id` remains `[u8; 32]` (fingerprint, not simple ID alias — out of scope per audit).
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `scripts/check-format-freeze.ps1` (G3 reopens — record.rs hash changed, expected)
-- Evidence: `b1e291f` — 3 files changed, 339 insertions, 158 deletions. All 592 existing tests unchanged and passing.
-- Follow-up: F3 overall remains RED due to remaining BLOCKERs (ISSUE-0021, ISSUE-0023). Corrected F3.2 entry below.
-
 ## F3.11 — Freeze format v1 (Hard Gate G3)
-
-- Status: GREEN at commit 62b2d6f; re-frozen at b0826a0 (after ISSUE-0022, ISSUE-0024, ISSUE-0026 repairs)
-- Commit: 62b2d6f
-- Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode after ISSUE-0023). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum (`InvalidMagic`, `HeaderCrcMismatch`, `TrailerChecksumMismatch`, `IndexChecksumMismatch`, `Truncated`). All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
+- Status: RED (G3 reopened — BLOCKERs unresolved: ISSUE-0021 normative conflict, ISSUE-0023 G3_REOPENED marker deferred)
+- Commit: 62b2d6f (initial freeze); re-freezed at b0826a0; current baseline 4d62478
+- Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum. All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
+- Corrected by:
+  - ISSUE-0024: `physical.rs` — magic constants corrected to 8 bytes, `InvalidFormatVersion` error added, `validate_pack_index` uses `DomainHash` per FORMAT §16.5. (uncommitted, SELF)
+  - ISSUE-0025: `generate-gate-report.ps1` — G3 script guards changed from `if (Test-Path) { run }` to `if (-not (Test-Path)) { exit 1 }`, fail-closed on missing scripts. (uncommitted, SELF)
+  - ISSUE-0023: `freeze-baseline.json` `frozen_commit` set to `62b2d6f`; `check-format-freeze.ps1` rewritten to use `git diff --quiet <frozen_commit> -- <path>`. Plan-ledger G3_REOPENED marker check deferred. (uncommitted, SELF)
+  - ISSUE-0026: `fuzz-smoke.ps1` corpus seeding made deterministic (wipes corpus dir before re-seeding). (b0826a0)
 - Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1` (exits 1 — G3 reopened); `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor 63MB + names 54MB + records 59MB peak RSS, all clean, records corpus = 415 files)
 - Evidence: `gate-report.json` (full Hard Gate G3 artifact per PLAN.md §4.3 including fuzz smoke); `fuzz-smoke-report.json` (3 targets, 150k total runs, 0 crashes)
-- Follow-up: Fix remaining F3 BLOCKERs, then re-freeze G3 with new frozen_commit
+- Follow-up: Fix remaining F3 BLOCKERs, implement G3_REOPENED plan-ledger marker, then re-freeze G3 with new frozen_commit
 
 ## F3.10 — Fuzz all record decoders
 
@@ -59,6 +20,7 @@
 - Completed: Added `fuzz/targets/records.rs` fuzz target exercising `SignedRecord::decode()` + 25 `TryFrom<Value>` payload decoders (F3.2–F3.7) under `FormatLimits`. Decoders invoked on every decoded `Value` variant (not only `Map`), exercising both successful schema paths and `rejects_not_a_map` rejection paths. `fuzz-smoke.ps1` now fails (exit 1) when nightly or cargo-fuzz is missing, and auto-seeds the records corpus from committed `tests/vectors/format-v1` fixtures (256 files) before running. 50000 runs, 57MB RSS, 0 crashes/timeouts/panics. Registered in `fuzz/Cargo.toml` and `scripts/fuzz-smoke.ps1`.
 - Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `scripts/fuzz-smoke.ps1` (cbor + names + records: 3×50000 runs, all clean, records corpus = 256 seed files)
 - Gate: standard task gate + fuzz-smoke — all pass
+- Corrected: ISSUE-0026 (fuzz corpus reproducibility) — `fuzz-smoke.ps1` now wipes `fuzz/corpus/records/` before re-seeding from fixtures, making corpus count deterministic per checkout. (b0826a0)
 - Follow-up: F3.11
 
 ## F3.9 — Complete format-v1 fixtures
@@ -136,9 +98,9 @@
 
 ## F3.2 — Implement repository authority payload schemas
 
-- Status: GREEN (corrected: ISSUE-0022 BLOCKER fixed in b1e291f)
-- Commit: 0d4e4c8 (ISSUE-0022 fixes: b1e291f)
-- Completed: All 8 payload structs (RepositoryGenesisPayload, PublicKeyEntry, RefPermissionEntry, PolicyRecordPayload, PasswordKdfDescriptor, KeySlot, WrappedDek, KeyringRecordPayload) with `new()` constructors validating constraints per FORMAT.md §9.1–§9.8 and CRYPTO.md §10.1, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with shared field-extraction helpers. Audit loop: (1) reject_unknown_keys in every TryFrom; (2) field_nullable_bytes returns Err(MissingField) on missing key; (3) RefPattern::new() validates permission patterns; (4) all payload struct fields private with accessors; (5) KeySlotLabel::new() rejects control chars; (6) KeyId recomputation via domain_hash in PublicKeyEntry/RepositoryGenesisPayload; (7) checked usize::try_from replaces as usize; (8) field_int accepts Value::U64 <= i64::MAX (CBOR major type 0); (9) KeySlot::try_from rejects missing password_kdf key (3) instead of treating as None; (10) SignedRecord fields private with accessors, encode() validates payload is map and canonicalizes keys (sort + dedup); (11) KeySlot.wrapped_secret exactly 48 bytes (32-byte ciphertext + 16-byte tag). ISSUE-0022 (BLOCKER, F3.11 audit 2026-06-28): all 13 authority payload ID fields changed from raw `[u8; 32]` to `KeyId`/`PolicyId`/`KeyringId` newtypes per FORMAT.md §3.3.
+- Status: GREEN
+- Commit: 0d4e4c8 (ISSUE-0022 fixes: b1e291f, SELF)
+- Completed: All 8 payload structs (RepositoryGenesisPayload, PublicKeyEntry, RefPermissionEntry, PolicyRecordPayload, PasswordKdfDescriptor, KeySlot, WrappedDek, KeyringRecordPayload) with `new()` constructors validating constraints per FORMAT.md §9.1–§9.8 and CRYPTO.md §10.1, `From<&T> for Value` map encoding with unsigned integer field keys, and `TryFrom<Value>` decoding with shared field-extraction helpers. Audit loop: (1) reject_unknown_keys in every TryFrom; (2) field_nullable_bytes returns Err(MissingField) on missing key; (3) RefPattern::new() validates permission patterns; (4) all payload struct fields private with accessors; (5) KeySlotLabel::new() rejects control chars; (6) KeyId recomputation via domain_hash in PublicKeyEntry/RepositoryGenesisPayload; (7) checked usize::try_from replaces as usize; (8) field_int accepts Value::U64 <= i64::MAX (CBOR major type 0); (9) KeySlot::try_from rejects missing password_kdf key (3) instead of treating as None; (10) SignedRecord fields private with accessors, encode() validates payload is map and canonicalizes keys (sort + dedup); (11) KeySlot.wrapped_secret exactly 48 bytes (32-byte ciphertext + 16-byte tag). ISSUE-0022 (BLOCKER, F3.11 audit 2026-06-28): all 14 authority payload ID fields changed from raw `[u8; 32]` to `KeyId`/`PolicyId`/`KeyringId` newtypes per FORMAT.md §3.3 (13 fields in b1e291f, `PublicKeyEntry.key_id` in SELF).
 - Tests: 366 unit + 1 integration (`cargo test --workspace --all-features`); 18 new regression tests — 7 field_int direct (U64 zero/positive/i64::max/overflow/I64 negative/reject type/reject missing), 2 encode canonicalization (unsorted keys sorted, duplicate keys rejected), 9 CBOR roundtrip across 3 additional payload types (PolicyRecordPayload, RepositoryGenesisPayload, KeyringRecordPayload at created_at_ns = 0/42/-1) — CBOR byte roundtrip (created_at_ns = 0, 42, -1), key_slot_rejects_missing_password_kdf_key, signed_record_encode_rejects_non_map_payload; wrapped_secret negative tests expanded to 0/47/49 bytes.
 - Evidence: field-number tests for all 8 types; sorted-unique rejection for all 6 array fields; KeyId mismatch rejected; 3 negative wrapped_secret length tests; CBOR roundtrip catches field_int U64→i64 conversion; encode rejects non-map and duplicate payload keys; KeySlot rejects missing optional field.
 - Gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `cargo test --doc --workspace --all-features` — all pass
