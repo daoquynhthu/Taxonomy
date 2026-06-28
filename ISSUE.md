@@ -50,7 +50,7 @@
 
 ## ISSUE-0026 — Fuzz corpus seed not reproducible, mixes local ignored state
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: scripts/fuzz-smoke.ps1:188–200, fuzz/corpus/ (gitignored)
@@ -58,7 +58,7 @@
 - Violated invariant: PLAN.md F3.10 requires a reproducible, verifiable fuzz smoke gate with auto-seeded corpus.
 - Required decision: Clear `fuzz/corpus/records/` before seeding, or use a temp directory for the corpus.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED by commit SELF — `fuzz-smoke.ps1` now `Remove-Item -Recurse -Force` the records corpus directory before re-creating it and copying committed fixtures. No `if (-not (Test-Path))` guard: every copy is unconditional. Corpus count is now deterministic per checkout.
 
 ## ISSUE-0025 — `generate-gate-report.ps1` not fail-closed on G3 script deletion
 

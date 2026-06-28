@@ -186,16 +186,15 @@ $results += Run-FuzzTarget "cbor"
 $results += Run-FuzzTarget "names"
 
 # Seed records corpus from committed format-v1 fixtures (F3.10)
+# Wipe any previous run's libFuzzer mutations for reproducible seeding
 $fixturesDir = Join-Path $root "tests/vectors/format-v1"
 $recordsCorpus = Join-Path $fuzzDir "corpus/records"
-if (-not (Test-Path -LiteralPath $recordsCorpus)) {
-    New-Item -ItemType Directory -Path $recordsCorpus -Force | Out-Null
+if (Test-Path -LiteralPath $recordsCorpus) {
+    Remove-Item -LiteralPath $recordsCorpus -Recurse -Force
 }
+New-Item -ItemType Directory -Path $recordsCorpus -Force | Out-Null
 Get-ChildItem -LiteralPath $fixturesDir -Include *.bin,*.cbor,*.pack,*.idx -Recurse | ForEach-Object {
-    $dst = Join-Path $recordsCorpus $_.Name
-    if (-not (Test-Path -LiteralPath $dst)) {
-        Copy-Item -LiteralPath $_.FullName -Destination $dst
-    }
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $recordsCorpus $_.Name)
 }
 Write-Host "records corpus seeded: $(@(Get-ChildItem -LiteralPath $recordsCorpus).Count) files" -ForegroundColor Cyan
 

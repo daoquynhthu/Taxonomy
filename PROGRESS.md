@@ -1,5 +1,13 @@
 # Progress
 
+## ISSUE-0026 — Fuzz corpus seed reproducible
+
+- Status: GREEN
+- Commit: SELF
+- Completed: `fuzz-smoke.ps1` records corpus seeding: now `Remove-Item -Recurse -Force` the corpus directory before re-creating and copying committed fixtures unconditionally. No `if (-not (Test-Path))` guard — every run starts from a clean slate. Corpus count is now deterministic per checkout.
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/check-format-freeze.ps1` (3 files changed — G3 reopened, expected)
+- Follow-up: ISSUE-0027 through ISSUE-0030 (WARNING)
+
 ## ISSUE-0025 — gate-report fail-closed on G3 script deletion
 
 - Status: GREEN
