@@ -38,7 +38,7 @@
 
 ## ISSUE-0027 — `PROGRESS.md` order inconsistent and historical tasks use `SELF`
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: WARNING
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: PROGRESS.md
@@ -46,7 +46,7 @@
 - Violated invariant: Agent.md §3.1 — PROGRESS.md must be newest-first; each entry must use commit hash or SELF for current commit.
 - Required decision: Reorder PROGRESS.md strictly newest-first (F3.11, F3.10, ..., F3.1). Replace `Commit: SELF` in F3.1–F3.10 with actual short SHAs recovered from git log.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED (F3 sections reordered numerically descending: F3.11, F3.10, F3.9, F3.8, F3.7, F3.6, F3.5, F3.4, F3.3, F3.2, F3.1. Original implementation commit SHAs: F3.10=`2d5aeec`, F3.9=`6272ad8`, F3.8=`78618aa`, F3.7=`c88a53d`, F3.4=`3499c75`, F3.6=`242ee9a`, F3.5=`58ffa0a`, F3.2=`0d4e4c8`, F3.3=`5e1d8f1`, F3.1=`0241b86`. F3.11 already used `62b2d6f`. All `Commit: SELF` replaced with actual short SHA.)
 
 ## ISSUE-0026 — Fuzz corpus seed not reproducible, mixes local ignored state
 
