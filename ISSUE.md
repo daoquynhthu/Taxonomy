@@ -34,7 +34,7 @@
 - Violated invariant: Agent.md §3.2 — preserve resolved issues as an audit trail with exact references.
 - Required decision: Replace all `SELF` in resolved issue resolutions with the actual commit SHA. The current commit `62b2d6f` is irrelevant for old issues — the original fix commits must be recovered from git log.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED — all `SELF` in resolved issue resolutions replaced with actual short SHAs: ISSUE-0026=b0826a0, ISSUE-0025=6867b9b, ISSUE-0024=6d0a0c0, ISSUE-0023=0f199fb, ISSUE-0022=b1e291f, ISSUE-0020=446517f, ISSUE-0015=be7f7b7, ISSUE-0012=21058a0.
 
 ## ISSUE-0027 — `PROGRESS.md` order inconsistent and historical tasks use `SELF`
 
@@ -58,7 +58,7 @@
 - Violated invariant: PLAN.md F3.10 requires a reproducible, verifiable fuzz smoke gate with auto-seeded corpus.
 - Required decision: Clear `fuzz/corpus/records/` before seeding, or use a temp directory for the corpus.
 - Work stopped: none
-- Resolution: RESOLVED by commit SELF — `fuzz-smoke.ps1` now `Remove-Item -Recurse -Force` the records corpus directory before re-creating it and copying committed fixtures. No `if (-not (Test-Path))` guard: every copy is unconditional. Corpus count is now deterministic per checkout.
+- Resolution: RESOLVED by commit b0826a0 — `fuzz-smoke.ps1` now `Remove-Item -Recurse -Force` the records corpus directory before re-creating it and copying committed fixtures. No `if (-not (Test-Path))` guard: every copy is unconditional. Corpus count is now deterministic per checkout.
 
 ## ISSUE-0025 — `generate-gate-report.ps1` not fail-closed on G3 script deletion
 
@@ -70,7 +70,7 @@
 - Violated invariant: PLAN.md §4 — hard phase gate must produce verifiable evidence that all required checks passed.
 - Required decision: Replace `if (Test-Path) { ... }` with `if (-not (Test-Path)) { exit 1 }` for both G3 scripts.
 - Work stopped: none
-- Resolution: RESOLVED by commit SELF — both G3 script guards changed from `if (Test-Path) { run }` to `if (-not (Test-Path)) { exit 1 }`. Missing `check-format-freeze.ps1` or `fuzz-smoke.ps1` now causes immediate gate failure.
+- Resolution: RESOLVED by commit 6867b9b — both G3 script guards changed from `if (Test-Path) { run }` to `if (-not (Test-Path)) { exit 1 }`. Missing `check-format-freeze.ps1` or `fuzz-smoke.ps1` now causes immediate gate failure.
 
 ## ISSUE-0024 — `physical.rs` validator does not fully conform to FORMAT binary format spec
 
@@ -85,7 +85,7 @@
 - Violated invariant: FORMAT.md §14.2, §15.2, §16.2 (magic size), §23 (version check), §16.5 (checksum domain).
 - Required decision: Extend magic checks to full 8 bytes; add format_version == 1 check to all three validators; rewrite `validate_pack_index` to recompute checksum via zeroed DomainHash instead of golden comparison.
 - Work stopped: none
-- Resolution: RESOLVED by commit SELF: (1) all three magic constants changed to 8-byte `*b"ETSEG\0\0\0"`, `*b"ETPACK\0\0"`, `*b"ETIDX\0\0\0"`; `InvalidMagic` error uses `[u8; 8]`; (2) `InvalidFormatVersion` error variant added; all three validators check `u16::from_le_bytes([bytes[8], bytes[9]]) == 1` after magic; (3) `validate_pack_index` now zeros last 32 bytes and computes `DomainHash("EternalCore:PackIndex:v1", &zeroed)` per §16.5; `hex_literal` helper removed. 592 tests + clippy + fmt pass.
+- Resolution: RESOLVED by commit 6d0a0c0: (1) all three magic constants changed to 8-byte `*b"ETSEG\0\0\0"`, `*b"ETPACK\0\0"`, `*b"ETIDX\0\0\0"`; `InvalidMagic` error uses `[u8; 8]`; (2) `InvalidFormatVersion` error variant added; all three validators check `u16::from_le_bytes([bytes[8], bytes[9]]) == 1` after magic; (3) `validate_pack_index` now zeros last 32 bytes and computes `DomainHash("EternalCore:PackIndex:v1", &zeroed)` per §16.5; `hex_literal` helper removed. 592 tests + clippy + fmt pass.
 
 ## ISSUE-0023 — Freeze baseline can be silently updated with v1 bytes, cannot enforce G3 reopen
 
@@ -100,7 +100,7 @@
 - Violated invariant: PLAN.md F3.11 Hard Gate G3 — "no subsequent phase may change v1 bytes without reopening G3."
 - Required decision: (1) Set `frozen_commit` to the actual commit SHA `62b2d6f`; (2) Rewrite `check-format-freeze.ps1` to use `git show <frozen_commit>:<path>` or `git hash-object` to verify current file content matches the frozen commit, not just the current baseline; (3) Add `plan-ledger.json` to the baseline and verify F3.11=RED (reopened) before allowing update.
 - Work stopped: F3.11 (currently marked GREEN but must return RED)
-- Resolution: RESOLVED by commit SELF: (1) frozen_commit set to `62b2d6f`, all hashes restored to original `62b2d6f` state; (2) check-format-freeze.ps1 rewritten to use `git diff --quiet <frozen_commit> -- <path>` as authoritative check — tamper-proof because it compares against committed git history, not the current baseline JSON; (3) deferred — the plan-ledger G3_REOPENED marker check will be added when a baseline update workflow is needed (after all F3 BLOCKERs resolved). Script correctly detects record.rs change from ISSUE-0022.
+- Resolution: RESOLVED by commit 0f199fb: (1) frozen_commit set to `62b2d6f`, all hashes restored to original `62b2d6f` state; (2) check-format-freeze.ps1 rewritten to use `git diff --quiet <frozen_commit> -- <path>` as authoritative check — tamper-proof because it compares against committed git history, not the current baseline JSON; (3) deferred — the plan-ledger G3_REOPENED marker check will be added when a baseline update workflow is needed (after all F3 BLOCKERs resolved). Script correctly detects record.rs change from ISSUE-0022.
 
 ## ISSUE-0022 — F3.2 authority payload schemas use raw `[u8; 32]`, violating ID newtype domain
 
@@ -126,7 +126,7 @@
 - Violated invariant: FORMAT.md §3.3 — distinct ID types must remain distinct Rust types at the public API boundary.
 - Required decision: Replace all raw `[u8; 32]` ID fields in authority payloads with the corresponding newtype (`KeyId`, `PolicyId`, `KeyringId`). Update constructors, accessors, `TryFrom`, `From`, encoder, decoder, and tests. Verify sorted-uniqueness constraints still apply on decoded `Vec<KeyId>` fields.
 - Work stopped: F3.2 (must be fixed before F3 can be overall GREEN)
-- Resolution: RESOLVED by commit SELF (all 13 field types changed to newtypes: RefPermissionEntry.writers → Vec<KeyId>, RepositoryGenesisPayload 3 fields, PolicyRecordPayload 6 fields, KeySlot.recipient_key_id → Option<KeyId>, KeyringRecordPayload 2 fields. Sorted-uniqueness checks use Ord on newtypes directly. check_sorted_unique_bytes helper removed. 592 tests + fmt + clippy + all gate scripts pass.)
+- Resolution: RESOLVED by commit b1e291f (all 13 field types changed to newtypes: RefPermissionEntry.writers → Vec<KeyId>, RepositoryGenesisPayload 3 fields, PolicyRecordPayload 6 fields, KeySlot.recipient_key_id → Option<KeyId>, KeyringRecordPayload 2 fields. Sorted-uniqueness checks use Ord on newtypes directly. check_sorted_unique_bytes helper removed. 592 tests + fmt + clippy + all gate scripts pass.)
 
 ## ISSUE-0021 — `FORMAT.md §24` completion criteria not satisfied, F3.11 freeze premature
 
@@ -163,7 +163,7 @@
 - Violated invariant: PLAN.md F3.8 Green — registry must encode RecordIdRule; non-frame files must be distinguishable from frame records.
 - Required decision: Add RecordIdRule enum (CborDomainHash, SMTLeafConcat, SMTInternalConcat); add RecordFileKind enum (FrameRecord, StandalonePayload); add NON_FRAME_RECORD_TYPES for StoreManifest; restore F3.7 PROGRESS entry.
 - Work stopped: F3.8, F3.9 and later tasks.
-- Resolution: RESOLVED by commit SELF (all findings fixed: RecordIdRule + tags for types 1..=11, RecordFileKind, NonFrameFileKind with StoreManifest/CURRENT/RefPointer classification, F3.7 PROGRESS entry restored. 572 tests / fmt + clippy clean.)
+- Resolution: RESOLVED by commit 446517f (all findings fixed: RecordIdRule + tags for types 1..=11, RecordFileKind, NonFrameFileKind with StoreManifest/CURRENT/RefPointer classification, F3.7 PROGRESS entry restored. 572 tests / fmt + clippy clean.)
 
 ## ISSUE-0019 — F3.7 StoreManifestPayload loses RepositoryGenesisId type separation and accepts non-v1 segment paths
 
@@ -228,7 +228,7 @@
 - Violated invariant: (1) Fixed chunking descriptor must be exactly fixed; (2) codec algorithm 0 schema must reject zstd-only fields; (3) logical ChunkId and physical EncodedChunkRecordId must be distinct Rust types per PLAN.md Green; (4) public no-codec/no-encryption encoded_bytes must equal plaintext_length; (5) chunk entries must reject zero length and total_size must use checked arithmetic; (6) clippy must pass.
 - Required fix: (1) ChunkingDescriptor::new() verify all fixed v1 parameters exactly; (2) CodecDescriptor::try_from reject algorithm=0 maps with extraneous keys by checking key count or using an algorithm-dependent `reject_unknown_keys`; (3) use `ChunkId` newtype for chunk_id fields; (4) enforce `encoded_bytes.len() == plaintext_length` when codec=none and encryption=null; (5) reject zero plaintext_length in ContentManifestChunkEntry; use `checked_add` for total_size summation; (6) change `sort_by` to `sort_by_key` at record.rs:1530.
 - Work stopped: F3.3, all downstream F3 tasks.
-- Resolution: Fixed in commit SELF. All 6 items addressed: (1) ChunkingDescriptor::new() validates all fixed v1 parameters exactly including gear_table_id against normative `FASTCDC_V1_GEAR_TABLE_ID`; `new_v1()` uses the normative constant; (2) CodecDescriptor::try_from reads algorithm first, then rejects keys based on algorithm; (3) EncodedChunkPayload and ContentManifestChunkEntry use ChunkId newtype at public constructor boundary (constructors accept ChunkId, not [u8;32]); (4) codec=none + encryption=null enforces encoded_bytes.len() == plaintext_length; (5) ContentManifestChunkEntry rejects zero plaintext_length, ContentManifestPayload uses checked_add for total_size; (6) sort_by → sort_by_key for clippy 1.96.0. 423 tests pass, fmt + clippy clean.
+- Resolution: Fixed in commit be7f7b7. All 6 items addressed: (1) ChunkingDescriptor::new() validates all fixed v1 parameters exactly including gear_table_id against normative `FASTCDC_V1_GEAR_TABLE_ID`; `new_v1()` uses the normative constant; (2) CodecDescriptor::try_from reads algorithm first, then rejects keys based on algorithm; (3) EncodedChunkPayload and ContentManifestChunkEntry use ChunkId newtype at public constructor boundary (constructors accept ChunkId, not [u8;32]); (4) codec=none + encryption=null enforces encoded_bytes.len() == plaintext_length; (5) ContentManifestChunkEntry rejects zero plaintext_length, ContentManifestPayload uses checked_add for total_size; (6) sort_by → sort_by_key for clippy 1.96.0. 423 tests pass, fmt + clippy clean.
 
 ## ISSUE-0013 — F2.8 fuzz targets incomplete: missing CI job, lossy UTF-8, partial decoder coverage, ledger corruption
 
@@ -252,7 +252,7 @@
 - Violated invariant: F2.7 requires "one limits type with the exact format defaults and checked override validation."
 - Required decision: Enforce max_metadata_bytes on encoded CBOR length. Fix segment size to exact 4 GiB (u64). Remove impl_target_segment_size from struct. Add exhaustive tests for all 17 fields.
 - Work stopped: F2.7, F2.8
-- Resolution: Round 3 fix — pre-compute exact CBOR size with checked arithmetic before allocating output buffer. Encode side now two-phase: (1) compute_encoded_size() validates all limits and returns exact byte count; (2) check against max_metadata_bytes; (3) allocate Vec::with_capacity(exact_size) and encode. decode side unchanged (input length checked before parse). Segment size and exhaustive tests unchanged from round 3. Final RESOLVED at commit `SELF`. 249 tests pass (0 fail).
+- Resolution: Round 3 fix — pre-compute exact CBOR size with checked arithmetic before allocating output buffer. Encode side now two-phase: (1) compute_encoded_size() validates all limits and returns exact byte count; (2) check against max_metadata_bytes; (3) allocate Vec::with_capacity(exact_size) and encode. decode side unchanged (input length checked before parse). Segment size and exhaustive tests unchanged from round 3. Final RESOLVED at commit 21058a0. 249 tests pass (0 fail).
 
 ## ISSUE-0011 — Multi-task commit violates Agent.md single-task discipline
 
