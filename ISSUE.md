@@ -127,19 +127,19 @@
 - Violated invariant: FORMAT.md §3.3 — distinct ID types must remain distinct Rust types at the public API boundary.
 - Required decision: Replace all raw `[u8; 32]` ID fields in authority payloads with the corresponding newtype (`KeyId`, `PolicyId`, `KeyringId`). Update constructors, accessors, `TryFrom`, `From`, encoder, decoder, and tests. Verify sorted-uniqueness constraints still apply on decoded `Vec<KeyId>` fields.
 - Work stopped: F3.2 (must be fixed before F3 can be overall GREEN)
-- Resolution: RESOLVED by commit b1e291f (all 13 originally-listed field types changed to newtypes). `PublicKeyEntry.key_id` was initially omitted with an unauthorized "out of scope" caveat; the second audit round found this caveat invalid. The `PublicKeyEntry.key_id` fix extends the resolution to all 14 authority ID fields (committed as SELF).
+- Resolution: RESOLVED by commit b1e291f (all 13 originally-listed field types changed to newtypes). `PublicKeyEntry.key_id` was initially omitted with an unauthorized "out of scope" caveat; the second audit round found this caveat invalid. The `PublicKeyEntry.key_id` fix extends the resolution to all 14 authority ID fields (committed as 1574b79).
 
 ## ISSUE-0021 — `FORMAT.md §24` completion criteria not satisfied, F3.11 freeze premature
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: tests/vectors/format-v1/ (fixture inventory); docs/PLAN.md F3.11; docs/FORMAT.md §24
 - Evidence: FORMAT.md §24 defines 9 completion criteria for freezing format v1 (FastCDC boundary vectors, CanonicalValue all variants, public/private ChunkId, all signed types valid+tampered, SMT fixtures, pack/index mismatch fixtures, byte-boundary crash tests, independent reference generator). Current F3.11/G3 gate criteria in PLAN.md §9 do not reference §24, and several §24 items require deliverables from later phases (C7, E18, M10, S5, S4). This creates a normative conflict between FORMAT.md §24 (claims to define freeze-complete) and PLAN.md F3.11 (freezes without satisfying §24). Per Agent.md §1, a normative conflict requires explicit resolution — the agent cannot choose an interpretation.
 - Violated invariant: FORMAT.md §24 completion criteria are not satisfied; PLAN.md F3.11 does not reference §24; the two specifications conflict on what constitutes a complete freeze.
 - Required decision: Either (A) implement all 9 §24 criteria, (B) formally amend FORMAT.md §24 to defer later-phase items, or (C) amend PLAN.md F3.11 to clarify that G3 freezes the §21–22 fixture subset and §24 is a cumulative lifecycle gate. Options B and C require spec amendment authorization.
-- Work stopped: none (F3 is already RED)
-- Resolution: REOPENED — previous SUPERSEDED was an agent overreach without spec amendment. The conflict between FORMAT.md §24 and PLAN.md F3.11 remains unresolved pending a spec amendment decision from the project maintainer.
+- Work stopped: none
+- Resolution: RESOLVED — option (C) applied in commit b7ac026. PLAN.md F3.11 renamed to "Freeze F3 format-v1 record/fixture subset", explicitly scoped to Phase F3 artifacts only. FORMAT.md §24 renamed to "Final global format completion criteria" with a preamble clarifying that earlier phase gates freeze scoped subsets and MUST NOT claim final completion. The §24 bullet list is unchanged and remains binding for the later full-format closure phase. All 9 original §24 criteria are preserved; none are weakened or deferred.
 
 ## ISSUE-0020 — F3.8 record registry lacked RecordIdRule and non-frame classification
 
