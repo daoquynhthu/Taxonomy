@@ -99,6 +99,16 @@ $steps += Run-Step "scripts/fuzz-smoke.ps1" {
     & $fuzzSmokeScript 2>&1
 }
 
+# G3 — reject skipped fuzz report (fail-closed: skip = gate fail)
+$fuzzReportPath = Join-Path $root (Join-Path $OutputDir "fuzz-smoke-report.json")
+if (Test-Path -LiteralPath $fuzzReportPath) {
+    $fuzzReport = Get-Content -Raw -LiteralPath $fuzzReportPath | ConvertFrom-Json
+    if ($fuzzReport.skipped -eq $true) {
+        Write-Host "[FAIL] fuzz-smoke was skipped ($($fuzzReport.reason)) — hard gate demands actual execution" -ForegroundColor Red
+        $steps[-1].exit_code = 1
+    }
+}
+
 # ── Parse test counts (capture all crate-level results) ─────────────────
 $totalPassed = 0; $totalFailed = 0; $totalIgnored = 0
 $re = [System.Text.RegularExpressions.Regex]::new('(?<passed>\d+) passed;\s*(?<failed>\d+) failed;\s*(?<ignored>\d+) ignored')

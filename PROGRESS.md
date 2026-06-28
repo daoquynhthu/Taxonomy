@@ -1,17 +1,19 @@
 # Progress
 
 ## F3.11 — Freeze F3 format-v1 record/fixture subset (Hard Gate G3)
-- Status: GREEN
-- Commit: 7badd30 (final re-freeze after all F3 BLOCKERs resolved)
-- Completed: Hard Gate G3. All 23 fixtures present and validated. All 7 CBOR fixtures re-encode identically. All 10 invalid fixtures rejected with expected structured error class. Fuzz-smoke clean for all 3 targets (cbor + names + records, 3×50000 runs, 0 crashes). All BLOCKERs from F3.11 audit resolved: ISSUE-0021 (normative conflict PLAN.md F3.11 vs FORMAT.md §24), ISSUE-0022 (PublicKeyEntry.key_id → KeyId), ISSUE-0031 (G3_REOPENED plan-ledger marker + baseline transition check), ISSUE-0032 (historical `SELF` references replaced with real SHAs). Freeze baseline frozen_commit = 7badd30. Baseline transition check added to `check-plan-ledger.ps1` (gate 8): if `frozen_commit` changes, parent must have F3.11 == RED — fail-closed. Full gate verified: fmt + clippy + check + test + doc + deps + specs + fixtures + format-freeze + plan-ledger — all pass.
+- Status: RED (CI-fix: records fuzz target OOM on Linux at -rss_limit_mb=512)
+- Commit: TBD (pre-freeze CI fix)
+- Completed: Hard Gate G3 — re-freeze 442ff92 failed CI because `records` fuzz target hit libFuzzer OOM (exit 71) on Linux at `-rss_limit_mb=512`. Root cause: `records` does ~22 `value.clone()` deep copies per input; ASan overhead + seeded corpus pushes RSS over 512MB on CI Linux runners. cbor peaks at 166Mb, names at 75Mb — both fine. Fix: per-target RSS limit (cbor/names=512, records=4096). Additionally, nightly toolchain in CI missing `rustfmt`/`clippy` components causing spurious errors in generate-gate-report.
 - Corrected by:
-  - ISSUE-0021: Resolved via user-authorised task (b7ac026) — PLAN.md F3.11 scoped to "Freeze F3 format-v1 record/fixture subset"; FORMAT.md §24 retitled to "Final global format completion criteria" with preamble clarifying it is not a gate-only criterion.
-  - ISSUE-0022: PublicKeyEntry.key_id changed from `[u8;32]` to `KeyId` (1574b79) — completes all 14 authority ID field newtype conversions.
-  - ISSUE-0031: G3_REOPENED plan-ledger marker implemented (d33f9c1). `check-format-freeze.ps1` verifies `frozen_commit` is ancestor of HEAD. `check-plan-ledger.ps1` gate 8 checks F3.11 ↔ G3_STATUS consistency + baseline transition tracking (4d62478→aedb6f8→7badd30).
-  - ISSUE-0032: 16 historical `Commit: SELF` references replaced with actual SHAs verified from git log (4f93113).
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor + names + records, all clean)
-- Evidence: `gate-report.json` (full Hard Gate G3 artifact per PLAN.md §4.3 including fuzz smoke); `fuzz-smoke-report.json` (3 targets, 150k total runs, 0 crashes)
-- Follow-up: None (GREEN — unlocks S4)
+  - ISSUE-0021: PLAN.md F3.11 vs FORMAT.md §24 normative conflict (b7ac026)
+  - ISSUE-0022: PublicKeyEntry.key_id → KeyId newtype (1574b79)
+  - ISSUE-0031: G3_REOPENED marker + baseline transition check (d33f9c1, 0e8fbb9, aedb6f8)
+  - ISSUE-0032: historical SELF → actual SHAs (4f93113)
+  - (TBD) fuzz-smoke.ps1: records uses `-rss_limit_mb=4096` (cbor/names stay 512)
+  - (TBD) ci.yml: nightly toolchain gets `components: rustfmt, clippy`
+- Tests: pending (pre-freeze)
+- Evidence: pending (pre-freeze)
+- Follow-up: Re-freeze G3 after OOM fix + CI verification
 
 ## F3.10 — Fuzz all record decoders
 

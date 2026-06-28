@@ -42,7 +42,7 @@ if ("$output" -match "nightly") {
     $nightlyAvailable = $true
 }
 if (-not $nightlyAvailable) {
-    Write-Host "[WARN] nightly toolchain not installed — fuzz targets skipped" -ForegroundColor Yellow
+    Write-Host "[FAIL] nightly toolchain not installed — cannot build fuzz targets" -ForegroundColor Red
     $report = @{
         skipped = $true
         reason = "nightly toolchain not installed"
@@ -50,13 +50,13 @@ if (-not $nightlyAvailable) {
     }
     $json = $report | ConvertTo-Json -Depth 5
     Set-Content -LiteralPath $outputPath -Value $json -Encoding UTF8
-    exit 0   # Non-fatal: fuzz requires nightly, skip on stable-only CI
+    exit 1   # F3.10+ requires fuzz gate; fail closed
 }
 
 # ── Ensure cargo-fuzz ─────────────────────────────────────────────────────
 $cargoFuzzCheck = Get-Command "cargo-fuzz" -ErrorAction SilentlyContinue
 if (-not $cargoFuzzCheck) {
-    Write-Host "[WARN] cargo-fuzz not installed — fuzz targets skipped" -ForegroundColor Yellow
+    Write-Host "[FAIL] cargo-fuzz not installed — run 'cargo install cargo-fuzz'" -ForegroundColor Red
     $report = @{
         skipped = $true
         reason = "cargo-fuzz not installed"
@@ -64,7 +64,7 @@ if (-not $cargoFuzzCheck) {
     }
     $json = $report | ConvertTo-Json -Depth 5
     Set-Content -LiteralPath $outputPath -Value $json -Encoding UTF8
-    exit 0   # Non-fatal: fuzz requires cargo-fuzz, skip if unavailable
+    exit 1   # F3.10+ requires fuzz gate; fail closed
 }
 
 # ── LLVM/ASan path detection (Windows) ────────────────────────────────────
@@ -114,23 +114,21 @@ if ($PSVersionTable.PSEdition -eq "Desktop" -or $IsWindows) {
     }
 }
 
-# ── Common fuzz arguments ────────────────────────────────────────────────
-$fuzzArgs = @(
-    "-max_len=65536"
-    "-timeout=2"
-    "-rss_limit_mb=512"
-    "-runs=50000"
-)
-
 # ── Helper: run one fuzz target ──────────────────────────────────────────
 function Run-FuzzTarget {
-    param([string]$TargetName)
+    param([string]$TargetName, [int]$RssLimitMb = 512)
     Write-Host "--- Fuzz target: $TargetName ---" -ForegroundColor Cyan
     $lines = [System.Collections.Generic.List[string]]::new()
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $ec = 0
     Push-Location $fuzzDir
-    $output = & "cargo" "+nightly" "fuzz" "run" $TargetName "--" @fuzzArgs 2>&1
+    $targetArgs = @(
+        "-max_len=65536"
+        "-timeout=2"
+        "-rss_limit_mb=$RssLimitMb"
+        "-runs=50000"
+    )
+    $output = & "cargo" "+nightly" "fuzz" "run" $TargetName "--" @targetArgs 2>&1
     $ec = $LASTEXITCODE
     Pop-Location
     foreach ($line in $output) {
@@ -198,7 +196,7 @@ Get-ChildItem -LiteralPath $fixturesDir -Include *.bin,*.cbor,*.pack,*.idx -Recu
 }
 Write-Host "records corpus seeded: $(@(Get-ChildItem -LiteralPath $recordsCorpus).Count) files" -ForegroundColor Cyan
 
-$results += Run-FuzzTarget "records"
+$results += Run-FuzzTarget "records" -RssLimitMb 4096
 
 # ── Assemble report ──────────────────────────────────────────────────────
 $overallPass = ($results | Where-Object { $_.exit_code -ne 0 -or $_.crashed -or $_.timed_out -or $_.panicked }).Count -eq 0

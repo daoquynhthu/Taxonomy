@@ -60,6 +60,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
       - name: Generate gate report
         run: pwsh -File scripts/generate-gate-report.ps1 -OutputDir .
       - uses: actions/upload-artifact@v4
