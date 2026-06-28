@@ -1,14 +1,14 @@
 {
   "description": "F3.11 format-v1 freeze baseline — do not edit without reopening G3",
    "g3_reopen_required": "To change v1 bytes, set F3.11/G3 to RED, update baseline, re-run full gate",
-   "frozen_at": "2026-06-28T04:15:00Z",
-   "frozen_commit": "4d62478",
+   "frozen_at": "2026-06-28T10:30:00Z",
+   "frozen_commit": "7badd30",
 
   "source_files": {
-    "docs/FORMAT.md": "a9121674a669dd269c6e1c64a74f76da29d120b74344e307ed7bd8045390bdae",
+    "docs/FORMAT.md": "d9368032acf760aba0ca964cd1ef6eb17d8de8ccd27d15671ca375da602ba00b",
     "tests/vectors/format-v1/manifest.json": "7468d538d5e42d13c7b45c1afe3dc3b1a29cef8de79cb313f738ffff0fc33ee1",
     "tests/vectors/format-v1/format-v1.json": "1df73acc7573cd2d79c20bc235af94bd149ef43ad5153b4b3ddca9e86d1d3d31",
-    "crates/eternal-format/src/record.rs": "d8682e1659e5b2106a0233f57869da0ad9b7a604480be84636ae077b51b06171",
+    "crates/eternal-format/src/record.rs": "c95ac66b00d11a05810f327d6c90ef1116c57b34cd3dfc124660058679acbbb4",
     "crates/eternal-format/src/domain.rs": "fe07fd3085d5063ca7f431b8397c3b97b3f2042e68e498780ff9c6f7432fcf64",
     "crates/eternal-format/src/ids.rs": "424aecf646b5d73ed5aca557bef187f60a425392b7b7d65edbed64fe2f521be1",
     "crates/eternal-format/src/limits.rs": "49f872b7093c098e74d3c9eff2054dc5fa759c70e322e11b530c44fbadd923de",
@@ -17,8 +17,9 @@
     "crates/eternal-format/src/lib.rs": "1ec7fd9b51b9f4a87ab7755fe0fe85a68eb97354578df6030b6d85ae4345990b",
     "crates/eternal-format/Cargo.toml": "cb58f0994039ef01c38c69613e36ba022e2dba9045bdd2b748f879e253a8e587",
     "Cargo.lock": "8a2bf6f42cb646407ada77f1b9a31a92d22619c1cc3b5544c1854d7707e07f88",
-    "scripts/check-format-freeze.ps1": "01bcdd532aa24a73d6549ee0d7ee603e1e2cb21a01bfbe95581b9bfc835afbdf",
-    "scripts/generate-gate-report.ps1": "656ed2c7b70325d3e2f6d40d1c3a4205a82fafbef3a21a3fb210435abbf974e0"
+    "scripts/check-format-freeze.ps1": "8a455377759a84aacb0e7f97fbeffcb1960f6ee52f894638ba35474b263591be",
+    "scripts/generate-gate-report.ps1": "656ed2c7b70325d3e2f6d40d1c3a4205a82fafbef3a21a3fb210435abbf974e0",
+    "scripts/check-plan-ledger.ps1": "1530a34d987e70b10492f0eb0fd4841caca31d9accf004daa878289b908d3898"
   },
 
   "fuzz_targets": {

@@ -1,17 +1,17 @@
 # Progress
 
 ## F3.11 — Freeze F3 format-v1 record/fixture subset (Hard Gate G3)
-- Status: RED (G3 reopened — all BLOCKERs resolved, re-freeze pending)
-- Commit: 62b2d6f (initial freeze); re-freezed at b0826a0; current baseline 4d62478
-- Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum. All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
+- Status: GREEN
+- Commit: 7badd30 (final re-freeze after all F3 BLOCKERs resolved)
+- Completed: Hard Gate G3. All 23 fixtures present and validated. All 7 CBOR fixtures re-encode identically. All 10 invalid fixtures rejected with expected structured error class. Fuzz-smoke clean for all 3 targets (cbor + names + records, 3×50000 runs, 0 crashes). All BLOCKERs from F3.11 audit resolved: ISSUE-0021 (normative conflict PLAN.md F3.11 vs FORMAT.md §24), ISSUE-0022 (PublicKeyEntry.key_id → KeyId), ISSUE-0031 (G3_REOPENED plan-ledger marker + baseline transition check), ISSUE-0032 (historical `SELF` references replaced with real SHAs). Freeze baseline frozen_commit = 7badd30. Baseline transition check added to `check-plan-ledger.ps1` (gate 8): if `frozen_commit` changes, parent must have F3.11 == RED — fail-closed. Full gate verified: fmt + clippy + check + test + doc + deps + specs + fixtures + format-freeze + plan-ledger — all pass.
 - Corrected by:
-  - ISSUE-0024: `physical.rs` — magic constants corrected to 8 bytes, `InvalidFormatVersion` error added, `validate_pack_index` uses `DomainHash` per FORMAT §16.5. (6d0a0c0)
-  - ISSUE-0025: `generate-gate-report.ps1` — G3 script guards changed from `if (Test-Path) { run }` to `if (-not (Test-Path)) { exit 1 }`, fail-closed on missing scripts. (6867b9b)
-  - ISSUE-0023: `freeze-baseline.json` `frozen_commit` set to `62b2d6f`; `check-format-freeze.ps1` rewritten to use `git diff --quiet <frozen_commit> -- <path>`. Plan-ledger G3_REOPENED marker check deferred. (0f199fb)
-  - ISSUE-0026: `fuzz-smoke.ps1` corpus seeding made deterministic (wipes corpus dir before re-seeding). (b0826a0)
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1` (exits 1 — G3 reopened); `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor 63MB + names 54MB + records 59MB peak RSS, all clean, records corpus = 415 files)
+  - ISSUE-0021: Resolved via user-authorised task (b7ac026) — PLAN.md F3.11 scoped to "Freeze F3 format-v1 record/fixture subset"; FORMAT.md §24 retitled to "Final global format completion criteria" with preamble clarifying it is not a gate-only criterion.
+  - ISSUE-0022: PublicKeyEntry.key_id changed from `[u8;32]` to `KeyId` (1574b79) — completes all 14 authority ID field newtype conversions.
+  - ISSUE-0031: G3_REOPENED plan-ledger marker implemented (d33f9c1). `check-format-freeze.ps1` verifies `frozen_commit` is ancestor of HEAD. `check-plan-ledger.ps1` gate 8 checks F3.11 ↔ G3_STATUS consistency + baseline transition tracking (4d62478→aedb6f8→7badd30).
+  - ISSUE-0032: 16 historical `Commit: SELF` references replaced with actual SHAs verified from git log (4f93113).
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor + names + records, all clean)
 - Evidence: `gate-report.json` (full Hard Gate G3 artifact per PLAN.md §4.3 including fuzz smoke); `fuzz-smoke-report.json` (3 targets, 150k total runs, 0 crashes)
-- Follow-up: Fix remaining F3 BLOCKERs, implement G3_REOPENED plan-ledger marker, then re-freeze G3 with new frozen_commit
+- Follow-up: None (GREEN — unlocks S4)
 
 ## F3.10 — Fuzz all record decoders
 
