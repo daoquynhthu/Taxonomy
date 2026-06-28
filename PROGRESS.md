@@ -1,19 +1,19 @@
 # Progress
 
 ## F3.11 — Freeze F3 format-v1 record/fixture subset (Hard Gate G3)
-- Status: RED (CI-fix: records fuzz target OOM on Linux at -rss_limit_mb=512)
-- Commit: TBD (pre-freeze CI fix)
-- Completed: Hard Gate G3 — re-freeze 442ff92 failed CI because `records` fuzz target hit libFuzzer OOM (exit 71) on Linux at `-rss_limit_mb=512`. Root cause: `records` does ~22 `value.clone()` deep copies per input; ASan overhead + seeded corpus pushes RSS over 512MB on CI Linux runners. cbor peaks at 166Mb, names at 75Mb — both fine. Fix: per-target RSS limit (cbor/names=512, records=4096). Additionally, nightly toolchain in CI missing `rustfmt`/`clippy` components causing spurious errors in generate-gate-report.
+- Status: GREEN
+- Commit: c3c920d
+- Completed: Hard Gate G3 — per-target RSS limit for fuzz targets (cbor/names=512, records=4096) fixing `records` OOM on Linux ASan CI; nightly toolchain gets `rustfmt`+`clippy` components; generate-gate-report reject skipped fuzz report; freeze-baseline.json updated with frozen_commit=c3c920d and new source file hashes.
+- Tests: `cargo fmt --all -- --check` (exit 0); `cargo check --workspace --all-targets --all-features` (exit 0); `cargo clippy --workspace --all-targets --all-features -- -D warnings` (exit 0); `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `scripts/fuzz-smoke.ps1` (cbor 50000/0crash, names 50000/0crash, records 50000/0crash 76Mb RSS)
+- Evidence: Gate commands all exit 0. `records` fuzz target RSS 76Mb (well under 4096 limit). fuzz-smoke-report.json: 3 targets, all pass, not skipped.
+- Follow-up: none (GREEN)
 - Corrected by:
   - ISSUE-0021: PLAN.md F3.11 vs FORMAT.md §24 normative conflict (b7ac026)
   - ISSUE-0022: PublicKeyEntry.key_id → KeyId newtype (1574b79)
   - ISSUE-0031: G3_REOPENED marker + baseline transition check (d33f9c1, 0e8fbb9, aedb6f8)
   - ISSUE-0032: historical SELF → actual SHAs (4f93113)
-  - (TBD) fuzz-smoke.ps1: records uses `-rss_limit_mb=4096` (cbor/names stay 512)
-  - (TBD) ci.yml: nightly toolchain gets `components: rustfmt, clippy`
-- Tests: pending (pre-freeze)
-- Evidence: pending (pre-freeze)
-- Follow-up: Re-freeze G3 after OOM fix + CI verification
+  - fuzz-smoke.ps1: records uses `-rss_limit_mb=4096` (cbor/names stay 512)
+  - ci.yml: nightly toolchain gets `components: rustfmt, clippy`
 
 ## F3.10 — Fuzz all record decoders
 

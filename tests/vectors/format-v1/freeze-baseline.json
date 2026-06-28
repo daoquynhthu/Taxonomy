@@ -1,8 +1,8 @@
 {
   "description": "F3.11 format-v1 freeze baseline — do not edit without reopening G3",
    "g3_reopen_required": "To change v1 bytes, set F3.11/G3 to RED, update baseline, re-run full gate",
-   "frozen_at": "2026-06-28T10:30:00Z",
-   "frozen_commit": "7badd30",
+    "frozen_at": "2026-06-28T14:45:00Z",
+    "frozen_commit": "c3c920d",
 
   "source_files": {
     "docs/FORMAT.md": "d9368032acf760aba0ca964cd1ef6eb17d8de8ccd27d15671ca375da602ba00b",
@@ -18,13 +18,13 @@
     "crates/eternal-format/Cargo.toml": "cb58f0994039ef01c38c69613e36ba022e2dba9045bdd2b748f879e253a8e587",
     "Cargo.lock": "8a2bf6f42cb646407ada77f1b9a31a92d22619c1cc3b5544c1854d7707e07f88",
     "scripts/check-format-freeze.ps1": "8a455377759a84aacb0e7f97fbeffcb1960f6ee52f894638ba35474b263591be",
-    "scripts/generate-gate-report.ps1": "656ed2c7b70325d3e2f6d40d1c3a4205a82fafbef3a21a3fb210435abbf974e0",
+    "scripts/generate-gate-report.ps1": "a3221a4fbd9231105150f0a3b5d2b7cde28a3c26f32fd79d7dc06bd82f064563",
     "scripts/check-plan-ledger.ps1": "1530a34d987e70b10492f0eb0fd4841caca31d9accf004daa878289b908d3898"
   },
 
   "fuzz_targets": {
     "fuzz/targets/records.rs": "56c017070e5cfdb35276bdabffe1b6dbd502a7d8d5da46bbe72bc6bb12638d17",
-    "scripts/fuzz-smoke.ps1": "81fc3775adead7f20eb73c4763fa9436ceb5b39d34562dd18252207ec246df27"
+    "scripts/fuzz-smoke.ps1": "1b48c7f9abde36ab223021d5a10a83be62b2265a0e2ab058ad9b81fa89316546"
   },
 
   "fixtures": {
