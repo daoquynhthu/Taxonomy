@@ -13,7 +13,12 @@
     "crates/eternal-format/src/ids.rs": "424aecf646b5d73ed5aca557bef187f60a425392b7b7d65edbed64fe2f521be1",
     "crates/eternal-format/src/limits.rs": "49f872b7093c098e74d3c9eff2054dc5fa759c70e322e11b530c44fbadd923de",
     "crates/eternal-format/src/canonical.rs": "0e35b1f58983abdd42771dec37d9f48cc706ef6fe9d45df11535d8724ef060fc",
-    "crates/eternal-format/src/physical.rs": "ce48845b3e057bfde7b52ef700392c037b2f504bc4026bd202ba1dcda3fbaf3a"
+    "crates/eternal-format/src/physical.rs": "ce48845b3e057bfde7b52ef700392c037b2f504bc4026bd202ba1dcda3fbaf3a",
+    "crates/eternal-format/src/lib.rs": "1ec7fd9b51b9f4a87ab7755fe0fe85a68eb97354578df6030b6d85ae4345990b",
+    "crates/eternal-format/Cargo.toml": "cb58f0994039ef01c38c69613e36ba022e2dba9045bdd2b748f879e253a8e587",
+    "Cargo.lock": "8a2bf6f42cb646407ada77f1b9a31a92d22619c1cc3b5544c1854d7707e07f88",
+    "scripts/check-format-freeze.ps1": "8cbb9b40a4aaf88613f36c9f1dd42d47ca77b27026fb2f4242dba482eea3edb9",
+    "scripts/generate-gate-report.ps1": "656ed2c7b70325d3e2f6d40d1c3a4205a82fafbef3a21a3fb210435abbf974e0"
   },
 
   "fuzz_targets": {

@@ -22,7 +22,7 @@
 - Violated invariant: PLAN.md F3.11 Hard Gate G3 requires that no subsequent phase may change format-defining artifacts without reopening G3.
 - Required decision: Add `check-format-freeze.ps1`, `generate-gate-report.ps1`, `Cargo.toml`, `Cargo.lock`, and `lib.rs` to the freeze baseline.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED — `scripts/check-format-freeze.ps1`, `scripts/generate-gate-report.ps1`, `crates/eternal-format/Cargo.toml`, `Cargo.lock`, and `crates/eternal-format/src/lib.rs` added to `freeze-baseline.json` source_files section with SHA-256 hashes. All five files unchanged since frozen commit b0826a0 (git diff returns 0).
 
 ## ISSUE-0028 — `ISSUE.md` resolutions use `SELF`, long-term audit imprecise
 
