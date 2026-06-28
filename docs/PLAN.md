@@ -744,15 +744,33 @@ Add every missing fixture required by `FORMAT.md`, including valid and invalid s
 
 One fuzz target may dispatch by record type, but it must exercise every decoder and resource limit.
 
-### F3.11 Freeze format v1
+### F3.11 Freeze F3 format-v1 record/fixture subset
 
 **Hard Gate G3**
 
-- every required fixture exists;
-- every valid fixture decodes and re-encodes identically;
-- every invalid fixture is rejected with the expected structured class;
-- all format parsers are fuzz-smoke clean;
-- no subsequent phase may change v1 bytes without reopening G3.
+This gate freezes only the format-v1 artifacts implemented by Phase F3:
+record payload schemas, signed-record envelope encoding, record type
+registry, F3-required committed fixtures, non-CBOR physical fixture
+validators, and F3 parser fuzz-smoke coverage.
+
+G3 is not the final global format-v1 completion gate. The final global
+format-v1 completion criteria are defined in `FORMAT.md` §24 and remain
+binding for the later phase that closes the complete format lifecycle.
+
+**Green**
+
+- every F3-required fixture exists;
+- every valid F3 fixture decodes and re-encodes identically, or passes
+  structured non-CBOR validation where byte re-encoding is not applicable;
+- every invalid F3 fixture is rejected with the expected structured class;
+- all F3 format parsers are fuzz-smoke clean;
+- no subsequent phase may change G3-frozen v1 bytes, schemas, registry
+  mappings, fixture bytes, or validator semantics without reopening G3.
+
+Later phases may add new format-v1 fixtures, generators, crash tests,
+SMT membership fixtures, pack/index mismatch fixtures, chunking vectors,
+or reference-generator checks under their own gates. Such additions do
+not reopen G3 unless they change an artifact frozen by G3.
 
 ## 10. Phase S4 — Active segment and recovery
 

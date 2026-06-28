@@ -1448,9 +1448,18 @@ To minimize denial-of-service and parser-confusion risk, parsers MUST validate i
 
 A lower-layer successful check never substitutes for a higher-layer check. In particular, CRC success is not RecordId validation, storage-hash success is not plaintext audit, and signature validity is not authorization.
 
-## 24. Format completion criteria
+## 24. Final global format completion criteria
 
-Format version 1 is frozen only when:
+This section defines the final global format-v1 completion gate. It is
+not the same gate as the earlier Phase F3 record/fixture subset freeze
+defined by `PLAN.md` F3.11/G3.
+
+Earlier phase gates may freeze explicitly scoped subsets of format-v1
+artifacts that are already implemented and required by downstream work.
+A subset freeze MUST state its scope and MUST NOT claim final global
+format-v1 completion.
+
+Format version 1 is globally complete only when:
 
 - all vectors in Section 21 are committed as files;
 - FastCDC boundary vectors cover inputs around MIN, AVG, and MAX;
