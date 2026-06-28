@@ -8,7 +8,7 @@
     "docs/FORMAT.md": "a9121674a669dd269c6e1c64a74f76da29d120b74344e307ed7bd8045390bdae",
     "tests/vectors/format-v1/manifest.json": "7468d538d5e42d13c7b45c1afe3dc3b1a29cef8de79cb313f738ffff0fc33ee1",
     "tests/vectors/format-v1/format-v1.json": "1df73acc7573cd2d79c20bc235af94bd149ef43ad5153b4b3ddca9e86d1d3d31",
-    "crates/eternal-format/src/record.rs": "6dcf05687ce3fe2ab12497da84338d14b2da149d375c0f3be9ec4162e2edea56",
+    "crates/eternal-format/src/record.rs": "d8682e1659e5b2106a0233f57869da0ad9b7a604480be84636ae077b51b06171",
     "crates/eternal-format/src/domain.rs": "fe07fd3085d5063ca7f431b8397c3b97b3f2042e68e498780ff9c6f7432fcf64",
     "crates/eternal-format/src/ids.rs": "424aecf646b5d73ed5aca557bef187f60a425392b7b7d65edbed64fe2f521be1",
     "crates/eternal-format/src/limits.rs": "49f872b7093c098e74d3c9eff2054dc5fa759c70e322e11b530c44fbadd923de",

@@ -1,5 +1,154 @@
 # Issues
 
+## ISSUE-0030 — `check-format-freeze.ps1` references non-existent baseline generator script
+
+- Status: OPEN
+- Severity: WARNING
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: scripts/check-format-freeze.ps1:16
+- Evidence: `check-format-freeze.ps1` line 16 instructs "Run scripts/gen-format-freeze-baseline.ps1 to create it." but no such script exists in the repository. The script works correctly when baseline exists, but the error path is misleading for G3 reopen workflow.
+- Violated invariant: Agent.md §2 — a gate script must not reference non-existent tools.
+- Required decision: Either commit `scripts/gen-format-freeze-baseline.ps1` or replace the prompt with manual steps.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0029 — Freeze baseline does not cover gate scripts, Cargo.toml, Cargo.lock, or lib.rs
+
+- Status: OPEN
+- Severity: WARNING
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: tests/vectors/format-v1/freeze-baseline.json
+- Evidence: `freeze-baseline.json` records source_files (FORMAT.md, manifest, format-v1.json, record.rs, domain.rs, ids.rs, limits.rs, canonical.rs, physical.rs), fuzz_targets (records.rs, fuzz-smoke.ps1), and all 22 fixtures. It does NOT record: scripts/check-format-freeze.ps1, scripts/generate-gate-report.ps1, crates/eternal-format/Cargo.toml (which controls the crc32c dependency), Cargo.lock (pinned dependency tree), or crates/eternal-format/src/lib.rs (module exports). A silent change to any of these could bypass the freeze check.
+- Violated invariant: PLAN.md F3.11 Hard Gate G3 requires that no subsequent phase may change format-defining artifacts without reopening G3.
+- Required decision: Add `check-format-freeze.ps1`, `generate-gate-report.ps1`, `Cargo.toml`, `Cargo.lock`, and `lib.rs` to the freeze baseline.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0028 — `ISSUE.md` resolutions use `SELF`, long-term audit imprecise
+
+- Status: OPEN
+- Severity: WARNING
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: ISSUE.md (ISSUE-0020, ISSUE-0015, ISSUE-0012)
+- Evidence: ISSUE-0020 resolution: "RESOLVED by commit SELF". ISSUE-0015 resolution: "Fixed in commit SELF". ISSUE-0012 resolution: "Final RESOLVED at commit SELF". `Agent.md` §3.2 requires preserving resolved issues as audit trail, and `SELF` cannot uniquely identify the fix commit after multiple rounds of repair.
+- Violated invariant: Agent.md §3.2 — preserve resolved issues as an audit trail with exact references.
+- Required decision: Replace all `SELF` in resolved issue resolutions with the actual commit SHA. The current commit `62b2d6f` is irrelevant for old issues — the original fix commits must be recovered from git log.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0027 — `PROGRESS.md` order inconsistent and historical tasks use `SELF`
+
+- Status: OPEN
+- Severity: WARNING
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: PROGRESS.md
+- Evidence: PROGRESS.md entry order is not newest-first as required by Agent.md §3.1. Current sequence: F3.11, F3.10, F3.9, F3.8, F3.7, F3.4, F3.6, F3.5, F3.2, F3.3, F3.1 (F3.4 appears before F3.6, F3.2 before F3.3, and F3.8 before F3.9). Additionally, F3.1–F3.10 entries use `Commit: SELF` which loses traceability after multiple repair rounds.
+- Violated invariant: Agent.md §3.1 — PROGRESS.md must be newest-first; each entry must use commit hash or SELF for current commit.
+- Required decision: Reorder PROGRESS.md strictly newest-first (F3.11, F3.10, ..., F3.1). Replace `Commit: SELF` in F3.1–F3.10 with actual short SHAs recovered from git log.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0026 — Fuzz corpus seed not reproducible, mixes local ignored state
+
+- Status: OPEN
+- Severity: HIGH
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: scripts/fuzz-smoke.ps1:188–200, fuzz/corpus/ (gitignored)
+- Evidence: `scripts/fuzz-smoke.ps1` seeds the `records` corpus by copying committed fixtures into `fuzz/corpus/records/` but never clears the directory first. Since `.gitignore` ignores `fuzz/corpus/`, any machine that previously ran fuzz targets will have accumulated libFuzzer-generated mutation files. The corpus count (415 files reported in F3.11 vs 256 in F3.10) includes these local mutations, not just committed seeds. This makes the fuzz smoke gate non-reproducible across machines and checkouts.
+- Violated invariant: PLAN.md F3.10 requires a reproducible, verifiable fuzz smoke gate with auto-seeded corpus.
+- Required decision: Clear `fuzz/corpus/records/` before seeding, or use a temp directory for the corpus.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0025 — `generate-gate-report.ps1` not fail-closed on G3 script deletion
+
+- Status: OPEN
+- Severity: HIGH
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: scripts/generate-gate-report.ps1:82–96
+- Evidence: `generate-gate-report.ps1` wraps the G3 freeze check and fuzz-smoke steps in `if (Test-Path $script) { run }` blocks (lines 84, 92). If a later commit accidentally deletes `check-format-freeze.ps1` or `fuzz-smoke.ps1`, the gate-report generator will silently skip both steps instead of failing. For a Hard Gate G3, script absence is a fatal condition, not an optional step.
+- Violated invariant: PLAN.md §4 — hard phase gate must produce verifiable evidence that all required checks passed.
+- Required decision: Replace `if (Test-Path) { ... }` with `if (-not (Test-Path)) { exit 1 }` for both G3 scripts.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0024 — `physical.rs` validator does not fully conform to FORMAT binary format spec
+
+- Status: OPEN
+- Severity: HIGH
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: crates/eternal-format/src/physical.rs:27, 74, 110
+- Evidence: Three conformance gaps:
+  1. **4-byte magic instead of 8-byte:** FORMAT.md §14.2 defines segment header magic as `ETSEG\0\0\0` (8 bytes), but `SEGMENT_HEADER_MAGIC` is `[b'E', b'T', b'S', b'E']` (4 bytes). FORMAT §15.2 pack magic is `ETPACK\0\0` (8 bytes) but `PACK_MAGIC` is `[b'E', b'T', b'P', b'A']` (4 bytes). FORMAT §16.2 index magic is `ETIDX\0\0\0` (8 bytes) but `INDEX_MAGIC` is `[b'E', b'T', b'I', b'D']` (4 bytes). Any input with matching 4-byte prefix but corrupted suffix bytes will bypass magic validation.
+  2. **No format_version check:** FORMAT.md §23 requires parsers to verify fixed magic and format version. None of the three validators check that `version == 1`.
+  3. **validate_pack_index uses hardcoded golden checksum:** FORMAT.md §16.5 requires zeroing the last 32 bytes and recomputing `DomainHash("EternalCore:PackIndex:v1", zeroed_bytes)`. Current code compares against a single golden value. This rejects any valid pack index with a different checksum.
+- Violated invariant: FORMAT.md §14.2, §15.2, §16.2 (magic size), §23 (version check), §16.5 (checksum domain).
+- Required decision: Extend magic checks to full 8 bytes; add format_version == 1 check to all three validators; rewrite `validate_pack_index` to recompute checksum via zeroed DomainHash instead of golden comparison.
+- Work stopped: none
+- Resolution: pending
+
+## ISSUE-0023 — Freeze baseline can be silently updated with v1 bytes, cannot enforce G3 reopen
+
+- Status: OPEN
+- Severity: BLOCKER
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: tests/vectors/format-v1/freeze-baseline.json, scripts/check-format-freeze.ps1
+- Evidence: Three deficiencies:
+  1. `frozen_commit` is `"SELF"` instead of the actual commit SHA (`62b2d6f`). This makes it impossible to verify from Git history what the frozen state was.
+  2. `check-format-freeze.ps1` computes SHA-256 of files on disk via `Get-FileHash`. If a later commit modifies both a v1 source file AND `freeze-baseline.json` in the same commit, the script still passes because it compares current bytes against current baseline. The script only detects drift when baseline is not updated — it cannot detect simultaneous malicious or accidental updates.
+  3. No `G3_REOPENED` marker check exists. PLAN.md F3.11 requires that no subsequent phase may change v1 bytes without reopening G3, but the script has no mechanism to verify that `plan-ledger.json` currently has F3.11=RED (reopened) before allowing a baseline update.
+- Violated invariant: PLAN.md F3.11 Hard Gate G3 — "no subsequent phase may change v1 bytes without reopening G3."
+- Required decision: (1) Set `frozen_commit` to the actual commit SHA `62b2d6f`; (2) Rewrite `check-format-freeze.ps1` to use `git show <frozen_commit>:<path>` or `git hash-object` to verify current file content matches the frozen commit, not just the current baseline; (3) Add `plan-ledger.json` to the baseline and verify F3.11=RED (reopened) before allowing update.
+- Work stopped: F3.11 (currently marked GREEN but must return RED)
+- Resolution: pending
+
+## ISSUE-0022 — F3.2 authority payload schemas use raw `[u8; 32]`, violating ID newtype domain
+
+- Status: RESOLVED
+- Severity: BLOCKER
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: crates/eternal-format/src/record.rs (authority payload structs)
+- Evidence: FORMAT.md §3.3 and Agent.md §5 require distinct Rust types for distinct identifier domains. `ids.rs` defines `KeyId`, `PolicyId`, `KeyringId` via `hash_id!`. However, F3.2 authority payloads still use raw `[u8; 32]`:
+  - `RepositoryGenesisPayload.creator_key_id: [u8; 32]` (should be `KeyId`)
+  - `RepositoryGenesisPayload.initial_policy_id: [u8; 32]` (should be `PolicyId`)
+  - `RepositoryGenesisPayload.initial_keyring_id: [u8; 32]` (should be `KeyringId`)
+  - `PolicyRecordPayload.previous_policy_id: Option<[u8; 32]>` (should be `Option<PolicyId>`)
+  - `PolicyRecordPayload.administrators: Vec<[u8; 32]>` (should be `Vec<KeyId>`)
+  - `PolicyRecordPayload.writers: Vec<[u8; 32]>` (should be `Vec<KeyId>`)
+  - `PolicyRecordPayload.tag_creators: Vec<[u8; 32]>` (should be `Vec<KeyId>`)
+  - `PolicyRecordPayload.revoked_keys: Vec<[u8; 32]>` (should be `Vec<KeyId>`)
+  - `PolicyRecordPayload.author_key_id: [u8; 32]` (should be `KeyId`)
+  - `KeySlot.recipient_key_id: Option<[u8; 32]>` (should be `Option<KeyId>`)
+  - `KeyringRecordPayload.previous_keyring_id: Option<[u8; 32]>` (should be `Option<KeyringId>`)
+  - `KeyringRecordPayload.author_key_id: [u8; 32]` (should be `KeyId`)
+  - `RefUpdateEnvelopePayload.writers: Vec<[u8; 32]>` (should be `Vec<KeyId>`)
+  This is the same class of defect that was fixed as BLOCKER in ISSUE-0018 (F3.6) and ISSUE-0015 (F3.3). The inconsistency suggests F3.2 was never audited against the same standard.
+- Violated invariant: FORMAT.md §3.3 — distinct ID types must remain distinct Rust types at the public API boundary.
+- Required decision: Replace all raw `[u8; 32]` ID fields in authority payloads with the corresponding newtype (`KeyId`, `PolicyId`, `KeyringId`). Update constructors, accessors, `TryFrom`, `From`, encoder, decoder, and tests. Verify sorted-uniqueness constraints still apply on decoded `Vec<KeyId>` fields.
+- Work stopped: F3.2 (must be fixed before F3 can be overall GREEN)
+- Resolution: RESOLVED by commit SELF (all 13 field types changed to newtypes: RefPermissionEntry.writers → Vec<KeyId>, RepositoryGenesisPayload 3 fields, PolicyRecordPayload 6 fields, KeySlot.recipient_key_id → Option<KeyId>, KeyringRecordPayload 2 fields. Sorted-uniqueness checks use Ord on newtypes directly. check_sorted_unique_bytes helper removed. 592 tests + fmt + clippy + all gate scripts pass.)
+
+## ISSUE-0021 — `FORMAT.md §24` completion criteria not satisfied, F3.11 freeze premature
+
+- Status: OPEN
+- Severity: BLOCKER
+- Discovered in: F3.11 audit 2026-06-28
+- Affected scope: tests/vectors/format-v1/ (fixture inventory)
+- Evidence: FORMAT.md §24 defines the completion criteria for freezing format v1. Current state:
+  - ✅ all Section 21 vectors committed as files (7 valid CBOR + 10 invalid + format-v1.json + manifest.json = 22 files)
+  - ❌ FastCDC boundary vectors covering inputs around MIN (1 MiB), AVG (4 MiB), and MAX (8 MiB) — not committed (requires variable-sized fixture files up to 8 MiB)
+  - ❌ canonical metadata vectors for every CanonicalValue variant — only a subset is covered by existing fixtures
+  - ❌ both public and private ChunkId mode vectors — only public mode fixtures exist
+  - ❌ every signed record type has a valid AND tampered fixture — some signed types missing tampered variants (e.g., RepoCommitPayload, RefUpdatePayload only have valid fixtures)
+  - ❌ SMT membership and non-membership fixtures — not committed
+  - ❌ pack/index mismatch fixtures — only pack-v1-invalid-trailer.bin and pack-v1-idx-invalid-checksum.bin exist; no structural mismatches (e.g., fanout/record_count disagreement)
+  - ❌ crash tests truncating segment files at every byte boundary of a complete transaction — not implemented (requires ~62-byte truncation sequences at each boundary)
+  - ❌ Rust encoder output matches independent reference generator byte-for-byte — `gen-format-v1-fixtures.ps1` reads hex from format-v1.json and writes binary; it is not an independent encoder
+- Violated invariant: FORMAT.md §24 — "Format version 1 is frozen only when [all 9 criteria]."
+- Required decision: Either (A) implement all 9 FORMAT §24 criteria (FastCDC vectors, CanonicalValue all-variant vectors, public/private ChunkId vectors, all signed types valid+tampered, SMT fixtures, pack/index mismatch fixtures, byte-boundary crash truncation tests, independent reference generator), or (B) formally amend FORMAT.md §24 to narrow the freeze criteria. Option (A) is architecturally correct but requires significant new fixture generation (including multi-megabyte FastCDC files). Option (B) requires a spec amendment task. Until one is complete, F3.11 cannot be GREEN.
+- Work stopped: F3.11 (currently marked GREEN but must return RED), S4.1 (blocked)
+- Resolution: pending
+
 ## ISSUE-0020 — F3.8 record registry lacked RecordIdRule and non-frame classification
 
 - Status: RESOLVED

@@ -157,15 +157,6 @@ fn field_nullable_bytes_exact<const N: usize>(
     }
 }
 
-fn check_sorted_unique_bytes(items: &[Vec<u8>], key: u64) -> Result<(), PayloadError> {
-    for w in items.windows(2) {
-        if w[0] >= w[1] {
-            return Err(PayloadError::UnsortedOrDuplicate { key });
-        }
-    }
-    Ok(())
-}
-
 fn check_sorted_unique_u64(items: &[u64], key: u64) -> Result<(), PayloadError> {
     for w in items.windows(2) {
         if w[0] >= w[1] {
@@ -538,30 +529,37 @@ impl TryFrom<Value> for PublicKeyEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RefPermissionEntry {
     pattern: RefPattern,
-    writers: Vec<[u8; 32]>,
+    writers: Vec<KeyId>,
 }
 
 impl RefPermissionEntry {
-    pub fn new(pattern: RefPattern, writers: Vec<[u8; 32]>) -> Result<Self, PayloadError> {
+    pub fn new(pattern: RefPattern, writers: Vec<KeyId>) -> Result<Self, PayloadError> {
         if writers.is_empty() {
             return Err(PayloadError::EmptyArray { key: 1 });
         }
-        let raw: Vec<Vec<u8>> = writers.iter().map(|w| w.to_vec()).collect();
-        check_sorted_unique_bytes(&raw, 1)?;
+        for w in writers.windows(2) {
+            if w[0] >= w[1] {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 1 });
+            }
+        }
         Ok(Self { pattern, writers })
     }
 
     pub fn pattern(&self) -> &RefPattern {
         &self.pattern
     }
-    pub fn writers(&self) -> &[[u8; 32]] {
+    pub fn writers(&self) -> &[KeyId] {
         &self.writers
     }
 }
 
 impl From<&RefPermissionEntry> for Value {
     fn from(p: &RefPermissionEntry) -> Self {
-        let writers: Vec<Value> = p.writers.iter().map(|w| Value::Bytes(w.to_vec())).collect();
+        let writers: Vec<Value> = p
+            .writers
+            .iter()
+            .map(|w| Value::Bytes(w.as_bytes().to_vec()))
+            .collect();
         Value::Map(vec![
             (Value::U64(0), Value::Text(p.pattern.to_string())),
             (Value::U64(1), Value::Array(writers)),
@@ -584,10 +582,9 @@ impl TryFrom<Value> for RefPermissionEntry {
             detail: e.to_string(),
         })?;
         let raw_writers = bytes_array_field(&fields, 1)?;
-        let writers: Vec<[u8; 32]> = raw_writers
+        let writers: Vec<KeyId> = raw_writers
             .iter()
             .map(|b| {
-                let mut arr = [0u8; 32];
                 if b.len() != 32 {
                     return Err(PayloadError::WrongLength {
                         key: 1,
@@ -595,8 +592,9 @@ impl TryFrom<Value> for RefPermissionEntry {
                         actual: b.len(),
                     });
                 }
+                let mut arr = [0u8; 32];
                 arr.copy_from_slice(b);
-                Ok(arr)
+                Ok(KeyId::from(arr))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(pattern, writers)
@@ -612,10 +610,10 @@ pub struct RepositoryGenesisPayload {
     format_version: u64,
     repository_id: [u8; 16],
     federation_id: [u8; 16],
-    creator_key_id: [u8; 32],
+    creator_key_id: KeyId,
     creator_public_key: [u8; 32],
-    initial_policy_id: [u8; 32],
-    initial_keyring_id: [u8; 32],
+    initial_policy_id: PolicyId,
+    initial_keyring_id: KeyringId,
     created_at_ns: i64,
 }
 
@@ -625,10 +623,10 @@ impl RepositoryGenesisPayload {
         format_version: u64,
         repository_id: [u8; 16],
         federation_id: [u8; 16],
-        creator_key_id: [u8; 32],
+        creator_key_id: KeyId,
         creator_public_key: [u8; 32],
-        initial_policy_id: [u8; 32],
-        initial_keyring_id: [u8; 32],
+        initial_policy_id: PolicyId,
+        initial_keyring_id: KeyringId,
         created_at_ns: i64,
     ) -> Result<Self, PayloadError> {
         if format_version != 1 {
@@ -647,12 +645,12 @@ impl RepositoryGenesisPayload {
                     detail: "domain hash tag too long (infallible)".into(),
                 }
             })?;
-        if creator_key_id != expected {
+        if *creator_key_id.as_bytes() != expected {
             return Err(PayloadError::UnsupportedValue {
                 key: 3,
                 detail: format!(
                     "creator_key_id {}... does not match computed fingerprint {}...",
-                    hex_prefix(&creator_key_id),
+                    hex_prefix(creator_key_id.as_bytes()),
                     hex_prefix(&expected)
                 ),
             });
@@ -678,16 +676,16 @@ impl RepositoryGenesisPayload {
     pub fn federation_id(&self) -> &[u8; 16] {
         &self.federation_id
     }
-    pub fn creator_key_id(&self) -> &[u8; 32] {
+    pub fn creator_key_id(&self) -> &KeyId {
         &self.creator_key_id
     }
     pub fn creator_public_key(&self) -> &[u8; 32] {
         &self.creator_public_key
     }
-    pub fn initial_policy_id(&self) -> &[u8; 32] {
+    pub fn initial_policy_id(&self) -> &PolicyId {
         &self.initial_policy_id
     }
-    pub fn initial_keyring_id(&self) -> &[u8; 32] {
+    pub fn initial_keyring_id(&self) -> &KeyringId {
         &self.initial_keyring_id
     }
     pub fn created_at_ns(&self) -> i64 {
@@ -701,10 +699,19 @@ impl From<&RepositoryGenesisPayload> for Value {
             (Value::U64(0), Value::U64(p.format_version)),
             (Value::U64(1), Value::Bytes(p.repository_id.to_vec())),
             (Value::U64(2), Value::Bytes(p.federation_id.to_vec())),
-            (Value::U64(3), Value::Bytes(p.creator_key_id.to_vec())),
+            (
+                Value::U64(3),
+                Value::Bytes(p.creator_key_id.as_bytes().to_vec()),
+            ),
             (Value::U64(4), Value::Bytes(p.creator_public_key.to_vec())),
-            (Value::U64(5), Value::Bytes(p.initial_policy_id.to_vec())),
-            (Value::U64(6), Value::Bytes(p.initial_keyring_id.to_vec())),
+            (
+                Value::U64(5),
+                Value::Bytes(p.initial_policy_id.as_bytes().to_vec()),
+            ),
+            (
+                Value::U64(6),
+                Value::Bytes(p.initial_keyring_id.as_bytes().to_vec()),
+            ),
             (Value::U64(7), Value::I64(p.created_at_ns)),
         ])
     }
@@ -723,10 +730,10 @@ impl TryFrom<Value> for RepositoryGenesisPayload {
             field_uint(&fields, 0)?,
             field_bytes_exact::<16>(&fields, 1)?,
             field_bytes_exact::<16>(&fields, 2)?,
-            field_bytes_exact::<32>(&fields, 3)?,
+            KeyId::from(field_bytes_exact::<32>(&fields, 3)?),
             field_bytes_exact::<32>(&fields, 4)?,
-            field_bytes_exact::<32>(&fields, 5)?,
-            field_bytes_exact::<32>(&fields, 6)?,
+            PolicyId::from(field_bytes_exact::<32>(&fields, 5)?),
+            KeyringId::from(field_bytes_exact::<32>(&fields, 6)?),
             field_int(&fields, 7)?,
         )
     }
@@ -740,16 +747,16 @@ impl TryFrom<Value> for RepositoryGenesisPayload {
 pub struct PolicyRecordPayload {
     format_version: u64,
     repository_id: [u8; 16],
-    previous_policy_id: Option<[u8; 32]>,
+    previous_policy_id: Option<PolicyId>,
     policy_sequence: u64,
     introduced_keys: Vec<PublicKeyEntry>,
-    administrators: Vec<[u8; 32]>,
-    writers: Vec<[u8; 32]>,
+    administrators: Vec<KeyId>,
+    writers: Vec<KeyId>,
     per_ref_permissions: Vec<RefPermissionEntry>,
-    tag_creators: Vec<[u8; 32]>,
-    revoked_keys: Vec<[u8; 32]>,
+    tag_creators: Vec<KeyId>,
+    revoked_keys: Vec<KeyId>,
     created_at_ns: i64,
-    author_key_id: [u8; 32],
+    author_key_id: KeyId,
 }
 
 impl PolicyRecordPayload {
@@ -757,16 +764,16 @@ impl PolicyRecordPayload {
     pub fn new(
         format_version: u64,
         repository_id: [u8; 16],
-        previous_policy_id: Option<[u8; 32]>,
+        previous_policy_id: Option<PolicyId>,
         policy_sequence: u64,
         introduced_keys: Vec<PublicKeyEntry>,
-        administrators: Vec<[u8; 32]>,
-        writers: Vec<[u8; 32]>,
+        administrators: Vec<KeyId>,
+        writers: Vec<KeyId>,
         per_ref_permissions: Vec<RefPermissionEntry>,
-        tag_creators: Vec<[u8; 32]>,
-        revoked_keys: Vec<[u8; 32]>,
+        tag_creators: Vec<KeyId>,
+        revoked_keys: Vec<KeyId>,
         created_at_ns: i64,
-        author_key_id: [u8; 32],
+        author_key_id: KeyId,
     ) -> Result<Self, PayloadError> {
         if format_version != 1 {
             return Err(PayloadError::UnsupportedValue {
@@ -786,21 +793,33 @@ impl PolicyRecordPayload {
                 return Err(PayloadError::UnsortedOrDuplicate { key: 4 });
             }
         }
-        // Validate sorted-unique byte arrays
-        let admins_raw: Vec<Vec<u8>> = administrators.iter().map(|a| a.to_vec()).collect();
-        check_sorted_unique_bytes(&admins_raw, 5)?;
-        let writers_raw: Vec<Vec<u8>> = writers.iter().map(|w| w.to_vec()).collect();
-        check_sorted_unique_bytes(&writers_raw, 6)?;
+        // Validate sorted-unique KeyId arrays via Ord
+        for w in administrators.windows(2) {
+            if w[0] >= w[1] {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 5 });
+            }
+        }
+        for w in writers.windows(2) {
+            if w[0] >= w[1] {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 6 });
+            }
+        }
         // Validate per_ref_permissions sorted by pattern string
         for w in per_ref_permissions.windows(2) {
             if w[0].pattern().to_string() >= w[1].pattern().to_string() {
                 return Err(PayloadError::UnsortedOrDuplicate { key: 7 });
             }
         }
-        let tag_raw: Vec<Vec<u8>> = tag_creators.iter().map(|t| t.to_vec()).collect();
-        check_sorted_unique_bytes(&tag_raw, 8)?;
-        let revoked_raw: Vec<Vec<u8>> = revoked_keys.iter().map(|r| r.to_vec()).collect();
-        check_sorted_unique_bytes(&revoked_raw, 9)?;
+        for w in tag_creators.windows(2) {
+            if w[0] >= w[1] {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 8 });
+            }
+        }
+        for w in revoked_keys.windows(2) {
+            if w[0] >= w[1] {
+                return Err(PayloadError::UnsortedOrDuplicate { key: 9 });
+            }
+        }
         Ok(Self {
             format_version,
             repository_id,
@@ -823,7 +842,7 @@ impl PolicyRecordPayload {
     pub fn repository_id(&self) -> &[u8; 16] {
         &self.repository_id
     }
-    pub fn previous_policy_id(&self) -> Option<&[u8; 32]> {
+    pub fn previous_policy_id(&self) -> Option<&PolicyId> {
         self.previous_policy_id.as_ref()
     }
     pub fn policy_sequence(&self) -> u64 {
@@ -832,25 +851,25 @@ impl PolicyRecordPayload {
     pub fn introduced_keys(&self) -> &[PublicKeyEntry] {
         &self.introduced_keys
     }
-    pub fn administrators(&self) -> &[[u8; 32]] {
+    pub fn administrators(&self) -> &[KeyId] {
         &self.administrators
     }
-    pub fn writers(&self) -> &[[u8; 32]] {
+    pub fn writers(&self) -> &[KeyId] {
         &self.writers
     }
     pub fn per_ref_permissions(&self) -> &[RefPermissionEntry] {
         &self.per_ref_permissions
     }
-    pub fn tag_creators(&self) -> &[[u8; 32]] {
+    pub fn tag_creators(&self) -> &[KeyId] {
         &self.tag_creators
     }
-    pub fn revoked_keys(&self) -> &[[u8; 32]] {
+    pub fn revoked_keys(&self) -> &[KeyId] {
         &self.revoked_keys
     }
     pub fn created_at_ns(&self) -> i64 {
         self.created_at_ns
     }
-    pub fn author_key_id(&self) -> &[u8; 32] {
+    pub fn author_key_id(&self) -> &KeyId {
         &self.author_key_id
     }
 }
@@ -861,22 +880,26 @@ impl From<&PolicyRecordPayload> for Value {
         let admins: Vec<Value> = p
             .administrators
             .iter()
-            .map(|a| Value::Bytes(a.to_vec()))
+            .map(|a| Value::Bytes(a.as_bytes().to_vec()))
             .collect();
-        let writers: Vec<Value> = p.writers.iter().map(|w| Value::Bytes(w.to_vec())).collect();
+        let writers: Vec<Value> = p
+            .writers
+            .iter()
+            .map(|w| Value::Bytes(w.as_bytes().to_vec()))
+            .collect();
         let permissions: Vec<Value> = p.per_ref_permissions.iter().map(Value::from).collect();
         let tags: Vec<Value> = p
             .tag_creators
             .iter()
-            .map(|t| Value::Bytes(t.to_vec()))
+            .map(|t| Value::Bytes(t.as_bytes().to_vec()))
             .collect();
         let revoked: Vec<Value> = p
             .revoked_keys
             .iter()
-            .map(|r| Value::Bytes(r.to_vec()))
+            .map(|r| Value::Bytes(r.as_bytes().to_vec()))
             .collect();
         let prev = match &p.previous_policy_id {
-            Some(id) => Value::Bytes(id.to_vec()),
+            Some(id) => Value::Bytes(id.as_bytes().to_vec()),
             None => Value::Null,
         };
         Value::Map(vec![
@@ -891,7 +914,10 @@ impl From<&PolicyRecordPayload> for Value {
             (Value::U64(8), Value::Array(tags)),
             (Value::U64(9), Value::Array(revoked)),
             (Value::U64(10), Value::I64(p.created_at_ns)),
-            (Value::U64(11), Value::Bytes(p.author_key_id.to_vec())),
+            (
+                Value::U64(11),
+                Value::Bytes(p.author_key_id.as_bytes().to_vec()),
+            ),
         ])
     }
 }
@@ -906,7 +932,8 @@ impl TryFrom<Value> for PolicyRecordPayload {
         reject_unknown_keys(pairs, 12)?;
         let fields = parse_fields(pairs, 12);
 
-        let previous_policy_id = field_nullable_bytes_exact::<32>(&fields, 2)?;
+        let previous_policy_id: Option<PolicyId> =
+            field_nullable_bytes_exact::<32>(&fields, 2)?.map(PolicyId::from);
 
         // Parse introduced_keys array
         let introduced_keys = match fields.get(4).and_then(|f| *f) {
@@ -925,10 +952,9 @@ impl TryFrom<Value> for PolicyRecordPayload {
 
         // Parse administrators
         let admins_raw = bytes_array_field(&fields, 5)?;
-        let administrators: Vec<[u8; 32]> = admins_raw
+        let administrators: Vec<KeyId> = admins_raw
             .iter()
             .map(|b| {
-                let mut arr = [0u8; 32];
                 if b.len() != 32 {
                     return Err(PayloadError::WrongLength {
                         key: 5,
@@ -936,17 +962,17 @@ impl TryFrom<Value> for PolicyRecordPayload {
                         actual: b.len(),
                     });
                 }
+                let mut arr = [0u8; 32];
                 arr.copy_from_slice(b);
-                Ok(arr)
+                Ok(KeyId::from(arr))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         // Parse writers
         let writers_raw = bytes_array_field(&fields, 6)?;
-        let writers: Vec<[u8; 32]> = writers_raw
+        let writers: Vec<KeyId> = writers_raw
             .iter()
             .map(|b| {
-                let mut arr = [0u8; 32];
                 if b.len() != 32 {
                     return Err(PayloadError::WrongLength {
                         key: 6,
@@ -954,8 +980,9 @@ impl TryFrom<Value> for PolicyRecordPayload {
                         actual: b.len(),
                     });
                 }
+                let mut arr = [0u8; 32];
                 arr.copy_from_slice(b);
-                Ok(arr)
+                Ok(KeyId::from(arr))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -976,10 +1003,9 @@ impl TryFrom<Value> for PolicyRecordPayload {
 
         // Parse tag_creators
         let tags_raw = bytes_array_field(&fields, 8)?;
-        let tag_creators: Vec<[u8; 32]> = tags_raw
+        let tag_creators: Vec<KeyId> = tags_raw
             .iter()
             .map(|b| {
-                let mut arr = [0u8; 32];
                 if b.len() != 32 {
                     return Err(PayloadError::WrongLength {
                         key: 8,
@@ -987,17 +1013,17 @@ impl TryFrom<Value> for PolicyRecordPayload {
                         actual: b.len(),
                     });
                 }
+                let mut arr = [0u8; 32];
                 arr.copy_from_slice(b);
-                Ok(arr)
+                Ok(KeyId::from(arr))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         // Parse revoked_keys
         let revoked_raw = bytes_array_field(&fields, 9)?;
-        let revoked_keys: Vec<[u8; 32]> = revoked_raw
+        let revoked_keys: Vec<KeyId> = revoked_raw
             .iter()
             .map(|b| {
-                let mut arr = [0u8; 32];
                 if b.len() != 32 {
                     return Err(PayloadError::WrongLength {
                         key: 9,
@@ -1005,8 +1031,9 @@ impl TryFrom<Value> for PolicyRecordPayload {
                         actual: b.len(),
                     });
                 }
+                let mut arr = [0u8; 32];
                 arr.copy_from_slice(b);
-                Ok(arr)
+                Ok(KeyId::from(arr))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1022,7 +1049,7 @@ impl TryFrom<Value> for PolicyRecordPayload {
             tag_creators,
             revoked_keys,
             field_int(&fields, 10)?,
-            field_bytes_exact::<32>(&fields, 11)?,
+            KeyId::from(field_bytes_exact::<32>(&fields, 11)?),
         )
     }
 }
@@ -1037,7 +1064,7 @@ pub struct KeySlot {
     slot_kind: u64,
     label: String,
     password_kdf: Option<PasswordKdfDescriptor>,
-    recipient_key_id: Option<[u8; 32]>,
+    recipient_key_id: Option<KeyId>,
     ephemeral_public_key: Option<[u8; 32]>,
     wrap_algorithm: u64,
     wrap_nonce: [u8; 24],
@@ -1052,7 +1079,7 @@ impl KeySlot {
         slot_kind: u64,
         label: String,
         password_kdf: Option<PasswordKdfDescriptor>,
-        recipient_key_id: Option<[u8; 32]>,
+        recipient_key_id: Option<KeyId>,
         ephemeral_public_key: Option<[u8; 32]>,
         wrap_algorithm: u64,
         wrap_nonce: [u8; 24],
@@ -1142,7 +1169,7 @@ impl KeySlot {
     pub fn password_kdf(&self) -> Option<&PasswordKdfDescriptor> {
         self.password_kdf.as_ref()
     }
-    pub fn recipient_key_id(&self) -> Option<&[u8; 32]> {
+    pub fn recipient_key_id(&self) -> Option<&KeyId> {
         self.recipient_key_id.as_ref()
     }
     pub fn ephemeral_public_key(&self) -> Option<&[u8; 32]> {
@@ -1169,7 +1196,7 @@ impl From<&KeySlot> for Value {
             None => Value::Null,
         };
         let recipient: Value = match &s.recipient_key_id {
-            Some(id) => Value::Bytes(id.to_vec()),
+            Some(id) => Value::Bytes(id.as_bytes().to_vec()),
             None => Value::Null,
         };
         let ephemeral: Value = match &s.ephemeral_public_key {
@@ -1214,7 +1241,8 @@ impl TryFrom<Value> for KeySlot {
                 });
             }
         };
-        let recipient_key_id = field_nullable_bytes_exact::<32>(&fields, 4)?;
+        let recipient_key_id: Option<KeyId> =
+            field_nullable_bytes_exact::<32>(&fields, 4)?.map(KeyId::from);
         let ephemeral_public_key = field_nullable_bytes_exact::<32>(&fields, 5)?;
 
         Self::new(
@@ -1333,13 +1361,13 @@ impl TryFrom<Value> for WrappedDek {
 pub struct KeyringRecordPayload {
     format_version: u64,
     repository_id: [u8; 16],
-    previous_keyring_id: Option<[u8; 32]>,
+    previous_keyring_id: Option<KeyringId>,
     key_epoch: u64,
     content_id_key_slots: Vec<KeySlot>,
     dek_slots: Vec<WrappedDek>,
     retired_key_epochs: Vec<u64>,
     created_at_ns: i64,
-    author_key_id: [u8; 32],
+    author_key_id: KeyId,
 }
 
 impl KeyringRecordPayload {
@@ -1347,13 +1375,13 @@ impl KeyringRecordPayload {
     pub fn new(
         format_version: u64,
         repository_id: [u8; 16],
-        previous_keyring_id: Option<[u8; 32]>,
+        previous_keyring_id: Option<KeyringId>,
         key_epoch: u64,
         content_id_key_slots: Vec<KeySlot>,
         dek_slots: Vec<WrappedDek>,
         retired_key_epochs: Vec<u64>,
         created_at_ns: i64,
-        author_key_id: [u8; 32],
+        author_key_id: KeyId,
     ) -> Result<Self, PayloadError> {
         if format_version != 1 {
             return Err(PayloadError::UnsupportedValue {
@@ -1394,7 +1422,7 @@ impl KeyringRecordPayload {
     pub fn repository_id(&self) -> &[u8; 16] {
         &self.repository_id
     }
-    pub fn previous_keyring_id(&self) -> Option<&[u8; 32]> {
+    pub fn previous_keyring_id(&self) -> Option<&KeyringId> {
         self.previous_keyring_id.as_ref()
     }
     pub fn key_epoch(&self) -> u64 {
@@ -1412,7 +1440,7 @@ impl KeyringRecordPayload {
     pub fn created_at_ns(&self) -> i64 {
         self.created_at_ns
     }
-    pub fn author_key_id(&self) -> &[u8; 32] {
+    pub fn author_key_id(&self) -> &KeyId {
         &self.author_key_id
     }
 }
@@ -1427,7 +1455,7 @@ impl From<&KeyringRecordPayload> for Value {
             .map(|e| Value::U64(*e))
             .collect();
         let prev = match &p.previous_keyring_id {
-            Some(id) => Value::Bytes(id.to_vec()),
+            Some(id) => Value::Bytes(id.as_bytes().to_vec()),
             None => Value::Null,
         };
         Value::Map(vec![
@@ -1439,7 +1467,10 @@ impl From<&KeyringRecordPayload> for Value {
             (Value::U64(5), Value::Array(dek_slots)),
             (Value::U64(6), Value::Array(retired)),
             (Value::U64(7), Value::I64(p.created_at_ns)),
-            (Value::U64(8), Value::Bytes(p.author_key_id.to_vec())),
+            (
+                Value::U64(8),
+                Value::Bytes(p.author_key_id.as_bytes().to_vec()),
+            ),
         ])
     }
 }
@@ -1454,7 +1485,8 @@ impl TryFrom<Value> for KeyringRecordPayload {
         reject_unknown_keys(pairs, 9)?;
         let fields = parse_fields(pairs, 9);
 
-        let previous_keyring_id = field_nullable_bytes_exact::<32>(&fields, 2)?;
+        let previous_keyring_id: Option<KeyringId> =
+            field_nullable_bytes_exact::<32>(&fields, 2)?.map(KeyringId::from);
 
         let content_id_key_slots = match fields.get(4).and_then(|f| *f) {
             Some(Value::Array(arr)) => arr
@@ -1513,7 +1545,7 @@ impl TryFrom<Value> for KeyringRecordPayload {
             dek_slots,
             retired_key_epochs,
             field_int(&fields, 7)?,
-            field_bytes_exact::<32>(&fields, 8)?,
+            KeyId::from(field_bytes_exact::<32>(&fields, 8)?),
         )
     }
 }
@@ -4949,8 +4981,8 @@ mod tests {
     // PolicyRecordPayload CBOR roundtrip (covers field_int via created_at_ns)
     // -----------------------------------------------------------------------
 
-    fn genesis_key_id() -> [u8; 32] {
-        compute_key_id(1, &[0x04u8; 32])
+    fn genesis_key_id() -> KeyId {
+        KeyId::from(compute_key_id(1, &[0x04u8; 32]))
     }
 
     fn make_genesis_with_ns(ns: i64) -> RepositoryGenesisPayload {
@@ -4960,8 +4992,8 @@ mod tests {
             [0x02u8; 16],
             genesis_key_id(),
             [0x04u8; 32],
-            [0x05u8; 32],
-            [0x06u8; 32],
+            PolicyId::from([0x05u8; 32]),
+            KeyringId::from([0x06u8; 32]),
             ns,
         )
         .unwrap()
@@ -4992,30 +5024,30 @@ mod tests {
         PolicyRecordPayload::new(
             1,
             [0x01u8; 16],
-            Some([0xAAu8; 32]),
+            Some(PolicyId::from([0xAAu8; 32])),
             3,
             vec![
                 PublicKeyEntry::new(k1_key_id, 1, [0x20u8; 32], "key1".into()).unwrap(),
                 PublicKeyEntry::new(k2_key_id, 2, [0x21u8; 32], "key2".into()).unwrap(),
             ],
-            vec![[0xA0u8; 32], [0xA1u8; 32]],
-            vec![[0xB0u8; 32], [0xB1u8; 32]],
+            vec![KeyId::from([0xA0u8; 32]), KeyId::from([0xA1u8; 32])],
+            vec![KeyId::from([0xB0u8; 32]), KeyId::from([0xB1u8; 32])],
             vec![
                 RefPermissionEntry::new(
                     RefPattern::new("refs/heads/a").unwrap(),
-                    vec![[0xC0u8; 32]],
+                    vec![KeyId::from([0xC0u8; 32])],
                 )
                 .unwrap(),
                 RefPermissionEntry::new(
                     RefPattern::new("refs/heads/b").unwrap(),
-                    vec![[0xC1u8; 32]],
+                    vec![KeyId::from([0xC1u8; 32])],
                 )
                 .unwrap(),
             ],
-            vec![[0xD0u8; 32]],
-            vec![[0xE0u8; 32]],
+            vec![KeyId::from([0xD0u8; 32])],
+            vec![KeyId::from([0xE0u8; 32])],
             ns,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap()
     }
@@ -5043,13 +5075,13 @@ mod tests {
         KeyringRecordPayload::new(
             1,
             [0x01u8; 16],
-            Some([0xAAu8; 32]),
+            Some(KeyringId::from([0xAAu8; 32])),
             5,
             vec![make_key_slot_password()],
             vec![make_wrapped_dek()],
             vec![1, 3],
             ns,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap()
     }
@@ -5277,7 +5309,7 @@ mod tests {
     fn make_ref_permission_entry() -> RefPermissionEntry {
         RefPermissionEntry::new(
             RefPattern::new("refs/heads/main").unwrap(),
-            vec![[0xCCu8; 32], [0xDDu8; 32]],
+            vec![KeyId::from([0xCCu8; 32]), KeyId::from([0xDDu8; 32])],
         )
         .unwrap()
     }
@@ -5311,7 +5343,7 @@ mod tests {
     fn ref_permission_entry_rejects_unsorted_writers() {
         let err = RefPermissionEntry::new(
             RefPattern::new("refs/heads/main").unwrap(),
-            vec![[0xDDu8; 32], [0xCCu8; 32]],
+            vec![KeyId::from([0xDDu8; 32]), KeyId::from([0xCCu8; 32])],
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 1 }));
@@ -5321,7 +5353,7 @@ mod tests {
     fn ref_permission_entry_rejects_duplicate_writers() {
         let err = RefPermissionEntry::new(
             RefPattern::new("refs/heads/main").unwrap(),
-            vec![[0xCCu8; 32], [0xCCu8; 32]],
+            vec![KeyId::from([0xCCu8; 32]), KeyId::from([0xCCu8; 32])],
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 1 }));
@@ -5359,15 +5391,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_genesis_payload() -> RepositoryGenesisPayload {
-        let creator_key_id = compute_key_id(1, &[0x04u8; 32]);
+        let creator_key_id = KeyId::from(compute_key_id(1, &[0x04u8; 32]));
         RepositoryGenesisPayload::new(
             1,
             [0x01u8; 16],
             [0x02u8; 16],
             creator_key_id,
             [0x04u8; 32],
-            [0x05u8; 32],
-            [0x06u8; 32],
+            PolicyId::from([0x05u8; 32]),
+            KeyringId::from([0x06u8; 32]),
             1_000_000,
         )
         .unwrap()
@@ -5403,10 +5435,10 @@ mod tests {
             2,
             [0x01u8; 16],
             [0x02u8; 16],
-            [0x03u8; 32],
+            KeyId::from([0x03u8; 32]),
             [0x04u8; 32],
-            [0x05u8; 32],
-            [0x06u8; 32],
+            PolicyId::from([0x05u8; 32]),
+            KeyringId::from([0x06u8; 32]),
             0,
         )
         .unwrap_err();
@@ -5442,10 +5474,10 @@ mod tests {
             1,
             [0x01u8; 16],
             [0x02u8; 16],
-            [0xAAu8; 32],
+            KeyId::from([0xAAu8; 32]),
             [0x04u8; 32],
-            [0x05u8; 32],
-            [0x06u8; 32],
+            PolicyId::from([0x05u8; 32]),
+            KeyringId::from([0x06u8; 32]),
             1_000_000,
         )
         .unwrap_err();
@@ -5462,30 +5494,30 @@ mod tests {
         PolicyRecordPayload::new(
             1,
             [0x01u8; 16],
-            Some([0xAAu8; 32]),
+            Some(PolicyId::from([0xAAu8; 32])),
             3,
             vec![
                 PublicKeyEntry::new(k1_key_id, 1, [0x20u8; 32], "key1".into()).unwrap(),
                 PublicKeyEntry::new(k2_key_id, 2, [0x21u8; 32], "key2".into()).unwrap(),
             ],
-            vec![[0xA0u8; 32], [0xA1u8; 32]],
-            vec![[0xB0u8; 32], [0xB1u8; 32]],
+            vec![KeyId::from([0xA0u8; 32]), KeyId::from([0xA1u8; 32])],
+            vec![KeyId::from([0xB0u8; 32]), KeyId::from([0xB1u8; 32])],
             vec![
                 RefPermissionEntry::new(
                     RefPattern::new("refs/heads/a").unwrap(),
-                    vec![[0xC0u8; 32]],
+                    vec![KeyId::from([0xC0u8; 32])],
                 )
                 .unwrap(),
                 RefPermissionEntry::new(
                     RefPattern::new("refs/heads/b").unwrap(),
-                    vec![[0xC1u8; 32]],
+                    vec![KeyId::from([0xC1u8; 32])],
                 )
                 .unwrap(),
             ],
-            vec![[0xD0u8; 32]],
-            vec![[0xE0u8; 32]],
+            vec![KeyId::from([0xD0u8; 32])],
+            vec![KeyId::from([0xE0u8; 32])],
             2_000_000,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap()
     }
@@ -5543,7 +5575,7 @@ mod tests {
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 3, .. }));
@@ -5569,7 +5601,7 @@ mod tests {
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 4 }));
@@ -5583,13 +5615,13 @@ mod tests {
             None,
             1,
             vec![],
-            vec![[0xA1u8; 32], [0xA0u8; 32]],
+            vec![KeyId::from([0xA1u8; 32]), KeyId::from([0xA0u8; 32])],
             vec![],
             vec![],
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 5 }));
@@ -5604,12 +5636,12 @@ mod tests {
             1,
             vec![],
             vec![],
-            vec![[0xB1u8; 32], [0xB0u8; 32]],
+            vec![KeyId::from([0xB1u8; 32]), KeyId::from([0xB0u8; 32])],
             vec![],
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
@@ -5628,19 +5660,19 @@ mod tests {
             vec![
                 RefPermissionEntry::new(
                     RefPattern::new("refs/heads/z").unwrap(),
-                    vec![[0xC0u8; 32]],
+                    vec![KeyId::from([0xC0u8; 32])],
                 )
                 .unwrap(),
                 RefPermissionEntry::new(
                     RefPattern::new("refs/heads/a").unwrap(),
-                    vec![[0xC1u8; 32]],
+                    vec![KeyId::from([0xC1u8; 32])],
                 )
                 .unwrap(),
             ],
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 7 }));
@@ -5657,10 +5689,10 @@ mod tests {
             vec![],
             vec![],
             vec![],
-            vec![[0xD1u8; 32], [0xD0u8; 32]],
+            vec![KeyId::from([0xD1u8; 32]), KeyId::from([0xD0u8; 32])],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 8 }));
@@ -5678,9 +5710,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
-            vec![[0xE1u8; 32], [0xE0u8; 32]],
+            vec![KeyId::from([0xE1u8; 32]), KeyId::from([0xE0u8; 32])],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 9 }));
@@ -5700,7 +5732,7 @@ mod tests {
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap();
         let decoded = PolicyRecordPayload::try_from(Value::from(&payload)).unwrap();
@@ -5760,7 +5792,7 @@ mod tests {
             2,
             "recipient slot".into(),
             None,
-            Some([0x20u8; 32]),
+            Some(KeyId::from([0x20u8; 32])),
             Some([0x30u8; 32]),
             1,
             [0x11u8; 24],
@@ -5857,7 +5889,7 @@ mod tests {
             1,
             "slot".into(),
             Some(make_password_kdf()),
-            Some([0x20u8; 32]),
+            Some(KeyId::from([0x20u8; 32])),
             None,
             1,
             [0x10u8; 24],
@@ -5893,7 +5925,7 @@ mod tests {
             2,
             "slot".into(),
             None,
-            Some([0x20u8; 32]),
+            Some(KeyId::from([0x20u8; 32])),
             None,
             1,
             [0x10u8; 24],
@@ -5911,7 +5943,7 @@ mod tests {
             2,
             "slot".into(),
             Some(make_password_kdf()),
-            Some([0x20u8; 32]),
+            Some(KeyId::from([0x20u8; 32])),
             Some([0x30u8; 32]),
             1,
             [0x10u8; 24],
@@ -6157,13 +6189,13 @@ mod tests {
         KeyringRecordPayload::new(
             1,
             [0x01u8; 16],
-            Some([0xAAu8; 32]),
+            Some(KeyringId::from([0xAAu8; 32])),
             5,
             vec![make_key_slot_password()],
             vec![make_wrapped_dek()],
             vec![1, 3],
             3_000_000,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap()
     }
@@ -6198,7 +6230,7 @@ mod tests {
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
@@ -6217,7 +6249,7 @@ mod tests {
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 4 }));
@@ -6236,7 +6268,7 @@ mod tests {
             vec![dek_1, dek_2],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 5 }));
@@ -6253,7 +6285,7 @@ mod tests {
             vec![],
             vec![3, 1],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
@@ -6270,7 +6302,7 @@ mod tests {
             vec![],
             vec![1, 1],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap_err();
         assert!(matches!(err, PayloadError::UnsortedOrDuplicate { key: 6 }));
@@ -6287,7 +6319,7 @@ mod tests {
             vec![],
             vec![],
             0,
-            [0xFFu8; 32],
+            KeyId::from([0xFFu8; 32]),
         )
         .unwrap();
         let decoded = KeyringRecordPayload::try_from(Value::from(&payload)).unwrap();
