@@ -1,8 +1,8 @@
 {
   "description": "F3.11 format-v1 freeze baseline — do not edit without reopening G3",
    "g3_reopen_required": "To change v1 bytes, set F3.11/G3 to RED, update baseline, re-run full gate",
-   "frozen_at": "2026-06-28T03:06:27Z",
-   "frozen_commit": "b0826a0",
+   "frozen_at": "2026-06-28T04:15:00Z",
+   "frozen_commit": "4d62478",
 
   "source_files": {
     "docs/FORMAT.md": "a9121674a669dd269c6e1c64a74f76da29d120b74344e307ed7bd8045390bdae",
@@ -17,7 +17,7 @@
     "crates/eternal-format/src/lib.rs": "1ec7fd9b51b9f4a87ab7755fe0fe85a68eb97354578df6030b6d85ae4345990b",
     "crates/eternal-format/Cargo.toml": "cb58f0994039ef01c38c69613e36ba022e2dba9045bdd2b748f879e253a8e587",
     "Cargo.lock": "8a2bf6f42cb646407ada77f1b9a31a92d22619c1cc3b5544c1854d7707e07f88",
-    "scripts/check-format-freeze.ps1": "8cbb9b40a4aaf88613f36c9f1dd42d47ca77b27026fb2f4242dba482eea3edb9",
+    "scripts/check-format-freeze.ps1": "01bcdd532aa24a73d6549ee0d7ee603e1e2cb21a01bfbe95581b9bfc835afbdf",
     "scripts/generate-gate-report.ps1": "656ed2c7b70325d3e2f6d40d1c3a4205a82fafbef3a21a3fb210435abbf974e0"
   },
 
