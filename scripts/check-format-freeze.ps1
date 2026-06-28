@@ -1,9 +1,12 @@
 <#
 .SYNOPSIS
-  Check format-v1 freeze baseline.
-  Verifies that all format-defining source files, fixtures, and fuzz targets
-  still match their committed SHA-256 hashes from freeze-baseline.json.
-  If any hash differs, v1 bytes have changed — G3 must be reopened.
+  Check format-v1 freeze baseline using git as authority.
+  For every file in freeze-baseline.json, verifies its current working-tree
+  content matches the state at frozen_commit via git diff.
+  If any file differs, v1 bytes have changed — G3 must be reopened.
+
+  The stored SHA-256 hashes in freeze-baseline.json are documentary;
+  the authoritative check uses git history, not the JSON hashes.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -18,56 +21,76 @@ if (-not (Test-Path -LiteralPath $baselinePath)) {
 }
 
 $baseline = Get-Content -Raw -LiteralPath $baselinePath | ConvertFrom-Json
+$frozenCommit = $baseline.frozen_commit
 
-Write-Host "=== Format v1 freeze baseline check ===" -ForegroundColor Cyan
-Write-Host "Frozen at commit: $($baseline.frozen_commit)"
+Write-Host "=== Format v1 freeze baseline check (git-authority mode) ===" -ForegroundColor Cyan
+Write-Host "Frozen commit: $frozenCommit"
 Write-Host ""
 
-function Check-Hash {
-    param([string]$Label, [string]$Path, [string]$Expected)
-    if (-not (Test-Path -LiteralPath $Path)) {
-        Write-Host "[FAIL] $Label — file not found: $Path" -ForegroundColor Red
-        return $false
+# Verify frozen_commit exists in git history
+$null = git rev-parse --verify "$frozenCommit^{commit}" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] frozen_commit '$frozenCommit' is not a valid git commit" -ForegroundColor Red
+    exit 1
+}
+
+# ── Check all sections ────────────────────────────────────────────────────
+$allEntries = @()
+
+# Source files
+$baseline.source_files.PSObject.Properties | ForEach-Object {
+    $allEntries += @{Label = $_.Name; Path = $_.Name; Section = "source"}
+}
+
+# Fuzz targets
+$baseline.fuzz_targets.PSObject.Properties | ForEach-Object {
+    $allEntries += @{Label = $_.Name; Path = $_.Name; Section = "fuzz"}
+}
+
+# Fixtures
+$fixturesDir = "tests/vectors/format-v1"
+$baseline.fixtures.PSObject.Properties | ForEach-Object {
+    $allEntries += @{Label = $_.Name; Path = "$fixturesDir/$($_.Name)"; Section = "fixture"}
+}
+
+$changedCount = 0
+foreach ($entry in $allEntries) {
+    $relativePath = $entry.Path
+    $fullPath = Join-Path $root $relativePath
+
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        Write-Host "[FAIL] $relativePath — file not found on disk" -ForegroundColor Red
+        $exitCode = 1
+        $changedCount++
+        continue
     }
-    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected.ToLowerInvariant()) {
-        Write-Host "[FAIL] $Label" -ForegroundColor Red
-        Write-Host "  expected: $expected"
-        Write-Host "  actual:   $actual"
-        Write-Host "  file: $Path"
-        return $false
+
+    # Check if file at frozen_commit differs from working tree
+    git diff --quiet $frozenCommit -- $relativePath 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[OK] $relativePath" -ForegroundColor Green
+    } else {
+        # File does not exist at frozen_commit (new), or content differs
+        $null = git show "$frozenCommit`:$relativePath" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[NEW] $relativePath — not present at frozen commit $frozenCommit" -ForegroundColor Yellow
+        } else {
+            Write-Host "[MODIFIED] $relativePath — content differs from frozen commit $frozenCommit" -ForegroundColor Red
+        }
+        $exitCode = 1
+        $changedCount++
     }
-    Write-Host "[OK] $Label" -ForegroundColor Green
-    return $true
 }
 
-# ── Source files ─────────────────────────────────────────────────────────
-Write-Host "--- Source files ---" -ForegroundColor Cyan
-foreach ($entry in $baseline.source_files.PSObject.Properties) {
-    $path = Join-Path $root $entry.Name
-    if (-not (Check-Hash $entry.Name $path $entry.Value)) { $exitCode = 1 }
-}
-
-# ── Fuzz targets ─────────────────────────────────────────────────────────
-Write-Host "--- Fuzz targets ---" -ForegroundColor Cyan
-foreach ($entry in $baseline.fuzz_targets.PSObject.Properties) {
-    $path = Join-Path $root $entry.Name
-    if (-not (Check-Hash $entry.Name $path $entry.Value)) { $exitCode = 1 }
-}
-
-# ── Fixtures ─────────────────────────────────────────────────────────────
-Write-Host "--- Fixtures ---" -ForegroundColor Cyan
-$fixturesDir = Join-Path $root "tests/vectors/format-v1"
-foreach ($entry in $baseline.fixtures.PSObject.Properties) {
-    $path = Join-Path $fixturesDir $entry.Name
-    if (-not (Check-Hash $entry.Name $path $entry.Value)) { $exitCode = 1 }
-}
-
-# ── Result ───────────────────────────────────────────────────────────────
+# ── Result ────────────────────────────────────────────────────────────────
 Write-Host ""
 if ($exitCode -eq 0) {
-    Write-Host "Freeze baseline intact. No v1 bytes changed." -ForegroundColor Green
+    Write-Host "Freeze baseline intact. No v1 bytes changed since $frozenCommit." -ForegroundColor Green
 } else {
-    Write-Host "[FAIL] Freeze baseline mismatch. G3 must be reopened." -ForegroundColor Red
+    Write-Host "[FAIL] $changedCount file(s) changed since $frozenCommit." -ForegroundColor Red
+    Write-Host "       G3 must be reopened before further v1 byte changes." -ForegroundColor Red
+    Write-Host "       To update the baseline after reopening G3:" -ForegroundColor Yellow
+    Write-Host "         git checkout $frozenCommit -- tests/vectors/format-v1/freeze-baseline.json" -ForegroundColor Yellow
+    Write-Host "         # then: set frozen_commit to new HEAD, update documentary hashes" -ForegroundColor Yellow
 }
 exit $exitCode

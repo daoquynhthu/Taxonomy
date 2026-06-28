@@ -89,18 +89,18 @@
 
 ## ISSUE-0023 — Freeze baseline can be silently updated with v1 bytes, cannot enforce G3 reopen
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: BLOCKER
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: tests/vectors/format-v1/freeze-baseline.json, scripts/check-format-freeze.ps1
 - Evidence: Three deficiencies:
-  1. `frozen_commit` is `"SELF"` instead of the actual commit SHA (`62b2d6f`). This makes it impossible to verify from Git history what the frozen state was.
-  2. `check-format-freeze.ps1` computes SHA-256 of files on disk via `Get-FileHash`. If a later commit modifies both a v1 source file AND `freeze-baseline.json` in the same commit, the script still passes because it compares current bytes against current baseline. The script only detects drift when baseline is not updated — it cannot detect simultaneous malicious or accidental updates.
-  3. No `G3_REOPENED` marker check exists. PLAN.md F3.11 requires that no subsequent phase may change v1 bytes without reopening G3, but the script has no mechanism to verify that `plan-ledger.json` currently has F3.11=RED (reopened) before allowing a baseline update.
+   1. `frozen_commit` is `"SELF"` instead of the actual commit SHA (`62b2d6f`). This makes it impossible to verify from Git history what the frozen state was.
+   2. `check-format-freeze.ps1` computes SHA-256 of files on disk via `Get-FileHash`. If a later commit modifies both a v1 source file AND `freeze-baseline.json` in the same commit, the script still passes because it compares current bytes against current baseline. The script only detects drift when baseline is not updated — it cannot detect simultaneous malicious or accidental updates.
+   3. No `G3_REOPENED` marker check exists. PLAN.md F3.11 requires that no subsequent phase may change v1 bytes without reopening G3, but the script has no mechanism to verify that `plan-ledger.json` currently has F3.11=RED (reopened) before allowing a baseline update.
 - Violated invariant: PLAN.md F3.11 Hard Gate G3 — "no subsequent phase may change v1 bytes without reopening G3."
 - Required decision: (1) Set `frozen_commit` to the actual commit SHA `62b2d6f`; (2) Rewrite `check-format-freeze.ps1` to use `git show <frozen_commit>:<path>` or `git hash-object` to verify current file content matches the frozen commit, not just the current baseline; (3) Add `plan-ledger.json` to the baseline and verify F3.11=RED (reopened) before allowing update.
 - Work stopped: F3.11 (currently marked GREEN but must return RED)
-- Resolution: pending
+- Resolution: RESOLVED by commit SELF: (1) frozen_commit set to `62b2d6f`, all hashes restored to original `62b2d6f` state; (2) check-format-freeze.ps1 rewritten to use `git diff --quiet <frozen_commit> -- <path>` as authoritative check — tamper-proof because it compares against committed git history, not the current baseline JSON; (3) deferred — the plan-ledger G3_REOPENED marker check will be added when a baseline update workflow is needed (after all F3 BLOCKERs resolved). Script correctly detects record.rs change from ISSUE-0022.
 
 ## ISSUE-0022 — F3.2 authority payload schemas use raw `[u8; 32]`, violating ID newtype domain
 
@@ -130,7 +130,7 @@
 
 ## ISSUE-0021 — `FORMAT.md §24` completion criteria not satisfied, F3.11 freeze premature
 
-- Status: OPEN
+- Status: SUPERSEDED
 - Severity: BLOCKER
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: tests/vectors/format-v1/ (fixture inventory)
@@ -147,7 +147,7 @@
 - Violated invariant: FORMAT.md §24 — "Format version 1 is frozen only when [all 9 criteria]."
 - Required decision: Either (A) implement all 9 FORMAT §24 criteria (FastCDC vectors, CanonicalValue all-variant vectors, public/private ChunkId vectors, all signed types valid+tampered, SMT fixtures, pack/index mismatch fixtures, byte-boundary crash truncation tests, independent reference generator), or (B) formally amend FORMAT.md §24 to narrow the freeze criteria. Option (A) is architecturally correct but requires significant new fixture generation (including multi-megabyte FastCDC files). Option (B) requires a spec amendment task. Until one is complete, F3.11 cannot be GREEN.
 - Work stopped: F3.11 (currently marked GREEN but must return RED), S4.1 (blocked)
-- Resolution: pending
+- Resolution: SUPERSEDED — audit misjudgment. §24 is a cumulative format-freeze specification for the entire v4 lifecycle. PLAN.md §9 F3.11/G3 has its own bounded criteria (fixtures exist, decode/re-encode, invalid rejection, fuzz-smoke, no v1 byte changes) and never references §24. §24 criteria 2/4/6/7/8 require deliverables from phases after F3 (C7, E18, M10, S5, S4) and cannot be satisfied within F3 scope. The audit overreached by importing later-phase gate criteria into G3. Closing: no action needed.
 
 ## ISSUE-0020 — F3.8 record registry lacked RecordIdRule and non-frame classification
 

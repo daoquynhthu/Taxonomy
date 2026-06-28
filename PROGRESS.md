@@ -1,5 +1,14 @@
 # Progress
 
+## ISSUE-0023 — Freeze baseline tamper-proof via git-authority check
+
+- Status: GREEN
+- Commit: SELF
+- Completed: `freeze-baseline.json` `frozen_commit` changed from `"SELF"` to actual commit `62b2d6f`. All hashes restored to original `62b2d6f` state (record.rs reverted to `6dcf0568...`). `check-format-freeze.ps1` rewritten to use `git diff --quiet <frozen_commit> -- <path>` as the authoritative check — compares working tree against committed git history, immune to simultaneous baseline+file updates. Stored hashes are now documentary only. Script correctly detects record.rs change from ISSUE-0022 as a G3-reopen event. Plan-ledger marker check deferred until baseline update workflow is needed.
+- Tests: `scripts/check-format-freeze.ps1` exits 1 (expected: 1 file changed since `62b2d6f`)
+- Evidence: Script output shows 32 OK, 1 MODIFIED (record.rs), correctly identifies G3 reopen required.
+- Follow-up: When all F3 BLOCKERs resolved, re-freeze with new frozen_commit and implement plan-ledger G3_REOPENED marker check.
+
 ## ISSUE-0022 — F3.2 authority payload schemas: raw `[u8; 32]` → newtypes
 
 - Status: GREEN
@@ -11,12 +20,12 @@
 
 ## F3.11 — Freeze format v1 (Hard Gate G3)
 
-- Status: GREEN
-- Commit: SELF
-- Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1`. Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum (`InvalidMagic`, `HeaderCrcMismatch`, `TrailerChecksumMismatch`, `IndexChecksumMismatch`, `Truncated`). All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor 63MB + names 54MB + records 59MB peak RSS, all clean, records corpus = 415 files)
+- Status: GREEN at commit 62b2d6f; currently REOPENED (record.rs changed in ISSUE-0022)
+- Commit: 62b2d6f
+- Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode after ISSUE-0023). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum (`InvalidMagic`, `HeaderCrcMismatch`, `TrailerChecksumMismatch`, `IndexChecksumMismatch`, `Truncated`). All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1` (exits 1 — G3 reopened); `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor 63MB + names 54MB + records 59MB peak RSS, all clean, records corpus = 415 files)
 - Evidence: `gate-report.json` (full Hard Gate G3 artifact per PLAN.md §4.3 including fuzz smoke); `fuzz-smoke-report.json` (3 targets, 150k total runs, 0 crashes)
-- Follow-up: S4.1
+- Follow-up: Fix remaining F3 BLOCKERs, then re-freeze G3 with new frozen_commit
 
 ## F3.10 — Fuzz all record decoders
 
