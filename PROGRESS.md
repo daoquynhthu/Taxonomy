@@ -3,9 +3,9 @@
 ## ISSUE-0026 — Fuzz corpus seed reproducible
 
 - Status: GREEN
-- Commit: SELF
+- Commit: b0826a0
 - Completed: `fuzz-smoke.ps1` records corpus seeding: now `Remove-Item -Recurse -Force` the corpus directory before re-creating and copying committed fixtures unconditionally. No `if (-not (Test-Path))` guard — every run starts from a clean slate. Corpus count is now deterministic per checkout.
-- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/check-format-freeze.ps1` (3 files changed — G3 reopened, expected)
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor + names + records: 3×50000 runs, 0 crashes); `scripts/check-format-freeze.ps1` (baseline updated — all OK)
 - Follow-up: ISSUE-0027 through ISSUE-0030 (WARNING)
 
 ## ISSUE-0025 — gate-report fail-closed on G3 script deletion
@@ -45,7 +45,7 @@
 
 ## F3.11 — Freeze format v1 (Hard Gate G3)
 
-- Status: GREEN at commit 62b2d6f; currently REOPENED (record.rs changed in ISSUE-0022)
+- Status: GREEN at commit 62b2d6f; re-frozen at b0826a0 (after ISSUE-0022, ISSUE-0024, ISSUE-0026 repairs)
 - Commit: 62b2d6f
 - Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode after ISSUE-0023). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum (`InvalidMagic`, `HeaderCrcMismatch`, `TrailerChecksumMismatch`, `IndexChecksumMismatch`, `Truncated`). All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
 - Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass, 0 fail, 0 ignored); `cargo test --doc --workspace --all-features`; `scripts/check-deps.ps1`; `scripts/check-specs.ps1`; `scripts/check-fixtures.ps1`; `scripts/check-format-freeze.ps1` (exits 1 — G3 reopened); `scripts/check-plan-ledger.ps1`; `scripts/fuzz-smoke.ps1` (cbor 63MB + names 54MB + records 59MB peak RSS, all clean, records corpus = 415 files)
