@@ -5255,13 +5255,15 @@ mod tests {
 
     #[test]
     fn public_key_entry_rejects_bad_algorithm() {
-        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 3, [0xBBu8; 32], "test".into()).unwrap_err();
+        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 3, [0xBBu8; 32], "test".into())
+            .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 1, .. }));
     }
 
     #[test]
     fn public_key_entry_rejects_long_label() {
-        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 1, [0xBBu8; 32], "x".repeat(129)).unwrap_err();
+        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 1, [0xBBu8; 32], "x".repeat(129))
+            .unwrap_err();
         assert!(matches!(err, PayloadError::InvalidText { key: 3, .. }));
     }
 
@@ -5298,7 +5300,8 @@ mod tests {
 
     #[test]
     fn public_key_entry_rejects_key_id_mismatch() {
-        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 1, [0xBBu8; 32], "test".into()).unwrap_err();
+        let err = PublicKeyEntry::new(KeyId::new([0xAAu8; 32]), 1, [0xBBu8; 32], "test".into())
+            .unwrap_err();
         assert!(matches!(err, PayloadError::UnsupportedValue { key: 0, .. }));
     }
 
