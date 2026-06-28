@@ -399,7 +399,7 @@
 
 ## ISSUE-0032 — Historical PROGRESS.md entries use `Commit: SELF` instead of actual SHA
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: WARNING
 - Discovered in: F3.11 audit 2026-06-28 (round 2)
 - Affected scope: PROGRESS.md (P0.0–P1.6 entries)
@@ -407,4 +407,4 @@
 - Violated invariant: Agent.md §3.2 — preserve resolved issues as an audit trail with exact references.
 - Required decision: Either (A) recover the actual SHAs from git history for each task and replace SELF (requires per-task log archaeology), or (B) accept that pre-ISSUE-0027 entries predate the SHA convention and leave them as historical SELF with a note. Option (B) is pragmatic but violates Agent.md §3.2.
 - Work stopped: none
-- Resolution: (none yet)
+- Resolution: RESOLVED — option (A) applied (SELF). P0.0→178f838, P0.1-P0.5→9892076, P0/P1 post-audit→9f52c15, P1.1→178f838, P1.2-P1.5→f6f983f, F2.1→c95e2a5, F2.2→b2f9d5a, F2.3→b6d0b8f, F2.4→9fbf9d5, F2.6→2c40ade, F2.7→5d6a94e, F2.8→32ef3e7, F2.9→b526f87. All 16 SHA replacements verified against git log.

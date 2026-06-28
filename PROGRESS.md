@@ -1,7 +1,7 @@
 # Progress
 
 ## F3.11 — Freeze format v1 (Hard Gate G3)
-- Status: RED (G3 reopened — BLOCKERs unresolved: ISSUE-0031 G3_REOPENED marker deferred)
+- Status: RED (G3 reopened — all BLOCKERs resolved, re-freeze pending)
 - Commit: 62b2d6f (initial freeze); re-freezed at b0826a0; current baseline 4d62478
 - Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum. All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
 - Corrected by:
@@ -119,7 +119,7 @@
 ## F2.9 — Freeze format primitives
 
 - Status: GREEN
-- Commit: SELF
+- Commit: b526f87
 - Completed: Hard Gate G2. All FORMAT.md §21 primitive vectors match (CBOR golden vector, DomainHash empty-payload vectors, fixture manifest checksums). Encoder output verified byte-stable (deterministic across independent calls and separate encode_canonical_value invocations). Decoder rejects all 16 FORMAT.md §4 non-canonical cases (non-shortest integers, indefinite-length items, floats, tags, undefined, invalid UTF-8, duplicate/unsorted map keys, depth exceeded, oversized strings, unexpected EOF, trailing data) plus non-shortest simple values (false/true/null) and reserved simple values. `eternal-format` dependencies confirmed: serde, serde_json, ciborium, sha2 only — no filesystem, network, policy, or key-store crate.
 - Tests: 253 (`cargo test --workspace --all-features`: 252 unit + 1 integration); `cargo test --doc --workspace --all-features`; `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Evidence: `g2_rejects_all_non_canonical_cbor`, `g2_encoder_byte_stability`, `g2_encode_canonical_value_is_deterministic` (canonical.rs); `g2_no_forbidden_dependencies` (tests/g2_dependency_check.rs)
@@ -129,7 +129,7 @@
 ## F2.8 — Fuzz primitive decoding
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 32ef3e7
 - Completed: Fuzz targets `cbor` and `names` under `fuzz/targets/` using `cargo-fuzz` / `libfuzzer-sys`. cbor target exercises both `decode()` and `decode_canonical_value()` with encoded round-trip verification. names target uses strict `std::str::from_utf8` with Display→FromStr round-trip. Script `scripts/fuzz-smoke.ps1` runs both with explicit `-max_len=65536 -timeout=2 -rss_limit_mb=512 -runs=50000` and produces `fuzz-smoke-report.json`. Each target completed 50 000 inputs with zero crashes, zero timeouts, bounded RSS (cbor: 66 MiB, names: 54 MiB).
 - Tests: `scripts/fuzz-smoke.ps1`; `scripts/check-plan-ledger.ps1`; `cargo test --workspace --all-features` (249 tests)
 - Evidence: cbor: 624 cov, 359 corpus entries; names: 298 cov, 198 corpus entries. plan-ledger.json validates correctly.
@@ -138,7 +138,7 @@
 ## F2.7 — Implement normative limits
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 5d6a94e
 - Completed: Full FormatLimits with all 17 FORMAT §20 limits, zero/overflow rejection, two-phase encode (pre-compute exact CBOR size with checked arithmetic → check max_metadata_bytes → allocate Vec::with_capacity → encode), exhaustive 17-field tests.
 - Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (249 tests)
 - Evidence: compute_encoded_size() matches actual encoded length for all CanonicalValue variants including Map. Encode rejects at exact limit boundary (+1 byte). Small strings summing over limit rejected. All zero/overflow/limit tests pass.
@@ -147,7 +147,7 @@
 ## F2.6 — Implement constrained names
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 2c40ade
 - Completed: ObjectId, RefName, RefPattern types in ids.rs with full format validation and NameError enum. DataType (1..256), RelationType (1..256), KeySlotLabel (1..128), CommitMessage (0..1_048_576) added. Longest-prefix specificity comparison. Audit fix: RefPattern changed from pub enum to struct + private RefPatternKind; fields no longer bypassable via direct construction; Display/FromStr updated to use self.kind; matches() takes &RefName; bare ref prefix rejected; validate_simple_text helper for constrained types.
 - Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: ObjectId rejects all invalid forms; RefPattern exact + namespace validation; matches() exact equality + prefix matching; specificity() ordering correct; bare `refs/heads/` rejected; all constrained types enforce bounds.
@@ -165,7 +165,7 @@
 ## F2.4 — Implement bounded deterministic CBOR decoder
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9fbf9d5
 - Completed: CanonicalDecoder with depth-bounded recursive descent, checked allocation, and rejection of all non-canonical forms. Value enum with reencode(). Audit fix: all unchecked `as usize` casts replaced with `usize_from_u64()` helper returning ValueTooLarge on overflow.
 - Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: Golden vector re-encodes identically; rejects non-shortest integers, indefinite items, floats, tag, undefined, invalid UTF-8, duplicate/unsorted map keys, depth exceeded, oversized string, trailing data.
@@ -174,7 +174,7 @@
 ## F2.3 — Implement deterministic CBOR encoder
 
 - Status: GREEN
-- Commit: SELF
+- Commit: b6d0b8f
 - Completed: CanonicalEncoder with shortest integer/string-length encoding, CanonicalSortedMap helper. Audit fix: CanonicalSortedMap made pub(crate); insert_u64 made pub(crate); finish() returns Result<(), CanonicalEncodeError> with duplicate-key detection; stringly-typed error replaced with structured CanonicalEncodeError enum.
 - Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: Golden vector match; shortest u64/i64 at every boundary; empty/24-byte string length encoding; map key sorting; duplicate keys rejected; determinism.
@@ -183,7 +183,7 @@
 ## F2.2 — Implement DomainHash
 
 - Status: GREEN
-- Commit: SELF
+- Commit: b2f9d5a
 - Completed: domain_hash(tag, payload) implementing exact length-prefixed SHA-256 construction from FORMAT.md §5.1 using u16::to_le_bytes() and u64::to_le_bytes(). Audit fix: returns Result<[u8;32], DomainHashError> instead of infallible; tags exceeding u16::MAX rejected with TagTooLong error; Display + Error impls for DomainHashError.
 - Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: 13 empty-payload domain vectors match FORMAT.md §21.2 byte-for-byte; long tag (65535) succeeds; 65536-byte tag rejected; large payload handled.
@@ -192,7 +192,7 @@
 ## F2.1 — Implement primitive fixed-width types
 
 - Status: GREEN
-- Commit: SELF
+- Commit: c95e2a5
 - Completed: Private-field wrappers for UUID (16 bytes), 14 hash-id types (32 bytes each), Signature (64 bytes), PublicKey (32 bytes), Timestamp (i64), and BoundedLength (u64 with max bound). All hash IDs via hash_id! macro. Audit fix: BoundedLength::new_unchecked changed from pub to pub(crate) to prevent bypass of max bound.
 - Tests: `cargo test --workspace --all-features` (195 tests)
 - Evidence: Round-trip bytes and display/parse; malformed length rejection; bound rejection; distinct-type compile check; no external access to unchecked construction.
@@ -210,7 +210,7 @@
 ## P0/P1 — post-audit fixes
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9f52c15
 - Completed: Audit revealed 5 gaps — fixtures not in tests/vectors/format-v1/; G0 command path mismatch; missing TempRepo helper; missing crash-failpoints CI job; check-deps untested. All fixed and verified.
 - Tests: Full G0 gate + G1 gate + check-deps edge-failure test
 - Evidence: All gates pass; check-deps correctly returns non-zero on bad edge
@@ -218,7 +218,7 @@
 ## P1.5 — Establish CI jobs
 
 - Status: GREEN
-- Commit: SELF
+- Commit: f6f983f
 - Completed: GitHub Actions workflows for PR checks (lint, test, spec-checks, dep-check) and scheduled jobs (fuzz, cross-platform, benchmarks)
 - Tests: `.github/workflows/ci.yml`; `.github/workflows/scheduled.yml`
 - Evidence: Jobs defined for Linux stable, PWsh spec/fixture/dep checks
@@ -226,7 +226,7 @@
 ## P1.4 — Establish shared test support
 
 - Status: GREEN
-- Commit: SELF
+- Commit: f6f983f
 - Completed: eternal-format/src/testing.rs with fixture loading, SHA-256 helpers, byte mutation; smoke test loads and checksum-verifies all fixtures
 - Tests: `cargo test -p eternal-format -- testing::tests::smoke_fixture_checksum`
 - Evidence: 1 test passes verifying all 5 fixture file checksums
@@ -234,7 +234,7 @@
 ## P1.3 — Establish lint and formatting policy
 
 - Status: GREEN
-- Commit: SELF
+- Commit: f6f983f
 - Completed: Workspace lint config (deny warnings, unwrap_used, expect_used, panic); rustfmt.toml; all crates have [lints] workspace = true and #![forbid(unsafe_code)]
 - Tests: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Evidence: Both pass
@@ -242,7 +242,7 @@
 ## P1.2 — Enforce dependency direction
 
 - Status: GREEN
-- Commit: SELF
+- Commit: f6f983f
 - Completed: scripts/check-deps.ps1 validates approved dependency edges; forbidden edges removed (eternal-net → eternal-crypto; eternal-cli → eternal-format/crypto)
 - Tests: `powershell -File scripts/check-deps.ps1`
 - Evidence: All 6 crates match allowed edges
@@ -250,7 +250,7 @@
 ## P1.1 — Create the workspace skeleton
 
 - Status: GREEN
-- Commit: SELF (baseline) + f6f983f (lint/unsafe integration)
+- Commit: 178f838 (baseline) + f6f983f (lint/unsafe integration)
 - Completed: 6 crate stubs with empty public surface and `#![forbid(unsafe_code)]`
 - Tests: `cargo check --workspace`
 - Evidence: Workspace compiles
@@ -258,7 +258,7 @@
 ## P0.5 — Freeze Phase 0
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9892076
 - Completed: G0 hard gate passes — specs verified, fixture checksums match, task ledger validated, no conflicts
 - Tests: `powershell -File scripts/check-specs.ps1`; `powershell -File scripts/check-fixtures.ps1`; `powershell -File scripts/check-plan-ledger.ps1`
 - Evidence: All three scripts exit 0
@@ -267,7 +267,7 @@
 ## P0.4 — Create the task ledger
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9892076
 - Completed: Machine-readable task ledger in scripts/plan-ledger.json with all 147 tasks; validation script rejects GREEN tasks with RED dependencies
 - Tests: `powershell -File scripts/check-plan-ledger.ps1`
 - Evidence: Script validates dependency consistency, cycle-freedom, and 4 GREEN / 144 RED tasks
@@ -275,7 +275,7 @@
 ## P0.3 — Create specification reference checks
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9892076
 - Completed: scripts/check-specs.ps1 verifies required docs, major headings, fixture paths, and absence of obsolete terms
 - Tests: `powershell -File scripts/check-specs.ps1`
 - Evidence: 8 documents, 13 headings, 6 fixtures, and 4 obsolete-term patterns pass
@@ -283,7 +283,7 @@
 ## P0.2 — Install format fixtures
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9892076
 - Completed: Binary fixtures verified against tests/vectors/manifest.json; all SHA-256 match; no fixture is dynamically generated
 - Tests: `powershell -File scripts/check-fixtures.ps1`
 - Evidence: 5 fixture files match length and checksum
@@ -291,14 +291,14 @@
 ## P0.1 — Install the authoritative document set
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 9892076
 - Completed: All 6 specification documents + PLAN.md + Agent.md installed under docs/; obsolete copies marked non-authoritative; internal references resolve
 - Evidence: check-specs verifies all docs and headings
 
 ## P0.0 — baseline workspace skeleton
 
 - Status: GREEN
-- Commit: SELF
+- Commit: 178f838
 - Completed: Commit empty crate stubs, workspace config, specification documents, and prototype archive as baseline
 - Tests: `cargo check --workspace`
 - Evidence: workspace compiles with 6 crates, `#![forbid(unsafe_code)]` enforced
