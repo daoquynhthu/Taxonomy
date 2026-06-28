@@ -79,20 +79,24 @@ $steps += Run-Step "scripts/check-plan-ledger.ps1" {
     & (Join-Path $root "scripts/check-plan-ledger.ps1") 2>&1
 }
 
-# G3 — freeze check
+# G3 — freeze check (fail if missing — hard gate scripts are mandatory)
 $freezeCheckScript = Join-Path $root "scripts/check-format-freeze.ps1"
-if (Test-Path -LiteralPath $freezeCheckScript) {
-    $steps += Run-Step "scripts/check-format-freeze.ps1" {
-        & $freezeCheckScript 2>&1
-    }
+if (-not (Test-Path -LiteralPath $freezeCheckScript)) {
+    Write-Host "[FAIL] G3 freeze check script missing: $freezeCheckScript" -ForegroundColor Red
+    exit 1
+}
+$steps += Run-Step "scripts/check-format-freeze.ps1" {
+    & $freezeCheckScript 2>&1
 }
 
-# G3 — fuzz smoke
+# G3 — fuzz smoke (fail if missing — hard gate scripts are mandatory)
 $fuzzSmokeScript = Join-Path $root "scripts/fuzz-smoke.ps1"
-if (Test-Path -LiteralPath $fuzzSmokeScript) {
-    $steps += Run-Step "scripts/fuzz-smoke.ps1" {
-        & $fuzzSmokeScript 2>&1
-    }
+if (-not (Test-Path -LiteralPath $fuzzSmokeScript)) {
+    Write-Host "[FAIL] G3 fuzz smoke script missing: $fuzzSmokeScript" -ForegroundColor Red
+    exit 1
+}
+$steps += Run-Step "scripts/fuzz-smoke.ps1" {
+    & $fuzzSmokeScript 2>&1
 }
 
 # ── Parse test counts (capture all crate-level results) ─────────────────

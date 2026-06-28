@@ -1,5 +1,13 @@
 # Progress
 
+## ISSUE-0025 — gate-report fail-closed on G3 script deletion
+
+- Status: GREEN
+- Commit: SELF
+- Completed: `generate-gate-report.ps1` lines 82–96: both G3 script guards changed from `if (Test-Path $script) { run }` to `if (-not (Test-Path $script)) { exit 1 }`. Missing `check-format-freeze.ps1` or `fuzz-smoke.ps1` now causes immediate gate failure with descriptive message.
+- Tests: `scripts/generate-gate-report.ps1` still runs correctly when both scripts exist
+- Follow-up: ISSUE-0026 (fuzz corpus reproducibility)
+
 ## ISSUE-0024 — physical.rs: 8-byte magic, format_version check, DomainHash index checksum
 
 - Status: GREEN

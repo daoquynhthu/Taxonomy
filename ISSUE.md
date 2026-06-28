@@ -62,7 +62,7 @@
 
 ## ISSUE-0025 — `generate-gate-report.ps1` not fail-closed on G3 script deletion
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: scripts/generate-gate-report.ps1:82–96
@@ -70,7 +70,7 @@
 - Violated invariant: PLAN.md §4 — hard phase gate must produce verifiable evidence that all required checks passed.
 - Required decision: Replace `if (Test-Path) { ... }` with `if (-not (Test-Path)) { exit 1 }` for both G3 scripts.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED by commit SELF — both G3 script guards changed from `if (Test-Path) { run }` to `if (-not (Test-Path)) { exit 1 }`. Missing `check-format-freeze.ps1` or `fuzz-smoke.ps1` now causes immediate gate failure.
 
 ## ISSUE-0024 — `physical.rs` validator does not fully conform to FORMAT binary format spec
 
