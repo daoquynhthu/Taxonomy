@@ -1,5 +1,14 @@
 # Progress
 
+## ISSUE-0024 — physical.rs: 8-byte magic, format_version check, DomainHash index checksum
+
+- Status: GREEN
+- Commit: SELF
+- Completed: `physical.rs` conformance to FORMAT.md §14.2, §15.2, §16.2, §23, §16.5: (1) `SEGMENT_HEADER_MAGIC`, `PACK_MAGIC`, `INDEX_MAGIC` changed from 4-byte to 8-byte constants matching FORMAT spec; `InvalidMagic` error uses `[u8; 8]`; (2) `InvalidFormatVersion` error variant added; all three validators (`validate_segment_header`, `validate_pack`, `validate_pack_index`) check `u16::from_le_bytes([bytes[8], bytes[9]]) == 1` after magic validation; (3) `validate_pack_index` rewritten to zero last 32 bytes and compute `DomainHash("EternalCore:PackIndex:v1", &zeroed)` per FORMAT §16.5, replacing hardcoded golden checksum; `hex_literal` helper removed.
+- Tests: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features` (592 pass)
+- Evidence: All 3 validators now reject truncated magic (fewer than 8 bytes), wrong suffix bytes, wrong format version, and invalid checksums per FORMAT spec.
+- Follow-up: ISSUE-0025 (gate-report fail-closed)
+
 ## ISSUE-0023 — Freeze baseline tamper-proof via git-authority check
 
 - Status: GREEN

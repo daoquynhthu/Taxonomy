@@ -74,18 +74,18 @@
 
 ## ISSUE-0024 — `physical.rs` validator does not fully conform to FORMAT binary format spec
 
-- Status: OPEN
+- Status: RESOLVED
 - Severity: HIGH
 - Discovered in: F3.11 audit 2026-06-28
 - Affected scope: crates/eternal-format/src/physical.rs:27, 74, 110
 - Evidence: Three conformance gaps:
-  1. **4-byte magic instead of 8-byte:** FORMAT.md §14.2 defines segment header magic as `ETSEG\0\0\0` (8 bytes), but `SEGMENT_HEADER_MAGIC` is `[b'E', b'T', b'S', b'E']` (4 bytes). FORMAT §15.2 pack magic is `ETPACK\0\0` (8 bytes) but `PACK_MAGIC` is `[b'E', b'T', b'P', b'A']` (4 bytes). FORMAT §16.2 index magic is `ETIDX\0\0\0` (8 bytes) but `INDEX_MAGIC` is `[b'E', b'T', b'I', b'D']` (4 bytes). Any input with matching 4-byte prefix but corrupted suffix bytes will bypass magic validation.
-  2. **No format_version check:** FORMAT.md §23 requires parsers to verify fixed magic and format version. None of the three validators check that `version == 1`.
-  3. **validate_pack_index uses hardcoded golden checksum:** FORMAT.md §16.5 requires zeroing the last 32 bytes and recomputing `DomainHash("EternalCore:PackIndex:v1", zeroed_bytes)`. Current code compares against a single golden value. This rejects any valid pack index with a different checksum.
+   1. **4-byte magic instead of 8-byte:** FORMAT.md §14.2 defines segment header magic as `ETSEG\0\0\0` (8 bytes), but `SEGMENT_HEADER_MAGIC` is `[b'E', b'T', b'S', b'E']` (4 bytes). FORMAT §15.2 pack magic is `ETPACK\0\0` (8 bytes) but `PACK_MAGIC` is `[b'E', b'T', b'P', b'A']` (4 bytes). FORMAT §16.2 index magic is `ETIDX\0\0\0` (8 bytes) but `INDEX_MAGIC` is `[b'E', b'T', b'I', b'D']` (4 bytes). Any input with matching 4-byte prefix but corrupted suffix bytes will bypass magic validation.
+   2. **No format_version check:** FORMAT.md §23 requires parsers to verify fixed magic and format version. None of the three validators check that `version == 1`.
+   3. **validate_pack_index uses hardcoded golden checksum:** FORMAT.md §16.5 requires zeroing the last 32 bytes and recomputing `DomainHash("EternalCore:PackIndex:v1", zeroed_bytes)`. Current code compares against a single golden value. This rejects any valid pack index with a different checksum.
 - Violated invariant: FORMAT.md §14.2, §15.2, §16.2 (magic size), §23 (version check), §16.5 (checksum domain).
 - Required decision: Extend magic checks to full 8 bytes; add format_version == 1 check to all three validators; rewrite `validate_pack_index` to recompute checksum via zeroed DomainHash instead of golden comparison.
 - Work stopped: none
-- Resolution: pending
+- Resolution: RESOLVED by commit SELF: (1) all three magic constants changed to 8-byte `*b"ETSEG\0\0\0"`, `*b"ETPACK\0\0"`, `*b"ETIDX\0\0\0"`; `InvalidMagic` error uses `[u8; 8]`; (2) `InvalidFormatVersion` error variant added; all three validators check `u16::from_le_bytes([bytes[8], bytes[9]]) == 1` after magic; (3) `validate_pack_index` now zeros last 32 bytes and computes `DomainHash("EternalCore:PackIndex:v1", &zeroed)` per §16.5; `hex_literal` helper removed. 592 tests + clippy + fmt pass.
 
 ## ISSUE-0023 — Freeze baseline can be silently updated with v1 bytes, cannot enforce G3 reopen
 
