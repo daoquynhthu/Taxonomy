@@ -395,7 +395,7 @@
 - Violated invariant: PLAN.md G3 requires tamper-proof freeze — the baseline must be auditable independently of the baseline file's own content.
 - Required decision: (A) Add `G3_REOPENED` as a computed ledger marker in `check-format-freeze.ps1` that `check-plan-ledger.ps1` can read; or (B) add a separate CI step that verifies the freeze baseline commit is an ancestor of HEAD.
 - Work stopped: none (F3 already RED for other reasons)
-- Resolution: RESOLVED — option (A) implemented (SELF). `check-format-freeze.ps1` now verifies `frozen_commit` is an ancestor of HEAD via `git merge-base --is-ancestor`, rejecting tampered or replaced baseline commits. `check-plan-ledger.ps1` reads `freeze-baseline.json` directly and cross-references the computed G3 status (FROZEN/OPEN) against F3.11's ledger status, producing a FAIL if they disagree. `plan-ledger.json` F3.11 status updated to RED to match real G3 state.
+- Resolution: RESOLVED — option (A) implemented (d33f9c1). `check-format-freeze.ps1` now verifies `frozen_commit` is an ancestor of HEAD via `git merge-base --is-ancestor`, rejecting tampered or replaced baseline commits. `check-plan-ledger.ps1` reads `freeze-baseline.json` directly and cross-references the computed G3 status (FROZEN/OPEN) against F3.11's ledger status, producing a FAIL if they disagree. `plan-ledger.json` F3.11 status updated to RED to match real G3 state.
 
 ## ISSUE-0032 — Historical PROGRESS.md entries use `Commit: SELF` instead of actual SHA
 
@@ -407,4 +407,4 @@
 - Violated invariant: Agent.md §3.2 — preserve resolved issues as an audit trail with exact references.
 - Required decision: Either (A) recover the actual SHAs from git history for each task and replace SELF (requires per-task log archaeology), or (B) accept that pre-ISSUE-0027 entries predate the SHA convention and leave them as historical SELF with a note. Option (B) is pragmatic but violates Agent.md §3.2.
 - Work stopped: none
-- Resolution: RESOLVED — option (A) applied (SELF). P0.0→178f838, P0.1-P0.5→9892076, P0/P1 post-audit→9f52c15, P1.1→178f838, P1.2-P1.5→f6f983f, F2.1→c95e2a5, F2.2→b2f9d5a, F2.3→b6d0b8f, F2.4→9fbf9d5, F2.6→2c40ade, F2.7→5d6a94e, F2.8→32ef3e7, F2.9→b526f87. All 16 SHA replacements verified against git log.
+- Resolution: RESOLVED — option (A) applied (4f93113). P0.0→178f838, P0.1-P0.5→9892076, P0/P1 post-audit→9f52c15, P1.1→178f838, P1.2-P1.5→f6f983f, F2.1→c95e2a5, F2.2→b2f9d5a, F2.3→b6d0b8f, F2.4→9fbf9d5, F2.6→2c40ade, F2.7→5d6a94e, F2.8→32ef3e7, F2.9→b526f87. All 16 SHA replacements verified against git log.

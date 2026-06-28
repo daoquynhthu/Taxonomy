@@ -199,6 +199,40 @@ if ($f3_11 -ne $null) {
         $baseline = Get-Content -Raw -LiteralPath $baselinePath | ConvertFrom-Json
         $frozenCommit = $baseline.frozen_commit
 
+        # ── Baseline transition check ────────────────────────────────────────
+        # Detect if frozen_commit was changed in this commit vs parent.
+        # If it changed, the parent's F3.11 must have been RED (legitimate
+        # re-freeze). A GREEN parent means the baseline was silently moved
+        # while G3 claimed to be frozen.
+        $relativeBaselinePath = "tests/vectors/format-v1/freeze-baseline.json"
+        $parentBaselineRaw = git show "HEAD^:$relativeBaselinePath" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $parentBaselineRaw) {
+            $parentBaseline = $parentBaselineRaw | ConvertFrom-Json
+            $parentFrozen = $parentBaseline.frozen_commit
+            if ($parentFrozen -ne $frozenCommit) {
+                # frozen_commit changed — verify parent F3.11 was RED
+                $parentLedgerRaw = git show "HEAD^:scripts/plan-ledger.json" 2>$null
+                if ($LASTEXITCODE -eq 0 -and $parentLedgerRaw) {
+                    $parentLedger = $parentLedgerRaw | ConvertFrom-Json
+                    $parentF311 = $null
+                    foreach ($phase in $parentLedger.phases) {
+                        foreach ($task in $phase.tasks) {
+                            if ($task.id -eq "F3.11") { $parentF311 = $task.status }
+                        }
+                    }
+                    if ($parentF311 -ne "RED") {
+                        Write-Host "  [FAIL] frozen_commit changed from $parentFrozen to $frozenCommit" -ForegroundColor Red
+                        Write-Host "         but parent F3.11 was '$parentF311' (must be RED for legitimate re-freeze)" -ForegroundColor Red
+                        Write-Host "         This looks like a silent baseline move — G3 bypass attempted." -ForegroundColor Red
+                        $exitCode = 1
+                    } else {
+                        Write-Host "  [OK] frozen_commit changed from $parentFrozen to $frozenCommit" -ForegroundColor Yellow
+                        Write-Host "       parent F3.11 was RED — legitimate re-freeze" -ForegroundColor Green
+                    }
+                }
+            }
+        }
+
         # Verify frozen_commit is a valid ancestor of HEAD
         $null = git rev-parse --verify "$frozenCommit^{commit}" 2>&1
         $commitValid = ($LASTEXITCODE -eq 0)

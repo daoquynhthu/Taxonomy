@@ -1,6 +1,6 @@
 # Progress
 
-## F3.11 — Freeze format v1 (Hard Gate G3)
+## F3.11 — Freeze F3 format-v1 record/fixture subset (Hard Gate G3)
 - Status: RED (G3 reopened — all BLOCKERs resolved, re-freeze pending)
 - Commit: 62b2d6f (initial freeze); re-freezed at b0826a0; current baseline 4d62478
 - Completed: Hard Gate G3 — every required fixture exists (23 files: 11 valid + 10 invalid + 2 meta). Every valid fixture decodes and re-encodes identically (7 CBOR fixtures re-encode identity + 4 non-CBOR fixtures via structured validation). Every invalid fixture rejected with expected structured class (5 CBOR via `DecodeError` variants + 5 non-CBOR via `PhysicalFormatError` variants). All format parsers fuzz-smoke clean (cbor + names + records, 3×50000 runs, 0 crashes/timeouts/panics). Freeze baseline recorded in `tests/vectors/format-v1/freeze-baseline.json` with SHA-256 hashes of all format-defining source files, fixtures, and fuzz targets. G3 reopening enforced by `scripts/check-format-freeze.ps1` (git-authority mode). Non-CBOR physical format validation added in `crates/eternal-format/src/physical.rs` with structured `PhysicalFormatError` enum. All invalid fixture tests now route through validation functions and assert exact error variant. Full combined gate evidence in `gate-report.json` and `fuzz-smoke-report.json`.
